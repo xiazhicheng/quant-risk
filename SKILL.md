@@ -1,32 +1,48 @@
 ---
 name: quant-risk
-description: 【全生命周期风控】美股港股数据+风控分析 — 覆盖投前审查/持仓监控/预警/处置四阶段。基于行情、K线、基本面、资金面、期权、SEC等八层数据源，输出风险等级、风控结论、建议仓位上限、预警阈值、止损止盈条件。适用于事前审查、持续监控、警报触发、处置决策。
+description: 【全生命周期风控】美股+港股+A股数据+风控分析 — 覆盖投前审查/持仓监控/预警/处置四阶段。基于行情、K线、基本面、资金面、期权、SEC等八层数据源，输出风险等级、风控结论、建议仓位上限、预警阈值、止损止盈条件。适用于事前审查、持续监控、警报触发、处置决策。
 origin: custom
-version: 1.0.0
+version: 1.1.0
 ---
 > 📦 https://github.com/xiazhicheng/quant-risk — Star ⭐ 是最好的支持
-# 美股港股全栈数据工具包 V1.0.0（全异步）
+# 美股+A股+港股全栈数据工具包 V1.1.0（全异步）
 
-八层数据架构，全部异步并行获取，零鉴权。
+十层数据架构，全部异步并行获取，零鉴权。
 
 ```
 行情层（实时/延时）
+├── 腾讯财经     → A股 sh/sz 47字段 / 美股 usXXXX 71字段 / 港股 r_hkXXXXX 78字段
 ├── 新浪财经     → 美股 gb_XXXX 36字段 / 港股 rt_hkXXXXX 25字段
-├── 腾讯财经     → 美股 usXXXX 71字段 / 港股 r_hkXXXXX 78字段
-└── 东财 push2   → 美股/港股 secid 实时行情
+├── 东财 push2   → A股 secid:0-1 / 美股 secid:105-107 / 港股 secid:116
+└── mootdx (TCP) → A股五档盘口+逐笔成交
 
 K线层（日/周/月/分钟）
+├── 腾讯          → A股日K前复权(带MA5/10/20)
 ├── 新浪          → 美股日K (回溯至1984年)
-└── Yahoo chart   → 美股+港股 (v8 API)
+├── Yahoo chart   → 美股+港股 (v8 API)
+├── 百度          → A股日K(带MA)
+└── mootdx        → A股多周期(分钟/日/周/月)
 
 技术指标层：MA/EMA + MACD + RSI + KDJ + 布林带（纯Python）
 
 基本面层
-├── 东财 datacenter → 三表+GMAININDICATOR关键指标(中文)
+├── 东财 datacenter → 三表+GMAININDICATOR关键指标(中/英/港)
+├── mootdx finance  → A股季报37字段
+├── 新浪            → A股三表(资产负债/利润/现金流)
+├── 同花顺          → A股机构一致预期EPS
 ├── Yahoo           → 估值/分析师/机构持仓(英文)
 └── SEC EDGAR XBRL  → 美股503个GAAP指标
 
-资金面层：东财 push2his 日级资金流(主力/大单/中单/小单)
+资金面层
+├── 东财 push2his → 日级资金流(主力/大单/中单/小单)
+└── 东财 datacenter → A股融资融券/大宗交易/股东户数/分红
+
+信号层（A股独有）
+├── 同花顺  → 强势股+题材归因+北向资金
+├── 东财    → 龙虎榜+解禁+行业排名+板块归属
+└── 百度    → 概念板块
+
+公告层（A股独有）：巨潮 cninfo 沪深北全量公告
 期权层：Yahoo 期权链（仅美股）
 SEC Filing层：EDGAR submissions + XBRL（仅美股）
 工具层：东财搜索 / Yahoo新闻 / SEC CIK / 全市场列表
@@ -39,8 +55,8 @@ SEC Filing层：EDGAR submissions + XBRL（仅美股）
 - 用户要**持仓监控**（当前盈亏/风险变化/是否需调仓）
 - 用户要**预警触发**（价格接近止损/业绩暴雷/基本面恶化）
 - 用户要**处置建议**（清仓/减仓/持有/加仓）
-- 用户要查**美股/港股**行情/财报/指标/资金流/期权/SEC/搜索/全市场排名
-- 关键词：全生命周期风控、投前、持仓、预警、处置、风控审查、风险等级、仓位上限、买入、持有、观望、回避、止损、止盈、PE、PB、ROE、美股、港股、财报、技术分析
+- 用户要查**美股/港股/A股**行情/财报/指标/资金流/龙虎榜/北向/公告/调研
+- 关键词：全生命周期风控、投前、持仓、预警、处置、风控审查、风险等级、仓位上限、买入、持有、观望、回避、止损、止盈、PE、PB、ROE、美股、港股、**A股**、**沪深**、**上证**、**深证**、**创业板**、**科创板**、**北交所**、**打板**、**涨停**、**龙虎榜**、**北向资金**、**融资融券**、**大宗交易**、财报、技术分析
 
 ---
 
@@ -48,11 +64,14 @@ SEC Filing层：EDGAR submissions + XBRL（仅美股）
 
 ```bash
 pip install aiohttp
+# A 股数据（可选，仅在需要 A 股 K 线/财务快照时安装）
+pip install mootdx
 ```
 
 | 依赖 | 版本要求 | 用途 |
 |------|---------|------|
 | aiohttp | any | 所有 HTTP API 直连（全异步）|
+| mootdx | >=0.10 | A 股多周期 K 线 + 财务快照（可选）|
 
 ## 核心原则
 
@@ -68,9 +87,26 @@ pip install aiohttp
 ```python
 import asyncio, aiohttp, re, json
 from datetime import datetime
+from typing import Optional
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+# ── A股市场前缀 ──────────────────────────
+def cn_market_prefix(code: str) -> str:
+    """A股代码 → 腾讯前缀: sh/sz/bj"""
+    if code.startswith(("6", "9")):
+        return "sh"
+    if code.startswith(("0", "3")):
+        return "sz"
+    if code.startswith(("4", "8")):
+        return "bj"
+    return "sz"
+
+def cn_secid(code: str) -> str:
+    """A股代码 → 东财 secid: 0.上证 / 1.深证"""
+    prefix = "1" if code.startswith(("6", "9")) else "0"
+    return f"{prefix}.{code}"
 
 # ── 全局 aiohttp session ──────────────────────────
 _async_session = None
@@ -271,6 +307,81 @@ async def stock_quote_eastmoney_async(ticker_or_code: str, secid_prefix: int = 1
     }
 ```
 
+### 1.6 A股行情 — 腾讯财经（主推，不封IP）
+
+```python
+async def cn_stock_quote_tencent_async(code: str) -> dict:
+    """A股实时行情，腾讯源。code: 688017, 000858 等6位代码。
+    返回 name/price/change_pct/pe_ttm/pb/market_cap_100m/
+    turnover_rate/high/low/high_limit/low_limit/volume/amount"""
+    text = await _aio_get_gbk(f"https://qt.gtimg.cn/q={cn_market_prefix(code)}{code}")
+    m = re.search(r'"(.+)"', text)
+    if not m:
+        return {}
+    fields = m.group(1).split("~")
+    if len(fields) < 50:
+        return {}
+    def sf(v):
+        try: return float(v) if v and v != "-" else 0.0
+        except: return 0.0
+    return {
+        "name": fields[1], "code": fields[2], "price": sf(fields[3]),
+        "change_pct": sf(fields[32]), "pe_ttm": sf(fields[39]),
+        "pb": sf(fields[46]), "market_cap_100m": sf(fields[44]),
+        "total_shares_100m": sf(fields[45]),
+        "high": sf(fields[33]), "low": sf(fields[34]),
+        "turnover_rate": sf(fields[38]),
+        "volume": sf(fields[6]), "amount_100m": sf(fields[37]),
+        "high_limit": sf(fields[48]), "low_limit": sf(fields[49]),
+        "amp": sf(fields[43]), "timestamp": fields[30] if len(fields) > 30 else "",
+    }
+```
+
+### 1.7 A股行情 — 东财 push2
+
+```python
+async def cn_stock_quote_eastmoney_async(code: str) -> dict:
+    """A股 push2 实时行情。code: 6位代码，自动识别上证(0.)/深证(1.)"""
+    secid = cn_secid(code)
+    d = (await _aio_get_json("https://push2.eastmoney.com/api/qt/stock/get", params={
+        "secid": secid,
+        "fields": "f43,f44,f45,f46,f47,f48,f55,f57,f58,f59,f60,f170,f116,f117,f100",
+    })).get("data")
+    if not d:
+        return {}
+    dec = d.get("f59", 2)
+    divisor = 10 ** dec
+    def _p(key):
+        v = d.get(key)
+        return round(v / divisor, dec) if v is not None and v != "-" else None
+    return {
+        "code": d.get("f57"), "name": d.get("f58"),
+        "price": _p("f43"), "high": _p("f44"), "low": _p("f45"),
+        "open": _p("f46"), "volume": d.get("f47"), "amount": d.get("f48"),
+        "turnover_rate": d.get("f55"), "prev_close": _p("f60"),
+        "change_pct": round(d["f170"] / 100, 2) if d.get("f170") is not None else None,
+        "total_mv": _p("f116"), "float_mv": _p("f117"),
+    }
+```
+
+### 1.8 A股基础信息 — 东财 push2
+
+```python
+async def cn_stock_basic_info_async(code: str) -> dict:
+    """A股基本面信息：行业/总股本/流通股/上市日期/市盈率/市净率"""
+    secid = cn_secid(code)
+    d = (await _aio_get_json("https://push2.eastmoney.com/api/qt/stock/get", params={
+        "secid": secid,
+        "fields": "f57,f58,f84,f85,f98,f86,f116,f117,f100,f120,f121",
+    })).get("data")
+    return {
+        "code": d.get("f57"), "name": d.get("f58"),
+        "industry": d.get("f84"), "industry_ems": d.get("f85"),
+        "listing_date": str(d.get("f98"))[:10] if d.get("f98") else None,
+        "total_mv_100m": (d.get("f116") or 0) / 1e8,
+        "float_mv_100m": (d.get("f117") or 0) / 1e8,
+    } if d else {}
+
 ---
 
 ## Layer 2: K线层
@@ -317,6 +428,134 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
             "volume": int(quote["volume"][i]) if quote["volume"][i] else 0,
         })
     return result
+```
+
+### 2.3 A股日K — 腾讯（前复权，主推，不封IP）
+
+```python
+async def cn_stock_kline_tencent_async(code: str, days: int = 120) -> list[dict]:
+    """A股日K线，腾讯源，前复权。code: 6位代码，自动识别市场。
+    返回 date/open/high/low/close/volume，适合回测和估值分析。"""
+    url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},m,,{days}"
+    d = await _aio_get_json(url, headers={"Referer": "https://finance.qq.com/"})
+    data = d.get("data", {})
+    key = f"{cn_market_prefix(code)}{code}"
+    klines = data.get(key, {}).get("m", []) or data.get(key, {}).get("day", []) or []
+    if not klines or not klines[0]:
+        klines = data.get(key, {}).get("qfq", []) or data.get(key, {}).get("day", []) or []
+    if not klines or not klines[0]:
+        return []
+    result = []
+    for item in klines:
+        if len(item) < 6:
+            continue
+        result.append({
+            "date": item[0], "open": float(item[1]),
+            "high": float(item[2]), "low": float(item[3]),
+            "close": float(item[4]), "volume": int(item[5]),
+        })
+    return result
+```
+
+### 2.4 A股日K — 百度（带MA5/10/20）
+
+```python
+async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
+    """百度A股日K，直接返回MA5/MA10/MA20均价。code: 6位代码"""
+    secid = cn_secid(code)
+    d = await _aio_get_json(
+        "https://gupiao.baidu.com/api/single/stockday",
+        params={"code": secid, "start": start, "format": "json"},
+        headers={"Referer": "https://gupiao.baidu.com/"},
+    )
+    items = d.get("data", []) if isinstance(d, dict) else d
+    if not items:
+        return []
+    return [{"date": i.get("date"), "open": float(i.get("open", 0)),
+             "high": float(i.get("high", 0)), "low": float(i.get("low", 0)),
+             "close": float(i.get("close", 0)), "volume": int(i.get("volume", 0)),
+             "ma5": float(i["ma"][0]) if i.get("ma") and len(i["ma"]) > 0 else None,
+             "ma10": float(i["ma"][1]) if i.get("ma") and len(i["ma"]) > 1 else None,
+             "ma20": float(i["ma"][2]) if i.get("ma") and len(i["ma"]) > 2 else None}
+            for i in items]
+```
+
+### 2.5 A股多周期K线 — mootdx（TCP，分钟/日/周/月，同步）
+
+```python
+try:
+    from mootdx.quotes import Quotes as _MootdxQuotes
+    _MOOTDX_OK = True
+except ImportError:
+    _MOOTDX_OK = False
+
+def _tdx_client():
+    """创建 mootdx 客户端，带内置服务器探测和 fallback"""
+    if not _MOOTDX_OK:
+        raise ImportError("mootdx 未安装: pip install mootdx")
+    servers = [
+        ("119.147.212.81", 7709), ("180.153.18.170", 7709),
+        ("59.175.238.38", 7709), ("112.74.214.43", 7709),
+    ]
+    for ip, port in servers:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.5)
+        try:
+            s.connect((ip, port)); s.close()
+            return _MootdxQuotes.factory(market="std", server=(ip, port))
+        except:
+            s.close()
+            continue
+    return _MootdxQuotes.factory(market="std")
+
+def cn_stock_kline_tdx_sync(code: str, frequency: int = 9, start: int = 0,
+                             count: int = 200) -> list[dict]:
+    """A股K线（mootdx）。frequency: 9=日线, 8=1分钟, 0=5分钟,
+    7=15分钟, 1=30分钟, 2=60分钟, 10=周, 11=月。返回不复权原始价。"""
+    try:
+        client = _tdx_client()
+        df = client.bars(symbol=code, frequency=frequency, start=start, count=count)
+        if df is None or df.empty:
+            return []
+        result = []
+        for _, row in df.iterrows():
+            result.append({
+                "date": str(row.get("date", ""))[:19],
+                "open": round(float(row.get("open", 0)), 2),
+                "high": round(float(row.get("high", 0)), 2),
+                "low": round(float(row.get("low", 0)), 2),
+                "close": round(float(row.get("close", 0)), 2),
+                "volume": int(row.get("volume", 0)),
+                "amount": round(float(row.get("amount", 0)), 2),
+            })
+        return result
+    except Exception as e:
+        print(f"[WARN] mootdx K线获取失败({code}): {e}")
+        return []
+```
+
+### 2.6 A股财务快照（同步 — mootdx）
+
+```python
+def cn_financial_snapshot_sync(code: str) -> dict:
+    """A股最新季报财务快照（EPS/ROE/净利润/营收等）"""
+    try:
+        client = _tdx_client()
+        df = client.finance(symbol=code)
+        if df is None or df.empty:
+            return {}
+        report = df.iloc[-1].to_dict()
+        return {
+            "eps": round(float(report.get("eps", 0)), 4),
+            "total_equity": float(report.get("equity", 0)),
+            "revenue_total": float(report.get("revenue", 0)),
+            "net_profit": float(report.get("net_profit", 0)),
+            "roe_pct": round(float(report.get("roe", 0)) * 100, 2),
+        }
+    except Exception as e:
+        print(f"[WARN] mootdx 财务快照失败({code}): {e}")
+        return {}
 ```
 
 ---
@@ -522,6 +761,82 @@ async def financial_statements_yahoo_async(symbol: str, quarterly: bool = False)
             "cashflow": _ext(f"cashflowStatementHistory{sfx}")}
 ```
 
+### 4.8 A股关键财务指标 — 东财 datacenter
+
+```python
+async def cn_key_indicators_async(code: str, page_size: int = 4) -> list[dict]:
+    """A股关键财务指标，东财 datacenter。code: 6位代码"""
+    secucode = f"{cn_secid(code).replace('.', '.')}"
+    # A股 secucode 格式: "0.000858" 或 "1.600519"
+    secucode = f"{'SH' if code.startswith(('6','9')) else 'SZ'}{code}"
+    # 有些东财接口用 SH/SZ 前缀
+    return await eastmoney_datacenter_async(
+        "RPT_LICO_FN_CPD", filter_str=f'(SECUCODE="{secucode}")',
+        page_size=page_size, sort_columns="REPORT_DATE", sort_types="-1",
+    )
+```
+
+### 4.9 A股财报三表 — 新浪
+
+```python
+async def cn_financial_statements_sina_async(code: str, report_type: str = "lrb",
+                                              num: int = 8) -> list[dict]:
+    """A股三表。report_type: lrb=利润表, fzb=资产负债表, llb=现金流量表。num=期数"""
+    url = f"https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData"
+    d = await _aio_get_json(url, params={
+        "symbol": cn_market_prefix(code) + code,
+        "scale": num, "datalen": 1, "type": report_type,
+    }, headers={"Referer": "https://vip.stock.finance.sina.com.cn/"})
+    if not d:
+        return []
+    return d
+```
+
+### 4.10 A股机构一致预期EPS — 同花顺（同步）
+
+```python
+try:
+    import pandas as pd
+    _PANDAS_OK = True
+except ImportError:
+    _PANDAS_OK = False
+
+def cn_eps_forecast_sync(code: str) -> list[dict]:
+    """机构一致预期EPS。走同花顺 basic.10jqka.com.cn。返回 [{year, eps, count}, ...] """
+    try:
+        url = f"https://basic.10jqka.com.cn/{code}/index.html"
+        import requests
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=10)
+        html = r.text
+        # 从HTML中提取数据ID (附注: 同花顺数据ID可能会有变化)
+        import urllib.parse
+        m = re.search(r'var\s+resData\s*=\s*({.+?});', html, re.DOTALL)
+        if not m:
+            return []
+        import json
+        data = json.loads(m.group(1))
+        eps = data.get("eps", data.get("EPS", {}))
+        if isinstance(eps, dict):
+            items = eps.get("data", eps.get("items", eps.get("list", [])))
+            if isinstance(items, dict):
+                items = list(items.values())
+            if isinstance(items, list):
+                result = []
+                for item in items[:5]:
+                    year = item.get("year", item.get("reportDate", item.get("REPORT_DATE", "")))
+                    val = item.get("val", item.get("eps", item.get("EPS", 0)))
+                    cnt = item.get("count", item.get("num", item.get("NUM", 0)))
+                    result.append({
+                        "year": str(year)[:4],
+                        "eps": float(val) if val else 0,
+                        "count": int(cnt) if cnt else 0,
+                    })
+                return result
+    except Exception as e:
+        print(f"[WARN] 一致预期EPS失败({code}): {e}")
+    return []
+```
+
 ---
 
 ## Layer 5: 资金面层
@@ -544,9 +859,252 @@ async def fund_flow_daily_async(ticker_or_code: str, secid_prefix: int = 105, li
     return result
 ```
 
+### 5.1 A股资金流 — 东财 push2his（分钟级）
+
+```python
+async def cn_fund_flow_minute_async(code: str) -> list[dict]:
+    """A股分钟级资金流向（主力/大单/中单/小单）。code: 6位"""
+    secid = cn_secid(code)
+    d = (await _aio_get_json("https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get", params={
+        "secid": secid, "klt": 101,
+        "fields1": "f1,f2,f3,f7", "fields2": "f51,f52,f53,f54,f55,f56,f57", "lmt": 200,
+    })).get("data")
+    if not d or not d.get("klines"):
+        return []
+    result = []
+    for line in d["klines"]:
+        p = line.split(",")
+        result.append({"date": p[0], "main_net": float(p[1]), "small_net": float(p[2]),
+                       "mid_net": float(p[3]), "big_net": float(p[4]),
+                       "super_big_net": float(p[5]),
+                       "main_pct": float(p[6]) if len(p) > 6 and p[6] else 0})
+    return result
+```
+
+### 5.2 A股融资融券 — 东财 datacenter
+
+```python
+async def cn_margin_trading_async(code: str, page_size: int = 30) -> list[dict]:
+    """融资融券明细（日级）。返回 date/rzye(融资余额)/rzmre(融资买入)/rqyl(融券余额)/rqmc(融券卖出)"""
+    market = "SH" if code.startswith(("6", "9")) else "SZ"
+    return await eastmoney_datacenter_async(
+        "RPTA_WEB_MARGINTRADING_DETAILS",
+        filter_str=f'(SECURITY_CODE="{code}")(TRADE_MARKET_CODE="{market}")',
+        page_size=page_size, sort_columns="TRADE_DATE", sort_types="-1",
+    )
+```
+
+### 5.3 A股大宗交易 — 东财 datacenter
+
+```python
+async def cn_block_trade_async(code: str, page_size: int = 20) -> list[dict]:
+    """大宗交易记录。返回 date/price/volume/premium(溢价率)/buyer(买方)/seller(卖方)"""
+    market = "SH" if code.startswith(("6", "9")) else "SZ"
+    return await eastmoney_datacenter_async(
+        "RPT_DATA_BLOCKTRADE",
+        filter_str=f'(SECURITY_CODE="{code}")(MARKET="{market}")',
+        page_size=page_size, sort_columns="TRADE_DATE", sort_types="-1",
+    )
+```
+
+### 5.4 A股股东户数 — 东财 datacenter
+
+```python
+async def cn_holder_num_change_async(code: str, page_size: int = 10) -> list[dict]:
+    """股东户数变化（季度级）。返回 date/holder_num/change_ratio(环比)/avg_shares(户均持股)"""
+    market = "SH" if code.startswith(("6", "9")) else "SZ"
+    return await eastmoney_datacenter_async(
+        "RPTA_WEB_HOLDERNUM_CHANGE",
+        filter_str=f'(SECUCODE="{market}{code}")',
+        page_size=page_size, sort_columns="END_DATE", sort_types="-1",
+    )
+```
+
+### 5.5 A股分红送转 — 东财 datacenter
+
+```python
+async def cn_dividend_history_async(code: str, page_size: int = 20) -> list[dict]:
+    """分红送转历史。返回 date/bonus(每股派息)/bonus_ratio/transfer(转增)/send(送股)"""
+    market = "SH" if code.startswith(("6", "9")) else "SZ"
+    return await eastmoney_datacenter_async(
+        "RPTA_WEB_DIVIDEND_HISTORY",
+        filter_str=f'(SECUCODE="{market}{code}")',
+        page_size=page_size, sort_columns="REPORT_DATE", sort_types="-1",
+    )
+```
+
 ---
 
-## Layer 6: 期权层（仅美股）
+## Layer 6: A股信号层（独有）
+
+### 6.1 A股强势股 + 题材归因 — 同花顺
+
+```python
+async def ths_hot_stocks_async(date: str = None) -> list[dict]:
+    """当日强势股 + 题材归因。date: YYYY-MM-DD，默认今日。
+    返回每只: code/name/price/pct/reason(题材标签)/high_days(连板天数)"""
+    if not date:
+        from datetime import date as dt_date
+        date = dt_date.today().strftime("%Y%m%d")
+    try:
+        s = await get_async_session()
+        async with s.get("https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool",
+                         params={"page": 1, "limit": 200,
+                                 "field": "199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004",
+                                 "filter": "HS,GEM2STAR", "order_field": "330324", "order_type": "0", "date": date},
+                         headers={"User-Agent": UA}) as resp:
+            info = (await resp.json()).get("data", {}).get("info", [])
+    except Exception as e:
+        print(f"[WARN] 同花顺强势股请求失败: {e}")
+        return []
+    return [{"code": it.get("code"), "name": it.get("name"),
+             "price": it.get("latest"), "pct": it.get("change_rate"),
+             "reason": it.get("reason_type", ""),
+             "high_days": it.get("high_days", "")}
+            for it in info]
+```
+
+### 6.2 A股北向资金 — 东财
+
+```python
+async def northbound_flow_async() -> dict:
+    """北向资金分钟级流向。返回 sh_net(沪股通净流入)/sz_net(深股通净流入)/total(合计)"""
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/ulist.np/get",
+                         params={"fields": "f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124",
+                                 "secids": "1.000001,0.399001"},
+                         headers={"Referer": "https://quote.eastmoney.com/"}) as resp:
+            d = await resp.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff, dict):
+            diff = list(diff.values())
+        sh_net, sz_net = 0.0, 0.0
+        for item in diff:
+            code = str(item.get("f12", ""))
+            if code == "000001":
+                sh_net = (item.get("f62") or 0) / 100
+            elif code == "399001":
+                sz_net = (item.get("f62") or 0) / 100
+        return {"sh_net": round(sh_net, 2), "sz_net": round(sz_net, 2),
+                "total": round(sh_net + sz_net, 2)}
+    except Exception as e:
+        print(f"[WARN] 北向资金获取失败: {e}")
+        return {}
+```
+
+### 6.3 A股板块归属 — 东财
+
+```python
+async def cn_concept_blocks_async(code: str) -> dict:
+    """个股所属全部板块（行业/概念/地域）。返回 {industry, concept_tags: [], region}"""
+    secid = cn_secid(code)
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/slist/get",
+                         params={"spt": 3, "secids": secid,
+                                 "fields": "f12,f14,f3,f4"},
+                         headers={"Referer": "https://quote.eastmoney.com/"}) as resp:
+            d = await resp.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff, dict):
+            diff = list(diff.values())
+        industry, concepts, region = "", [], ""
+        for item in diff:
+            bk = str(item.get("f12", ""))
+            name = item.get("f14", "")
+            if bk.startswith("BK"):
+                if bk.startswith("BK08") and not industry:
+                    industry = name
+                elif bk.startswith("BK09"):
+                    region = name
+                else:
+                    concepts.append(name)
+        return {"industry": industry, "concept_tags": concepts[:20], "region": region}
+    except Exception as e:
+        print(f"[WARN] 板块归属获取失败: {e}")
+        return {}
+```
+
+### 6.4 A股龙虎榜 — 东财 datacenter
+
+```python
+async def cn_dragon_tiger_board_async(code: str, look_back: int = 30) -> list[dict]:
+    """龙虎榜席位。返回 date/reason(上榜原因)/net_buy(净买入额)"""
+    return await eastmoney_datacenter_async(
+        "RPTA_WEB_DRAGON_TIGER_LIST",
+        filter_str=f'(SECURITY_CODE="{code}")',
+        page_size=look_back, sort_columns="TRADE_DATE", sort_types="-1",
+    )
+```
+
+### 6.5 A股限售解禁 — 东财 datacenter
+
+```python
+async def cn_lockup_expiry_async(code: str, forward_days: int = 90) -> list[dict]:
+    """限售解禁日历。返回 date/count(解禁股数)/ratio(占总股本比)/holder(持有人)"""
+    return await eastmoney_datacenter_async(
+        "RPTA_WEB_LOCKUP_EXPIRY",
+        filter_str=f'(SECURITY_CODE="{code}")',
+        page_size=forward_days, sort_columns="EXPIRE_DATE", sort_types="1",
+    )
+```
+
+### 6.6 A股行业板块排名 — 东财 push2
+
+```python
+async def cn_industry_ranking_async(top_n: int = 20) -> list[dict]:
+    """行业板块涨跌排名。返回 rank/industry(行业名)/pct(涨跌幅)/up(涨家数)/down(跌家数)"""
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/clist/get",
+                         params={"fs": "m:90+t:2", "fields": "f2,f3,f4,f5,f6,f12,f14",
+                                 "pn": 1, "pz": top_n, "fid": "f3", "po": 1}) as resp:
+            d = await resp.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff, dict):
+            diff = list(diff.values())
+        return [{"industry": i.get("f14"), "pct": round((i.get("f3") or 0) / 100, 2),
+                 "up": i.get("f4"), "down": i.get("f5")}
+                for i in diff if i.get("f14")]
+    except Exception as e:
+        print(f"[WARN] 行业排名获取失败: {e}")
+        return []
+```
+
+---
+
+## Layer 8: A股公告层（巨潮 cninfo）
+
+### 8.1 A股公告检索 — 巨潮 cninfo
+
+```python
+async def cninfo_announcements_async(code: str, page_size: int = 30) -> list[dict]:
+    """A股全量公告检索（沪深北）。code: 6位代码。返回 date/title/type/url"""
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": UA}) as sess:
+            async with sess.post(
+                "http://www.cninfo.com.cn/new/fulltextSearch/full",
+                data={"searchkey": code, "sdate": "", "edate": "",
+                      "isfulltext": "false", "sortName": "pubdate",
+                      "sortType": "desc", "pageNum": 1},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                data = await resp.json()
+        results = data.get("announcements", []) if isinstance(data, dict) else []
+        return [{"date": r.get("announcementDate", ""),
+                 "title": r.get("announcementTitle", ""),
+                 "type": r.get("announcementTypeName", ""),
+                 "url": r.get("adjunctUrl", "")}
+                for r in results[:page_size]]
+    except Exception as e:
+        print(f"[WARN] 巨潮公告检索失败: {e}")
+        return []
+```
+
+---
+
+## Layer 9: 期权层（仅美股）
 
 ```python
 async def options_chain_async(symbol: str, expiration: int = None) -> dict:
@@ -571,7 +1129,7 @@ async def options_chain_async(symbol: str, expiration: int = None) -> dict:
 
 ---
 
-## Layer 7: SEC Filing 层（仅美股）
+## Layer 10: SEC Filing 层（仅美股）
 
 ```python
 async def sec_filings_async(cik: str, form_type: str = None) -> dict:
@@ -611,7 +1169,7 @@ async def sec_xbrl_facts_async(cik: str, metrics: list[str] = None) -> dict:
 
 ---
 
-## Layer 8: 工具层
+## Layer 11: 工具层
 
 ```python
 async def stock_search_async(keyword: str, count: int = 10) -> list[dict]:
@@ -710,6 +1268,19 @@ def batch_hk_full(codes: list[str]) -> dict:
 
 | 场景 | 第一优先 | 备选 |
 |------|---------|------|
+| A股行情 | 腾讯 sh/sz（47字段，不封IP） | 东财 push2 secid:0-1 |
+| A股日K线 | 腾讯（前复权，不封IP） | 百度（带MA）/ mootdx（多周期）|
+| A股资金流 | 东财 push2his | — |
+| A股融资融券/大宗/股东 | 东财 datacenter | — |
+| A股强势股/题材 | 同花顺 | — |
+| A股北向资金 | 东财 push2 ulist | — |
+| A股板块归属 | 东财 slist | — |
+| A股龙虎榜 | 东财 datacenter | — |
+| A股解禁预警 | 东财 datacenter | — |
+| A股行业排名 | 东财 push2 clist | — |
+| A股公告 | 巨潮 cninfo | — |
+| A股一致预期EPS | 同花顺 basic | — |
+| A股财务快照 | mootdx finance | 新浪三表 |
 | 港股行情 | 腾讯 r_hkXXXXX（78字段） | 新浪/东财 push2 |
 | 美股行情 | 新浪 gb_XXXX（36字段） | 腾讯/东财 push2 |
 | 美股K线 | 新浪 | Yahoo chart |

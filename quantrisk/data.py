@@ -1,12 +1,19 @@
 """
 quantrisk — 数据层（Data Layer）
 
-合并四层数据获取：client 会话管理 + quotes 行情 + kline K线 + fundamental 基本面。
-全部 aiohttp 异步，零鉴权。
+合并五层数据获取：client 会话管理 + quotes 行情 + kline K线 + fundamental 基本面 + TickFlow 备选。
+全部 aiohttp 异步，零鉴权（TickFlow 需 API Key）。
 
 用法:
     from quantrisk.data import hk_stock_quote_tencent_async, stock_kline_yahoo_async, key_statistics_async
+    from quantrisk.data import kline_tickflow_async  # 免费免注册，无需 API Key
     result = await hk_stock_quote_tencent_async("03690")
+
+数据源:
+    行情 (L1): 腾讯 > 新浪 > 东财 push2
+    K线 (L2): Yahoo > 腾讯(A股) > 新浪(美股) > TickFlow(备选)
+    基本面 (L4): 东财 datacenter > Yahoo
+    资金面 (L5): 东财 push2
 """
 import asyncio, aiohttp, json, re
 from datetime import datetime
@@ -76,9 +83,15 @@ async def _get_yahoo() -> tuple:
 
 async def yahoo_quote_summary(symbol: str, modules: list[str]) -> dict:
     s, crumb = await _get_yahoo()
-    async with s.get(f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
-                     params={"modules": ",".join(modules), "crumb": crumb}) as r:
-        return (await r.json()).get("quoteSummary", {}).get("result", [{}])[0]
+    try:
+        async with s.get(f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
+                         params={"modules": ",".join(modules), "crumb": crumb}) as r:
+            if r.status != 200:
+                return {}
+            js = await r.json()
+            return js.get("quoteSummary", {}).get("result", [{}])[0] or {}
+    except Exception:
+        return {}
 
 async def stock_search(keyword: str, count: int = 10) -> list[dict]:
     """东财股票搜索"""
@@ -140,10 +153,16 @@ async def hk_stock_quote_tencent_async(code: str) -> dict:
     f = m.group(1).split("~")
     if len(f)<50: return {}
     return {"name":f[1],"price":_sf(f[3]),"change_pct":_sf(f[32]),"pe":_sf(f[39]),
+            "pe_ttm":_sf(f[57]) if len(f)>57 else 0,
             "pb":_sf(f[56]),"market_cap_100m":_sf(f[44]),"high":_sf(f[33]),"low":_sf(f[34]),
             "open":_sf(f[5]),"prev_close":_sf(f[4]),"volume_shares":int(_sf(f[6])),
             "amount_100m":_sf(f[37]),"high_52w":_sf(f[35]),"low_52w":_sf(f[36]),
-            "amp":_sf(f[43]),"turnover_rate":_sf(f[38]),
+            "amp":_sf(f[43]),"turnover_rate":_sf(f[38]),"dividend_yield":_sf(f[31]) if len(f)>31 else 0,
+            "roe":_sf(f[64]) if len(f)>64 else 0,
+            "profit_margin":_sf(f[65]) if len(f)>65 else 0,
+            "revenue_growth":_sf(f[71]) if len(f)>71 else 0,
+            "gross_margin":_sf(f[72]) if len(f)>72 else 0,
+            "debt_ratio":_sf(f[74]) if len(f)>74 else 0,
             "timestamp":f[30] if len(f)>30 else ""}
 
 async def us_stock_quote_tencent_async(ticker: str) -> dict:
@@ -296,6 +315,136 @@ async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
              "ma20":float(i["ma"][2]) if i.get("ma") and len(i["ma"])>2 else None}
             for i in items]
 
+# ═════════════════════════════════════════════════
+# TickFlow K线（免费免注册，A股+港股+美股，前复权）
+# ═════════════════════════════════════════════════
+# 官方 SDK: pip install tickflow
+# 免费模式: TickFlow.free() — 无需 API Key，提供历史日K/周K/月K
+# 完整服务: tickflow.org 注册获取 key，提供实时行情+分钟级K线
+
+_kline_tickflow_session = None
+
+async def _get_tickflow() -> "AsyncTickFlow":
+    """懒初始化 TickFlow free session"""
+    global _kline_tickflow_session
+    if _kline_tickflow_session is None:
+        from tickflow import AsyncTickFlow
+        _kline_tickflow_session = await AsyncTickFlow.free().__aenter__()
+    return _kline_tickflow_session
+
+async def close_tickflow():
+    """关闭 TickFlow session"""
+    global _kline_tickflow_session
+    if _kline_tickflow_session is not None:
+        await _kline_tickflow_session.__aexit__(None, None, None)
+        _kline_tickflow_session = None
+
+async def kline_tickflow_async(symbol: str, period: str = "1d", count: int = 365,
+                               adjust: str = "forward") -> list[dict]:
+    """
+    TickFlow K线数据（免费免注册，无需 API Key）
+
+    使用官方 Python SDK 的 free 模式，自动处理认证和重试。
+    支持 A股、港股、美股的历史日K/周K/月K/季K/年K。
+
+    参数:
+        symbol:   标的代码，如 "600000.SH"、"03690.HK"、"AAPL.US"
+        period:   K线周期 1d/1w/1M/1Q/1Y（注意: free 模式不支持分钟级）
+        count:    返回条数，最大 10000
+        adjust:   复权方式 "forward"/"backward"/"forward_additive"/"backward_additive"/"none"
+                 默认 "forward" 前复权
+
+    返回: [{"date", "open", "high", "low", "close", "volume"}, ...]
+          格式与 stock_kline_yahoo_async / cn_stock_kline_tencent_async 一致
+
+    文档: https://docs.tickflow.org
+    """
+    try:
+        tf = await _get_tickflow()
+        df = await tf.klines.get(symbol, period=period, count=count,
+                                  adjust=adjust, as_dataframe=True)
+    except Exception as e:
+        print(f"[WARN] TickFlow K线失败({symbol}): {e}")
+        return []
+
+    if df is None or df.empty:
+        return []
+
+    result = []
+    for _, row in df.iterrows():
+        ts = row.get("timestamp", 0)
+        if not isinstance(ts, (int, float)):
+            continue
+        dt = datetime.fromtimestamp(ts / 1000)
+        result.append({
+            "date": dt.strftime("%Y-%m-%d" if period in ("1d","1w","1M","1Q","1Y") else "%Y-%m-%d %H:%M"),
+            "open": round(float(row.get("open", 0)), 2),
+            "high": round(float(row.get("high", 0)), 2),
+            "low": round(float(row.get("low", 0)), 2),
+            "close": round(float(row.get("close", 0)), 2),
+            "volume": int(row.get("volume", 0)),
+        })
+    return result
+
+
+async def kline_tickflow_batch_async(symbols: list[str], period: str = "1d", count: int = 365,
+                                      adjust: str = "forward") -> dict[str, list[dict]]:
+    """
+    TickFlow 批量K线（一次取多只标的，避免逐只触发频率限制）
+
+    free 模式有 60 次/分钟的限制，批量请求只计 1 次。
+
+    参数:
+        symbols: 标的代码列表，如 ["03690.HK", "00700.HK", "AAPL.US"]
+        period:  K线周期 1d/1w/1M/1Q/1Y
+        count:   返回条数，最大 10000
+        adjust:  复权方式
+
+    返回: {symbol: [{"date","open","high","low","close","volume"}, ...], ...}
+    """
+    try:
+        tf = await _get_tickflow()
+        raw = await tf.klines.batch(symbols, period=period, count=count, adjust=adjust)
+    except Exception as e:
+        print(f"[WARN] TickFlow 批量K线失败: {e}")
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    out: dict[str, list[dict]] = {}
+    for sym in symbols:
+        data = raw.get(sym)
+        if not isinstance(data, dict):
+            continue
+        timestamps = data.get("timestamp")
+        opens = data.get("open")
+        highs = data.get("high")
+        lows = data.get("low")
+        closes = data.get("close")
+        volumes = data.get("volume")
+        if not timestamps or not closes:
+            continue
+        n = min(len(timestamps), len(closes))
+        rows = []
+        for i in range(n):
+            ts = timestamps[i]
+            if not isinstance(ts, (int, float)):
+                continue
+            dt = datetime.fromtimestamp(ts / 1000)
+            rows.append({
+                "date": dt.strftime("%Y-%m-%d" if period in ("1d","1w","1M","1Q","1Y") else "%Y-%m-%d %H:%M"),
+                "open": round(float(opens[i]) if opens and i < len(opens) else 0, 2),
+                "high": round(float(highs[i]) if highs and i < len(highs) else 0, 2),
+                "low": round(float(lows[i]) if lows and i < len(lows) else 0, 2),
+                "close": round(float(closes[i]), 2),
+                "volume": int(volumes[i]) if volumes and i < len(volumes) else 0,
+            })
+        if rows:
+            out[sym] = rows
+    return out
+
+
 # mootdx A股K线（同步，TCP直连）
 try:
     from mootdx.quotes import Quotes as _MootdxQuotes; _MOOTDX_OK = True
@@ -342,12 +491,120 @@ def cn_financial_snapshot_sync(code:str) -> dict:
 
 # L4 — 基本面
 async def key_indicators_eastmoney_async(secucode:str, page_size:int=4) -> list[dict]:
-    """关键财务指标（东财 GMAININDICATOR）"""
+    """关键财务指标（东财 GMAININDICATOR）。港股/美股。东财没有银行保险数据的会返回空列表"""
     market = "hk" if secucode.endswith(".HK") else "us"
     return await eastmoney_datacenter(
         f"RPT_{'HK' if market=='hk' else 'US'}F10_FN_GMAININDICATOR",
         filter_str=f'(SECUCODE="{secucode}")', page_size=page_size,
         sort_columns="REPORT_DATE", sort_types="-1")
+
+async def hk_fundamentals_async(code: str) -> dict:
+    """
+    港股基本面统一入口（东财 → 腾讯78字段 → Yahoo统计 → Yahoo三表，四级fallback）
+
+    返回:
+        {"secucode": "03690.HK", "source": "eastmoney/tencent/yahoo", "latest": {...}, "error": None}
+    latest 包含 ROE/GROSS_PROFIT_RATIO/DEBT_ASSET_RATIO/PE/营收增速/净利增速 等字段
+    """
+    secucode = f"{code}.HK" if not code.endswith(".HK") else code
+    symbol = secucode.replace(".HK", "")
+
+    # 1️⃣ 东财（最详细，有营收/净利/ROE/毛利率/负债率等）
+    try:
+        data = await key_indicators_eastmoney_async(secucode)
+        if data and isinstance(data, list) and len(data) > 0:
+            return {"secucode": secucode, "source": "eastmoney", "latest": data[0],
+                    "history": data, "error": None}
+    except Exception:
+        pass
+
+    # 2️⃣ 腾讯78字段（覆盖所有港股，含银行保险，有PE/ROE/毛利率/净利率/营收增速）
+    try:
+        q = await hk_stock_quote_tencent_async(symbol)
+        if q and q.get("pe") and q["pe"] != 0:
+            return {"secucode": secucode, "source": "tencent",
+                    "latest": {
+                        "PE": q.get("pe"), "PE_TTM": q.get("pe_ttm"),
+                        "PB": q.get("pb"),
+                        "ROE": q.get("roe"),
+                        "GROSS_PROFIT_RATIO": q.get("gross_margin"),
+                        "NET_PROFIT_RATIO": q.get("profit_margin"),
+                        "OPERATE_INCOME_YOY": q.get("revenue_growth"),
+                        "DEBT_ASSET_RATIO": q.get("debt_ratio"),
+                        "DIVIDEND_YIELD": q.get("dividend_yield"),
+                        "MARKET_CAP": q.get("market_cap_100m"),
+                    }, "error": None}
+    except Exception:
+        pass
+
+    # 3️⃣ Yahoo keyStatistics
+    try:
+        ydata = await key_statistics_async(secucode)
+        if ydata and ydata.get("forward_pe") is not None:
+            return {"secucode": secucode, "source": "yahoo_stats",
+                    "latest": {"current_price": ydata.get("current_price"),
+                               "forward_pe": ydata.get("forward_pe"),
+                               "pb": ydata.get("price_to_book"),
+                               "roe": ydata.get("return_on_equity"),
+                               "revenue_growth": ydata.get("revenue_growth"),
+                               "earnings_growth": ydata.get("earnings_growth"),
+                               "total_revenue": ydata.get("total_revenue")},
+                    "error": None}
+    except Exception:
+        pass
+
+    # 4️⃣ Yahoo 三表计算
+    try:
+        fdata = await financial_statements_yahoo_async(secucode)
+    except Exception:
+        fdata = {}
+    if fdata and fdata.get("income"):
+        inc = fdata["income"][0] if fdata["income"] else {}
+        bal = fdata["balance"][0] if fdata.get("balance") else {}
+        rev = inc.get("totalRevenue", 0) or 0
+        ni = inc.get("netIncome", 0) or 0
+        gp = inc.get("grossProfit", 0) or 0
+        te = bal.get("totalStockholderEquity", 0) or 0
+        ta = bal.get("totalAssets", 0) or 0
+        td = bal.get("totalLiabilities", 0) or 0
+        return {"secucode": secucode, "source": "yahoo_financials",
+                "latest": {
+                    "OPERATE_INCOME": rev, "HOLDER_PROFIT": ni,
+                    "GROSS_PROFIT_RATIO": round(gp / rev * 100, 2) if rev else 0,
+                    "ROE": round(ni / te * 100, 2) if te else 0,
+                    "DEBT_ASSET_RATIO": round(td / ta * 100, 2) if ta else 0,
+                }, "error": None}
+
+    return {"secucode": secucode, "source": None, "latest": {},
+            "error": "所有数据源均失败"}
+    try:
+        fdata = await financial_statements_yahoo_async(secucode)
+    except Exception:
+        fdata = {}
+    if fdata and fdata.get("income"):
+        inc = fdata["income"][0] if fdata["income"] else {}
+        bal = fdata["balance"][0] if fdata.get("balance") else {}
+        rev = inc.get("totalRevenue", 0) or inc.get("TotalRevenue", 0) or 0
+        ni = inc.get("netIncome", 0) or inc.get("NetIncome", 0) or 0
+        gp = inc.get("grossProfit", 0) or inc.get("GrossProfit", 0) or 0
+        te = bal.get("totalStockholderEquity", 0) or bal.get("TotalStockholderEquity", 0) or 0
+        ta = bal.get("totalAssets", 0) or bal.get("TotalAssets", 0) or 0
+        td = bal.get("totalLiabilities", 0) or bal.get("TotalLiabilities", 0) or 0
+        return {"secucode": secucode, "source": "yahoo_financials",
+                "latest": {
+                    "OPERATE_INCOME": rev,
+                    "HOLDER_PROFIT": ni,
+                    "GROSS_PROFIT_RATIO": round(gp / rev * 100, 2) if rev else 0,
+                    "ROE": round(ni / te * 100, 2) if te else 0,
+                    "DEBT_ASSET_RATIO": round(td / ta * 100, 2) if ta else 0,
+                    "NET_PROFIT_RATIO": round(ni / rev * 100, 2) if rev else 0,
+                    "total_revenue": rev, "net_income": ni,
+                    "total_equity": te, "total_assets": ta,
+                },
+                "error": None}
+
+    return {"secucode": secucode, "source": None, "latest": {},
+            "error": "所有数据源均失败"}
 
 async def financial_statements_eastmoney_async(secucode:str, statement:str="balance", page_size:int=200) -> list[dict]:
     """财报三表（东财 datacenter）"""

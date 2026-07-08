@@ -5,8 +5,9 @@ import asyncio
 from typing import Optional
 
 from .data import (
-    close_async_session, hk_stock_quote_tencent_async, hk_stock_quote_sina_async,
+    close_async_session, close_tickflow, hk_stock_quote_tencent_async, hk_stock_quote_sina_async,
     stock_kline_yahoo_async, key_statistics_async, key_indicators_eastmoney_async,
+    kline_tickflow_async,
 )
 from .indicators import (
     calc_ma, calc_macd, calc_rsi, calc_kdj, calc_boll,
@@ -58,7 +59,11 @@ class StockAnalyzer:
 
         ind = indicators[0] if isinstance(indicators, list) and indicators else {}
 
-        # 技术指标
+        # 技术指标 — Yahoo K线不足时用 TickFlow 备选
+        if not klines or len(klines) < 20:
+            tickflow_klines = await kline_tickflow_async(f"{code}.HK", "1d", 365)
+            if tickflow_klines and len(tickflow_klines) >= 20:
+                klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)
 
         return {
@@ -93,6 +98,12 @@ class StockAnalyzer:
         if isinstance(blocks, BaseException): blocks = {}
         if isinstance(basic, BaseException): basic = {}
 
+        # 腾讯K线不足时用 TickFlow 备选
+        if not klines or len(klines) < 20:
+            tf_code = f"{code}.SH" if code.startswith(("6","9")) else f"{code}.SZ"
+            tickflow_klines = await kline_tickflow_async(tf_code, "1d", 365)
+            if tickflow_klines and len(tickflow_klines) >= 20:
+                klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)
 
         return {
@@ -131,6 +142,11 @@ class StockAnalyzer:
         if not quote.get("price") and isinstance(qt_sina, dict):
             quote["price"] = qt_sina.get("price", 0)
 
+        # 美股K线不足时用 TickFlow 备选
+        if not klines or len(klines) < 20:
+            tickflow_klines = await kline_tickflow_async(f"{ticker.upper()}.US", "1d", 365)
+            if tickflow_klines and len(tickflow_klines) >= 20:
+                klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)
 
         return {
@@ -196,6 +212,7 @@ class StockAnalyzer:
 
     async def close(self):
         await close_async_session()
+        await close_tickflow()
 
 
 # ── 便捷函数 ──

@@ -1,0 +1,14 @@
+{
+  "updatedAt": "2026-07-08T18:47:00.000Z",
+  "command": "update",
+  "gitHead": "4a1ae4c1182a20d9203a0d833eeccba327cd2cd4",
+  "changes": [
+    "TickFlow K-line integration in data.py (+130 lines) and report.py (active fallback for all 3 markets)",
+    "HK quote expanded financial fields: pe_ttm, roe, profit_margin, revenue_growth, gross_margin, debt_ratio, dividend_yield from Tencent 78-field API",
+    "HK fundamentals 4-tier fallback chain documented",
+    "Mandatory stock recommendation 3-step workflow in SKILL.md with output template",
+    "CLAUDE.md line counts updated, design decisions added",
+    "All openwiki pages updated to reflect above changes"
+  ],
+  "model": "deepseek-v4-flash"
+}

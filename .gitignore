@@ -1,3 +1,12 @@
-# 临时文件不提交
-*.py
+# 缓存/构建文件
+__pycache__/
+*.egg-info/
+.ok/
+
+# 编辑器/系统文件
+.DS_Store
+*.swp
+*.swo
+
+# 设计文档（非项目文件）
 design.md

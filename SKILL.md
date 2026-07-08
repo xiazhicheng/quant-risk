@@ -1,13 +1,13 @@
 ---
 name: quant-risk
-description: 【全生命周期风控】美股+港股+A股数据+风控分析 — 覆盖投前审查/持仓监控/预警/处置四阶段。基于行情、K线、基本面、资金面、期权、SEC等八层数据源，输出风险等级、风控结论、建议仓位上限、预警阈值、止损止盈条件。适用于事前审查、持续监控、警报触发、处置决策。
+description: 【全生命周期风控+标的池筛选】美股+港股+A股数据+风控分析 — 三层标的池筛选（宏观全市场扫描→中观硬约束过滤→微观三维评分），覆盖投前审查/持仓监控/预警/处置四阶段。集成缠论（Chan Theory）分型/笔/线段/中枢/背驰/买卖点。基于行情、K线、基本面、资金面、期权、SEC等数据源，输出风险等级、风控结论、建议仓位上限、预警阈值、止损止盈条件。
 origin: custom
-version: 1.1.0
+version: 1.2.0
 ---
 > 📦 https://github.com/xiazhicheng/quant-risk — Star ⭐ 是最好的支持
-# 美股+A股+港股全栈数据工具包 V1.1.0（全异步）
+# 美股+A股+港股全栈数据工具包 V1.2.0（全异步）
 
-十层数据架构，全部异步并行获取，零鉴权。
+十一层数据架构，全部异步并行获取，零鉴权。
 
 ```
 行情层（实时/延时）
@@ -24,6 +24,8 @@ K线层（日/周/月/分钟）
 └── mootdx        → A股多周期(分钟/日/周/月)
 
 技术指标层：MA/EMA + MACD + RSI + KDJ + 布林带（纯Python）
+
+缠论层：分型 → 包含处理 → 笔 → 线段 → 中枢 → 背驰 → 买卖点（纯Python）
 
 基本面层
 ├── 东财 datacenter → 三表+GMAININDICATOR关键指标(中/英/港)
@@ -56,7 +58,7 @@ SEC Filing层：EDGAR submissions + XBRL（仅美股）
 - 用户要**预警触发**（价格接近止损/业绩暴雷/基本面恶化）
 - 用户要**处置建议**（清仓/减仓/持有/加仓）
 - 用户要查**美股/港股/A股**行情/财报/指标/资金流/龙虎榜/北向/公告/调研
-- 关键词：全生命周期风控、投前、持仓、预警、处置、风控审查、风险等级、仓位上限、买入、持有、观望、回避、止损、止盈、PE、PB、ROE、美股、港股、**A股**、**沪深**、**上证**、**深证**、**创业板**、**科创板**、**北交所**、**打板**、**涨停**、**龙虎榜**、**北向资金**、**融资融券**、**大宗交易**、财报、技术分析
+- 关键词：全生命周期风控、投前、持仓、预警、处置、风控审查、风险等级、仓位上限、买入、持有、观望、回避、止损、止盈、PE、PB、ROE、美股、港股、**A股**、**沪深**、**上证**、**深证**、**创业板**、**科创板**、**北交所**、**打板**、**涨停**、**龙虎榜**、**北向资金**、**融资融券**、**大宗交易**、财报、技术分析、**缠论**、**分型**、**笔**、**线段**、**中枢**、**背驰**、**一买**、**二买**、**三买**、**一卖**、**二卖**、**三卖**、**顶分型**、**底分型**、**选股**、**推荐**、**标的**、**标的池**、**筛选**、**三维评分**、**宏观筛选**、**中观过滤**
 
 ---
 
@@ -72,6 +74,19 @@ pip install mootdx
 |------|---------|------|
 | aiohttp | any | 所有 HTTP API 直连（全异步）|
 | mootdx | >=0.10 | A 股多周期 K 线 + 财务快照（可选）|
+
+## Install / Update
+
+一键安装或更新本 skill：
+
+```bash
+curl -o ~/.claude/skills/quant-risk/SKILL.md \
+  https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/SKILL.md
+# 同步缠论模块
+curl -o ~/.claude/skills/quant-risk/quantrisk/chan.py \
+  https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/quantrisk/chan.py
+mkdir -p ~/.claude/skills/quant-risk/quantrisk
+```
 
 ## 核心原则
 
@@ -640,6 +655,626 @@ def calc_boll(klines: list[dict], period: int = 20, num_std: float = 2.0) -> lis
                        "upper": round(up, 4), "middle": round(ma, 4), "lower": round(lo, 4),
                        "bandwidth": round((up-lo)/ma*100, 2) if ma else None})
     return result
+```
+
+---
+
+## Layer 3.5: 缠论层（Chan Theory — 纯 Python 计算）
+
+缠论（缠中说禅理论）是国内技术分析领域最系统的理论框架之一。本层实现核心组件：分型 → 包含处理 → 笔 → 线段 → 中枢 → 背驰 → 买卖点。
+
+### 理论基础
+
+```
+K线包含处理 → 顶/底分型 → 笔（相邻分型连接） → 线段（笔的包含处理）
+                                                    ↓
+                        中枢（≥3段重叠区间）←─────────┘
+                                                    ↓
+                 趋势/盘整判断 → 背驰检测（力度/MACD） → 一/二/三类买卖点
+```
+
+- **分型 (Fractal)**：三根K线构成，中间最高→顶分型，中间最低→底分型。分型必须经过包含处理，顶分型最高K线的低点是分型下沿，底分型最低K线的高点是分型上沿。
+- **笔 (Stroke/Pen)**：相邻顶底分型连线。上升笔 = 底分型 → 顶分型；下降笔 = 顶分型 → 底分型。标准笔要求至少 5 根独立K线且中间K线与首尾没有包含关系。
+- **线段 (Segment)**：笔按严格规则进行特征序列包含处理后构成。不小于三笔且前三笔必须有重叠。
+- **中枢 (Pivot/Zhongshu)**：至少三段连续重叠的区间。中枢区间 = [max(所有段低点), min(所有段高点)]。本级别中枢是次级别走势类型的重叠。
+- **背驰 (Divergence)**：趋势力度衰竭。MACD 背驰 = 价格新高/新低但 MACD 柱面积缩小；力度背驰 = 后一段力度小于前一段。
+- **买卖点**：一买 = 下跌趋势最后一个中枢后底背驰的终结点；一卖 = 上涨趋势最后一个中枢后顶背驰的终结点。二买/二卖 = 一买/一卖后的回调/反弹不创新低/新高。三买/三卖 = 中枢突破后的回踩/反弹不进入中枢。
+
+### 3.5.1 K线包含处理
+
+```python
+def kline_contain(klines: list[dict]) -> list[dict]:
+    """
+    K线包含处理：向上的K线取高高（high 取 max, low 取 max），
+    向下的K线取低低（high 取 min, low 取 min）。
+    处理后相邻K线不再存在包含关系。
+    """
+    if len(klines) < 3:
+        return klines
+    result = [dict(klines[0])]
+    for i in range(1, len(klines)):
+        curr = dict(klines[i])
+        prev = result[-1]
+        # 判断包含方向：用倒数第二根非包含K线或 prev 之前的K线
+        if len(result) >= 2:
+            direction = "up" if result[-1]["high"] > result[-2]["high"] else "down"
+        else:
+            direction = "up" if curr["high"] > prev["high"] else "down"
+        # 检测包含关系
+        if (curr["high"] >= prev["high"] and curr["low"] <= prev["low"]) or \
+           (curr["high"] <= prev["high"] and curr["low"] >= prev["low"]):
+            if direction == "up":
+                # 向上：高高 (取 high max, low max)
+                merged = dict(prev)
+                merged["high"] = max(prev["high"], curr["high"])
+                merged["low"] = max(prev["low"], curr["low"])
+                # 取接近当前的方向
+                merged["close"] = curr["close"] if curr["close"] > prev["close"] else prev["close"]
+                merged["volume"] = prev.get("volume", 0) + curr.get("volume", 0)
+                result[-1] = merged
+            else:
+                # 向下：低低 (取 high min, low min)
+                merged = dict(prev)
+                merged["high"] = min(prev["high"], curr["high"])
+                merged["low"] = min(prev["low"], curr["low"])
+                merged["close"] = curr["close"] if curr["close"] < prev["close"] else prev["close"]
+                merged["volume"] = prev.get("volume", 0) + curr.get("volume", 0)
+                result[-1] = merged
+        else:
+            result.append(curr)
+    return result
+```
+
+### 3.5.2 分型识别
+
+```python
+def find_fractals(klines: list[dict]) -> list[dict]:
+    """
+    识别顶分型和底分型。在包含处理后的K线中，i 位置的最高价 > i-1 和 i+1 的最高价 → 顶分型；
+    i 位置的最低价 < i-1 和 i+1 的最低价 → 底分型。
+    返回 [{index, type("top"/"bottom"), high, low, date}, ...]
+    """
+    if len(klines) < 3:
+        return []
+    processed = kline_contain(klines)
+    fractals = []
+    for i in range(1, len(processed) - 1):
+        prev_k, cur_k, next_k = processed[i - 1], processed[i], processed[i + 1]
+        # 顶分型：中间最高价最高，且左右K线的高点都低于中间，低点也低于或等于中间
+        if cur_k["high"] > prev_k["high"] and cur_k["high"] > next_k["high"]:
+            fractals.append({
+                "index": i,
+                "type": "top",
+                "high": cur_k["high"],
+                "low": cur_k["low"],
+                "date": cur_k["date"],
+            })
+        # 底分型：中间最低价最低，且左右K线的低点都高于中间，高点也高于或等于中间
+        elif cur_k["low"] < prev_k["low"] and cur_k["low"] < next_k["low"]:
+            fractals.append({
+                "index": i,
+                "type": "bottom",
+                "high": cur_k["high"],
+                "low": cur_k["low"],
+                "date": cur_k["date"],
+            })
+    return fractals
+```
+
+### 3.5.3 笔的构建
+
+```python
+def build_strokes(klines: list[dict], fractals: list[dict] = None) -> list[dict]:
+    """
+    从分型序列构建笔。原则：
+    1. 相邻分型必须一个顶一个底交替出现
+    2. 同方向选择最极端的（顶选更高的，底选更低的）
+    3. 一笔至少包含 5 根独立K线，且分型之间至少有 1 根独立K线
+    返回 [{type, start_index, end_index, start_date, end_date, high, low, direction}, ...]
+    """
+    if fractals is None:
+        fractals = find_fractals(klines)
+    if len(fractals) < 2:
+        return []
+    # 去重：同向分型取最极端包络
+    filtered = [fractals[0]]
+    for f in fractals[1:]:
+        last = filtered[-1]
+        if f["type"] == last["type"]:
+            if f["type"] == "top" and f["high"] > last["high"]:
+                filtered[-1] = f  # 更高的顶替换
+            elif f["type"] == "bottom" and f["low"] < last["low"]:
+                filtered[-1] = f  # 更低的底替换
+        else:
+            filtered.append(f)
+    # 确保第一个是底分型（上升笔从底开始）或第一个是顶分型（下降笔从顶开始）
+    strokes = []
+    i = 0
+    if filtered[0]["type"] == "top":
+        i = 0
+    else:
+        i = 0
+    while i < len(filtered) - 1:
+        a, b = filtered[i], filtered[i + 1]
+        # 必须是顶→底 或 底→顶
+        if a["type"] == b["type"]:
+            i += 1
+            continue
+        # 要求分型之间有足够距离（至少 1 根独立K线，总跨度≥5根）
+        span = b["index"] - a["index"]
+        if span < 4:  # 间隔不足，跳过较弱的分型
+            if i + 2 < len(filtered):
+                # 比较：a-b-c，如果 a-c 距离足够则跳过一个
+                c = filtered[i + 2]
+                if c["type"] != a["type"] and (c["index"] - a["index"]) >= 4:
+                    i += 1
+                    continue
+            i += 1
+            continue
+        # 顶→底 = 下降笔，底→顶 = 上升笔
+        direction = "down" if a["type"] == "top" else "up"
+        stroke = {
+            "type": a["type"],
+            "start_index": a["index"],
+            "end_index": b["index"],
+            "start_date": a["date"],
+            "end_date": b["date"],
+            "high": max(a["high"], b["high"]),
+            "low": min(a["low"], b["low"]),
+            "direction": direction,
+        }
+        strokes.append(stroke)
+        i += 1
+    return strokes
+```
+
+### 3.5.4 线段构建
+
+```python
+def build_segments(klines: list[dict], strokes: list[dict] = None) -> list[dict]:
+    """
+    从笔构建线段。线段 = 至少 3 笔（且前三笔有重叠）的走势。
+    特征序列包含处理：上升线段取向下笔的特征序列；下降线段取向上笔的特征序列。
+    简化实现：识别能构成至少 3 笔重叠的连续走势。
+    返回 [{type, start_index, end_index, start_date, end_date, high, low, stroke_count}, ...]
+    """
+    if strokes is None:
+        strokes = build_strokes(klines)
+    if len(strokes) < 3:
+        return []
+    segments = []
+    i = 0
+    while i <= len(strokes) - 3:
+        s1, s2, s3 = strokes[i], strokes[i + 1], strokes[i + 2]
+        # 三笔必须交替方向
+        if s1["direction"] == s2["direction"] or s2["direction"] == s3["direction"]:
+            i += 1
+            continue
+        # 前三笔必须有重叠区间
+        overlap_high = min(s1["high"], s2["high"], s3["high"])
+        overlap_low = max(s1["low"], s2["low"], s3["low"])
+        if overlap_high <= overlap_low:
+            i += 1
+            continue
+        # 向后延伸
+        j = i + 3
+        while j < len(strokes):
+            next_s = strokes[j]
+            new_high = min(overlap_high, next_s["high"])
+            new_low = max(overlap_low, next_s["low"])
+            if new_high <= new_low:
+                # 不再重叠，停止延伸
+                break
+            overlap_high, overlap_low = new_high, new_low
+            j += 1
+        # 确定线段方向：以第一笔的方向为准
+        seg_direction = s1["direction"]
+        first = strokes[i]["type"]
+        seg = {
+            "start_index": strokes[i]["start_index"],
+            "end_index": strokes[j - 1]["end_index"],
+            "start_date": strokes[i]["start_date"],
+            "end_date": strokes[j - 1]["end_date"],
+            "high": max(s["high"] for s in strokes[i:j]),
+            "low": min(s["low"] for s in strokes[i:j]),
+            "stroke_count": j - i,
+            "direction": seg_direction,
+        }
+        segments.append(seg)
+        i = j  # 跳到下一段
+    return segments
+```
+
+### 3.5.5 中枢识别
+
+```python
+def find_pivots(segments: list[dict], min_overlap: int = 3) -> list[dict]:
+    """
+    从线段中识别中枢（至少 min_overlap 段重叠）。
+    带回溯的滑动窗口：从1个候选段开始逐步扩大，找到最长的重叠区间。
+    返回 [{start_index, end_index, high, low, segment_count, zg(中轴), zd(中枢下沿), zz(中枢区间宽度)}, ...]
+    """
+    if len(segments) < min_overlap:
+        return []
+    pivots = []
+    i = 0
+    while i <= len(segments) - min_overlap:
+        hi = segments[i]["high"]
+        lo = segments[i]["low"]
+        count = 1
+        j = i + 1
+        while j < len(segments):
+            new_hi = min(hi, segments[j]["high"])
+            new_lo = max(lo, segments[j]["low"])
+            if new_hi <= new_lo:
+                break
+            hi, lo = new_hi, new_lo
+            count += 1
+            j += 1
+        if count >= min_overlap:
+            pivots.append({
+                "start_index": segments[i]["start_index"],
+                "end_index": segments[j - 1]["end_index"],
+                "start_date": segments[i]["start_date"],
+                "end_date": segments[j - 1]["end_date"],
+                "high": hi,
+                "low": lo,
+                "segment_count": count,
+                "zg": hi,  # 中枢上沿
+                "zd": lo,  # 中枢下沿
+                "zz_width": round(hi - lo, 4),  # 中枢区间宽度
+            })
+            i = j
+        else:
+            i += 1
+    return pivots
+```
+
+### 3.5.6 趋势类型判别
+
+```python
+def classify_trend(pivots: list[dict], segments: list[dict]) -> dict:
+    """
+    根据中枢数量识别走势类型：
+    - 0 中枢 → 单边走势
+    - 1 中枢 → 盘整
+    - ≥2 中枢 → 趋势（2 个=标准趋势，多于 2=大趋势）
+    返回 {type("uptrend"/"downtrend"/"consolidation"), pivot_count, direction, description}
+    """
+    if not pivots:
+        # 无中枢：用线段方向判断单边
+        if segments:
+            up_count = sum(1 for s in segments if s["direction"] == "up")
+            down_count = len(segments) - up_count
+            if up_count > down_count:
+                return {"type": "uptrend", "pivot_count": 0, "direction": "up", "description": "无中枢单边上涨"}
+            else:
+                return {"type": "downtrend", "pivot_count": 0, "direction": "down", "description": "无中枢单边下跌"}
+        return {"type": "unknown", "pivot_count": 0, "direction": "neutral", "description": "无足夠数据判断"}
+    # 有中枢：判断整体方向
+    if len(pivots) == 1:
+        # 单中枢 = 盘整
+        direction = "up" if segments and segments[-1]["direction"] == "up" else "down"
+        return {"type": "consolidation", "pivot_count": 1, "direction": direction,
+                "description": f"单中枢盘整（{'偏多' if direction=='up' else '偏空'}）"}
+    # 多中枢 = 趋势
+    first_pz = pivots[0]
+    last_pz = pivots[-1]
+    is_up = last_pz["high"] > first_pz["high"] and last_pz["low"] > first_pz["low"]
+    if is_up:
+        return {"type": "uptrend", "pivot_count": len(pivots),
+                "direction": "up", "description": f"上涨趋势，含 {len(pivots)} 个中枢"}
+    else:
+        return {"type": "downtrend", "pivot_count": len(pivots),
+                "direction": "down", "description": f"下跌趋势，含 {len(pivots)} 个中枢"}
+```
+
+### 3.5.7 背驰检测（MACD 背驰 + 力度背驰）
+
+```python
+def detect_divergence(klines: list[dict], segments: list[dict] = None,
+                      strokes: list[dict] = None) -> list[dict]:
+    """
+    检测背驰：价格新高/新低，但 MACD 面积缩小 或 力度衰减。
+    比较相邻两段同向走势：二段价格幅度 > 一段，但 MACD 面积 < 一段 → 背驰。
+    返回 [{type("top_divergence"/"bottom_divergence"), date, severity("strong"/"weak"), detail}, ...]
+    """
+    if segments is None:
+        segments = build_segments(klines)
+    if not segments or len(segments) < 2:
+        return []
+    # 计算 MACD 数据（复用 Layer 3 的 calc_macd）
+    macd_data = calc_macd(klines)
+    if not macd_data:
+        return []
+    # 建立 K 线日期到 MACD 的映射
+    macd_map = {m["date"]: m for m in macd_data}
+    # 按 MACD 日期顺序构建索引
+    macd_dates = [m["date"] for m in macd_data]
+    divergences = []
+    # 比较相邻同向走势
+    for i in range(len(segments) - 1):
+        s1, s2 = segments[i], segments[i + 1]
+        if s1["direction"] != s2["direction"]:
+            continue
+        # 获取两段的起止日期
+        s1_start_dt = s1["start_date"]
+        s1_end_dt = s1["end_date"]
+        s2_start_dt = s2["start_date"]
+        s2_end_dt = s2["end_date"]
+        # 计算价格幅度
+        if s1["direction"] == "up":
+            s1_range = s1["high"] - s1["low"]
+            s2_range = s2["high"] - s2["low"]
+        else:
+            s1_range = s1["high"] - s1["low"]
+            s2_range = s2["high"] - s2["low"]
+        # 计算 MACD 柱面积（绝对值求和）
+        def macd_area(start_date: str, end_date: str) -> float:
+            area = 0.0
+            in_range = False
+            for d in macd_dates:
+                if d >= start_date:
+                    in_range = True
+                if in_range:
+                    if d > end_date:
+                        break
+                    m = macd_map.get(d, {})
+                    hist = abs(m.get("macd_hist", 0))
+                    area += hist
+            return area
+        s1_area = macd_area(s1_start_dt, s1_end_dt)
+        s2_area = macd_area(s2_start_dt, s2_end_dt)
+        # 力度比较
+        if s1["direction"] == "up":
+            # 顶背驰：价格新高但 MACD 面积缩小
+            price_higher = s2["high"] > s1["high"]
+            macd_weaker = s2_area < s1_area * 0.85  # 15% 阈值
+            if price_higher and macd_weaker:
+                severity = "strong" if s2_area < s1_area * 0.5 else "weak"
+                divergences.append({
+                    "type": "top_divergence",
+                    "date": s2["end_date"],
+                    "segment_1_range": round(s1_range, 2),
+                    "segment_2_range": round(s2_range, 2),
+                    "segment_1_macd_area": round(s1_area, 2),
+                    "segment_2_macd_area": round(s2_area, 2),
+                    "severity": severity,
+                    "detail": f"顶背驰：{'强' if severity=='strong' else '弱'}，MACD 面积从 {s1_area:.1f} 衰减至 {s2_area:.1f}",
+                })
+        else:
+            # 底背驰：价格新低但 MACD 面积缩小
+            price_lower = s2["low"] < s1["low"]
+            macd_weaker = s2_area < s1_area * 0.85
+            if price_lower and macd_weaker:
+                severity = "strong" if s2_area < s1_area * 0.5 else "weak"
+                divergences.append({
+                    "type": "bottom_divergence",
+                    "date": s2["end_date"],
+                    "segment_1_range": round(s1_range, 2),
+                    "segment_2_range": round(s2_range, 2),
+                    "segment_1_macd_area": round(s1_area, 2),
+                    "segment_2_macd_area": round(s2_area, 2),
+                    "severity": severity,
+                    "detail": f"底背驰：{'强' if severity=='strong' else '弱'}，MACD 面积从 {s1_area:.1f} 衰减至 {s2_area:.1f}",
+                })
+    return divergences
+```
+
+### 3.5.8 买卖点定位
+
+```python
+def find_buy_sell_points(klines: list[dict], pivots: list[dict] = None,
+                          segments: list[dict] = None,
+                          divergences: list[dict] = None) -> dict:
+    """
+    根据缠论三类买卖点定义定位买卖点：
+    一买：最后一个中枢后，底背驰终结点（下跌趋势结束点）
+    一卖：最后一个中枢后，顶背驰终结点（上涨趋势结束点）
+    二买：一买后回调不创新低的点（确认）
+    二卖：一卖后反弹不创新高的点（确认）
+    三买：中枢上沿突破后，回踩不跌入中枢的点
+    三卖：中枢下沿跌破后，反弹不回到中枢的点
+    
+    简化实现：基于背驰定位一买/一卖，基于回调比例和中枢位置定位二/三买卖点。
+    """
+    if segments is None:
+        segments = build_segments(klines)
+    if pivots is None:
+        pivots = find_pivots(segments)
+    if divergences is None:
+        divergences = detect_divergence(klines, segments)
+    result = {"buy_points": [], "sell_points": []}
+    if not klines or len(klines) < 10:
+        return result
+    last_price = klines[-1]["close"]
+    # ── 一买定位：底背驰的终结点 ──
+    for d in divergences:
+        if d["type"] == "bottom_divergence":
+            result["buy_points"].append({
+                "type": "first_buy",
+                "date": d["date"],
+                "level": "strong" if d["severity"] == "strong" else "weak",
+                "price": last_price,
+                "detail": f"一买（{d['detail']}）",
+            })
+    # ── 一卖定位：顶背驰的终结点 ──
+    for d in divergences:
+        if d["type"] == "top_divergence":
+            result["sell_points"].append({
+                "type": "first_sell",
+                "date": d["date"],
+                "level": "strong" if d["severity"] == "strong" else "weak",
+                "price": last_price,
+                "detail": f"一卖（{d['detail']}）",
+            })
+    # ── 二买/二卖定位：基于一买/一卖后的回调 ──
+    if pivots and segments:
+        last_pivot = pivots[-1]
+        # 二买：价格位于最后一个中枢上方附近但不属于中枢内部 → 偏多方
+        if last_price > last_pivot["zg"]:
+            # 价格在中枢上方 → 潜在的三买（当前简化：仍按二买逻辑）
+            result["buy_points"].append({
+                "type": "third_buy",
+                "date": klines[-1]["date"],
+                "level": "potential",
+                "price": last_price,
+                "detail": f"价格 {last_price} 位于中枢上方 {last_pivot['zg']}，回踩不入中枢则构成三买",
+            })
+        elif last_pivot["zd"] <= last_price <= last_pivot["zg"]:
+            # 价格在中枢内 → 盘整，当前不构成买卖点
+            pass
+        else:
+            # 价格在中枢下方 → 若未背驰则观望；若已背驰则为一买区域
+            # 一买后的二次确认回调
+            if result["buy_points"]:
+                first_buy_price = result["buy_points"][0].get("price", last_price)
+                if last_price <= first_buy_price * 1.03:  # 回调 3% 内
+                    result["buy_points"].append({
+                        "type": "second_buy",
+                        "date": klines[-1]["date"],
+                        "level": "potential",
+                        "price": last_price,
+                        "detail": f"二买试探：一买后回调不创新低，当前 {last_price}",
+                    })
+    # ── 三买/三卖：中枢突破回踩 ──
+    if pivots and segments:
+        last_pivot = pivots[-1]
+        if len(segments) >= 3:
+            # 三卖：价格持续低于中枢下沿
+            if last_price < last_pivot["zd"]:
+                result["sell_points"].append({
+                    "type": "third_sell",
+                    "date": klines[-1]["date"],
+                    "level": "potential",
+                    "price": last_price,
+                    "detail": f"三卖警示：价格 {last_price} 跌破中枢下沿 {last_pivot['zd']}，反弹不回中枢则确认三卖",
+                })
+    return result
+```
+
+### 3.5.9 全功能一键计算
+
+```python
+def chan_theory_full(klines: list[dict], min_stroke_span: int = 4) -> dict:
+    """
+    缠论全流程计算：包含处理 → 分型 → 笔 → 线段 → 中枢 → 背驰 → 买卖点。
+    返回完整结构供缠论分析。
+    """
+    if not klines or len(klines) < 10:
+        return {"error": "K线数据不足（至少 10 根）"}
+    klines_clean = kline_contain(klines)
+    fractals = find_fractals(klines)
+    strokes = build_strokes(klines, fractals)
+    segments = build_segments(klines, strokes)
+    pivots = find_pivots(segments)
+    divergences = detect_divergence(klines, segments, strokes)
+    buy_sell = find_buy_sell_points(klines, pivots, segments, divergences)
+    trend = classify_trend(pivots, segments)
+    return {
+        "klines_count": len(klines),
+        "klines_clean_count": len(klines_clean),
+        "fractals_count": len(fractals),
+        "fractals": fractals,
+        "strokes_count": len(strokes),
+        "strokes": strokes,
+        "segments_count": len(segments),
+        "segments": segments,
+        "pivots_count": len(pivots),
+        "pivots": pivots,
+        "divergences_count": len(divergences),
+        "divergences": divergences,
+        "buy_sell_points": buy_sell,
+        "trend": trend,
+        "current_price": klines[-1]["close"] if klines else None,
+    }
+```
+
+### 3.5.10 缠论风控集成
+
+```python
+def chan_risk_assessment(klines: list[dict]) -> dict:
+    """
+    基于缠论输出风控评估结论：
+    - 当前走势类型（单边/盘整/趋势）
+    - 是否有背驰信号（顶/底背驰及强度）
+    - 当前处于哪类买卖点区域
+    - 最近中枢位置（上方/内部/下方）
+    """
+    result = chan_theory_full(klines)
+    if "error" in result:
+        return result
+    trend = result["trend"]
+    pivots = result["pivots"]
+    divergences = result["divergences"]
+    buy_sell = result["buy_sell_points"]
+    price = result["current_price"]
+    # 判断当前相对于中枢的位置
+    relative_position = "unknown"
+    distance_to_pivot = None
+    if pivots:
+        last_pz = pivots[-1]
+        if price > last_pz["zg"]:
+            relative_position = "above_pivot"
+            distance_to_pivot = round((price - last_pz["zg"]) / last_pz["zg"] * 100, 2)
+        elif price < last_pz["zd"]:
+            relative_position = "below_pivot"
+            distance_to_pivot = round((price - last_pz["zd"]) / last_pz["zd"] * 100, 2)
+        else:
+            relative_position = "within_pivot"
+            distance_to_pivot = 0.0
+    # 风控信号
+    risk_signals = []
+    # 背驰信号
+    for d in divergences:
+        if d["type"] == "top_divergence":
+            risk_signals.append({"signal": "bearish_divergence", "severity": d["severity"], "detail": d["detail"]})
+        elif d["type"] == "bottom_divergence":
+            risk_signals.append({"signal": "bullish_divergence", "severity": d["severity"], "detail": d["detail"]})
+    # 买卖点信号
+    if buy_sell.get("buy_points"):
+        for bp in buy_sell["buy_points"]:
+            risk_signals.append({"signal": f"{bp['type']}", "severity": bp.get("level", "potential"), "detail": bp["detail"]})
+    if buy_sell.get("sell_points"):
+        for sp in buy_sell["sell_points"]:
+            risk_signals.append({"signal": f"{sp['type']}", "severity": sp.get("level", "potential"), "detail": sp["detail"]})
+    # 中枢位置信号
+    if relative_position == "above_pivot":
+        risk_signals.append({"signal": "above_pivot", "severity": "bullish", "detail": f"价格位于中枢上方 {distance_to_pivot}%，偏强"})
+    elif relative_position == "below_pivot":
+        risk_signals.append({"signal": "below_pivot", "severity": "bearish", "detail": f"价格位于中枢下方 {distance_to_pivot}%，偏弱"})
+    else:
+        risk_signals.append({"signal": "within_pivot", "severity": "neutral", "detail": "价格在中枢内震荡，等待方向选择"})
+    # 综合评分（简化：正=偏多，负=偏空）
+    score = 0
+    if trend["direction"] == "up":
+        score += 2
+    elif trend["direction"] == "down":
+        score -= 2
+    if relative_position == "above_pivot":
+        score += 1
+    elif relative_position == "below_pivot":
+        score -= 1
+    bull_div = sum(1 for d in divergences if d["type"] == "bottom_divergence")
+    bear_div = sum(1 for d in divergences if d["type"] == "top_divergence")
+    score += bull_div * 3 - bear_div * 3
+    if score >= 3:
+        chan_verdict = "偏多"
+    elif score <= -3:
+        chan_verdict = "偏空"
+    else:
+        chan_verdict = "中性"
+    return {
+        "trend": trend,
+        "relative_position": relative_position,
+        "distance_to_pivot_pct": distance_to_pivot,
+        "risk_signals": risk_signals,
+        "chan_score": score,
+        "chan_verdict": chan_verdict,
+        "pivots": pivots,
+        "divergences": divergences,
+        "buy_sell_points": buy_sell,
+    }
 ```
 
 ---
@@ -1290,6 +1925,8 @@ def batch_hk_full(codes: list[str]) -> dict:
 | 财报三表(中文) | 东财 datacenter | — |
 | 分析师/机构 | Yahoo quoteSummary | — |
 | 资金流 | 东财 push2his | — |
+| 技术指标(MA/MACD/RSI/KDJ/BOLL) | 纯 Python 计算（Layer 3） | — |
+| 缠论(分型/笔/线段/中枢/背驰) | 纯 Python 计算（Layer 3.5, 基于K线） | — |
 | 期权链(仅美股) | Yahoo options | — |
 | SEC Filing | EDGAR | — |
 | 搜索 | 东财 search | Yahoo search |
@@ -1356,6 +1993,153 @@ def calc_turnover_amount(quote: dict, price: float = None) -> dict:
 
 ---
 
+## 标的池三层筛选逻辑（核心方法论）
+
+选股推荐必须经过以下三层筛选，**不得凭感觉或经验直接推票**。
+
+```
+                          ┌─────────────────────┐
+                          │  ① 宏观筛选层        │
+                          │  全市场扫描 → 热点板块 │
+                          └─────────┬───────────┘
+                                    ↓
+                          ┌─────────────────────┐
+                          │  ② 中观过滤层        │
+                          │  流动性/市值/基本面过滤 │
+                          └─────────┬───────────┘
+                                    ↓
+                          ┌─────────────────────┐
+                          │  ③ 微观精选层        │
+                          │  热点+基本面+缠论三维评分 │
+                          └─────────┬───────────┘
+                                    ↓
+                          输出: 综合排序推荐
+```
+
+### ① 宏观筛选层 — 全市场扫描
+
+**目标**：找出当前市场热点板块和领涨品种，构建候选池。
+
+| 维度 | 数据源 | 说明 |
+|------|--------|------|
+| 板块/行业排名 | 东财 push2 clist（港股 `m:116`） | 按涨跌幅排序，取涨幅前 10 行业 |
+| 市场指数定位 | HSI / 恒科指 涨跌幅+成交量 | 判断整体市场情绪（强势/弱势/震荡） |
+| 板块资金流向 | 南向资金（港股通）净买入 | 确认资金是否持续流入 |
+| 宏观催化事件 | 政策发布 / 龙头公司新闻 | 识别关键驱动 |
+
+**候选池生成规则**：
+- 从涨幅前 5 的板块中各取成交量前 5 的股票 → 约 25 只
+- 从恒生指数 / 恒科指成分股中取近 5 日涨幅前 10（排除已被板块选中的）
+- 合计候选池约 **30-40 只**
+
+**代码**：
+```python
+async def build_candidate_pool(market: str = "hk", top_sectors: int = 5, top_per_sector: int = 5) -> list[dict]:
+    """① 宏观筛选：构建候选池"""
+    # 1. 获取行业排名
+    sectors = await cn_industry_ranking_async(top_n=20)
+    hot_sectors = [s for s in sectors if s.get("pct", 0) > 0][:top_sectors]
+    # 2. 从各热点行业选股
+    candidates = []
+    for sec in hot_sectors:
+        sector_stocks = await market_stock_list_async(
+            market=market, sort_field="f3", sort_desc=True, page=1, page_size=top_per_sector
+        )
+        for s in (sector_stocks.get("stocks") or [])[:top_per_sector]:
+            s["sector"] = sec.get("industry", "")
+            s["sector_pct"] = sec.get("pct", 0)
+            candidates.append(s)
+    return sectored_candidates if (sectored_candidates := candidates) else []
+```
+
+### ② 中观过滤层 — 硬约束剔除
+
+**目标**：剔除不合格品种，确保池中标的具备基本投资价值。
+
+| 过滤条件 | 港股 | 美股 | A股 |
+|---------|------|------|-----|
+| 最小市值 | ≥ 50亿 HKD | ≥ 10亿 USD | ≥ 30亿 CNY |
+| 最小日均成交额 | ≥ 1,000万 HKD | ≥ 500万 USD | ≥ 3,000万 CNY |
+| 最小股价 | ≥ 1 HKD（非仙股）| ≥ 2 USD | ≥ 2 CNY |
+| PE 上限（盈利公司）| ≤ 50（金融≤ 20）| ≤ 80 | ≤ 60 |
+| PE 负值（亏损公司）| 标记为"亏损"不自动过滤 | 同左 | 同左 |
+| 涨跌停/停牌 | 排除停牌股 | — | 排除涨跌停封板股 |
+
+**代码**：
+```python
+def filter_candidates(candidates: list[dict]) -> list[dict]:
+    """② 中观过滤：硬约束剔除"""
+    filtered = []
+    for c in candidates:
+        price = c.get("price") or 0
+        vol = c.get("volume") or 0
+        # 最小价格 & 成交额过滤（港股示例）
+        if price < 1.0: continue
+        if vol < 1_000_0000: continue  # 成交额低于 1000万（东财数据单位需校准）
+        filtered.append(c)
+    return filtered
+```
+
+### ③ 微观精选层 — 三维评分排序
+
+**目标**：对过滤后的候选池按 热点 + 基本面 + 缠论 三维评分，排序输出。
+
+**评分标准（每维 1-5 分）**：
+
+| 维度 | 5分 | 3分 | 1分 |
+|------|-----|-----|-----|
+| 🔥 **热点** | 处于当前最强主线 + 有明确催化剂 | 处于当前热点但非核心 | 不在当前热点 |
+| 📊 **基本面** | PE合理+营收增长+ROE>15%+龙头 | 估值合理但增长平淡 | 估值偏高或亏损 |
+| 🔧 **缠论** | 有明确买卖点信号(一买/一卖) | 无买卖点但结构清晰 | 无信号+结构混乱 |
+
+**综合评分公式**：
+```
+总分 = 热点 × 权重(3) + 基本面 × 权重(5) + 缠论 × 权重(2)
+```
+权重体现方法论排序：**基本面为主(5) > 热点(3) > 缠论(2)**
+
+**排序输出**：按总分从高到低，并标注风格标签。
+
+**代码**：
+```python
+def score_candidate(hot_score: int, fundamental_score: int, chan_score: int) -> dict:
+    """③ 微观精选：三维评分"""
+    weights = {"hot": 3, "fundamental": 5, "chan": 2}
+    total = hot_score * weights["hot"] + fundamental_score * weights["fundamental"] + chan_score * weights["chan"]
+    return {"hot_score": hot_score, "fundamental_score": fundamental_score, "chan_score": chan_score,
+            "total_score": total}
+
+def rank_candidates(scored: list[dict]) -> list[dict]:
+    """按总分排序输出"""
+    return sorted(scored, key=lambda x: x["total_score"], reverse=True)
+```
+
+### 一键调用
+
+```python
+def run_stock_selection(market: str = "hk") -> list[dict]:
+    """标的池筛选全流程"""
+    async def _run():
+        # ① 宏观筛选
+        pool = await build_candidate_pool(market)
+        # ② 中观过滤
+        pool = filter_candidates(pool)
+        # ③ 微观评分（需人工审核热点+基本面+缠论数据）
+        # 此步骤依赖外部行情+基本面+缠论数据，在分析报告中逐票完成
+        return pool
+    return asyncio.run(_run())
+```
+
+### 使用规范
+
+1. **每次选股推荐必须先跑筛选流程**，不得直接从记忆中提取股票
+2. 筛选结果输出**候选池数量**（如"从 35 只候选池中筛选……"）
+3. 最终推荐原则上不超过 **5 只**
+4. 三维评分必须与具体分析对应，不得编造分数
+5. 如果当日数据获取失败，标注数据缺失的维度，**不编造**
+
+---
+
 ## 全生命周期风控框架
 
 风控分 4 个阶段，每个阶段的输出有不同的侧重点：
@@ -1372,6 +2156,72 @@ def calc_turnover_amount(quote: dict, price: float = None) -> dict:
 ## 输出模板
 
 **每个阶段必须有明确的结论清单**，不得模棱两可。
+
+### 模板 0：选股推荐报告（多只股票横向对比）
+
+适用于：需要从多只股票中筛选推荐时。**必须按 热点→基本面→缠论 三维度逐一分析**。
+
+```markdown
+## 港股选股推荐 | {date}
+
+### 市场背景
+
+| 指标 | 值 |
+|------|----|
+| 恒生指数 | {hsi}（{pct}%）|
+| 恒生科技指数 | {hst}（{pct}%）|
+| 今日热点板块 | {板块1}、{板块2}、{板块3} |
+| 核心驱动 | {政策/资金/AI/其他 一句话概括} |
+
+---
+
+### 各股三维度分析
+
+| 维度 | 含义 |
+|------|------|
+| 🔥 **热点** | 是否处于当前市场主线/政策风口/板块轮动方向 |
+| 📊 **基本面** | PE/PB/股息率/ROE/营收增长 — 核心估值锚 |
+| 🔧 **缠论** | 走势类型/背驰/买卖点 — 只作辅助择时 |
+
+#### 1. {股票名}（{code}）— {price} 港元 | {pct}%
+
+| 维度 | 分析 |
+|------|------|
+| 🔥 热点 | {AI主线/平台经济/高股息/半导体...} — {具体催化剂} |
+| 📊 基本面 | PE {x}，市值 {x}亿，{股息率/ROE/其他关键指标}。{估值高低判断} |
+| 🔧 缠论 | {走势类型}，{笔/段数}，{背驰信号}，{买卖点}。{缠论评分和结论} |
+
+| 三维综合 | 结论 |
+|---------|------|
+| 评分 | {5/4/3/2/1} |
+| 建议 | **{推荐/关注/观望/回避}** |
+| 适合风格 | {成长/价值/防守/弹性} |
+| 备注 | {关键提示，如"等回调"、"追高谨慎"等} |
+
+#### 2. {股票名}（{code}）— {price} 港元 | {pct}%
+
+| 维度 | 分析 |
+|------|------|
+| 🔥 热点 | ... |
+| 📊 基本面 | ... |
+| 🔧 缠论 | ... |
+
+...
+
+---
+
+### 综合排序
+
+| 排名 | 股票 | 风格 | 热点评分 | 基本面评分 | 缠论评分 | 核心逻辑 |
+|------|------|------|---------|----------|---------|---------|
+| ⭐1 | {code} | {风格} | ★★★ | ★★★ | ★★★ | {一句话} |
+| ⭐2 | {code} | {风格} | ★★★ | ★★★ | ★★★ | {一句话} |
+| ⭐3 | {code} | {风格} | ★★★ | ★★★ | ★★★ | {一句话} |
+
+> ⚠️ 声明：以上分析仅基于公开市场数据，不构成投资建议。
+```
+
+---
 
 ### 阶段 1：投前审查（Pre-trade）
 
@@ -1390,6 +2240,19 @@ def calc_turnover_amount(quote: dict, price: float = None) -> dict:
 | 行业 | {industry} |
 | 支撑/压力 | {support} / {resistance} |
 
+### 缠论技术面
+
+| 指标 | 值 |
+|------|----|
+| 走势类型 | {趋势/盘整/单边}（{中枢数量} 个中枢） |
+| 最近中枢区间 | [{zd} – {zg}] |
+| 当前相对中枢位置 | {上方/内部/下方}（距中枢 {distance}%） |
+| 分型数量 | {顶分型} 顶 / {底分型} 底 |
+| 笔数量 | {x} 笔（最近一笔方向: {方向}） |
+| 背驰信号 | {无/顶背驰(强/弱)/底背驰(强/弱)} |
+| 买卖点信号 | {一买/二买/三买/一卖/二卖/三卖 或无} |
+| 缠论评分 | {score}（偏多/中性/偏空） |
+
 ### 基本面评分
 
 | 维度 | 评分(1-5) | 得分依据 |
@@ -1401,6 +2264,25 @@ def calc_turnover_amount(quote: dict, price: float = None) -> dict:
 | 成长性 | {1-5} | 营收同比 {x}% / 行业增速对比 |
 
 **综合风险等级**: {低/中/较高/高}
+
+### 当前热点匹配
+
+| 检查项 | 状态 |
+|--------|------|
+| 所属热点板块 | {板块名称} |
+| 是否处于当前主线 | {是/否} |
+| 近期催化剂 | {AI/政策/并购/财报/回购等} |
+| 板块轮动位置 | {领涨/跟涨/补涨/退潮} |
+
+### 三维度综合评估
+
+| 维度 | 评分 | 方向 |
+|------|------|------|
+| 🔥 热点 | ★★★/★★/★ | {向上/平稳/向下} |
+| 📊 基本面 | ★★★/★★/★ | {向上/平稳/向下} |
+| 🔧 缠论 | ★★★/★★/★ | {偏多/中性/偏空} |
+
+**综合**: {热点+基本面+缠论 三维共振/分歧判断}
 
 ### 预设风控参数
 
@@ -1450,6 +2332,14 @@ def calc_turnover_amount(quote: dict, price: float = None) -> dict:
 | 价格距止损位 | {old_dist}% | {new_dist}% | {逼近/远离} |
 | 成交额趋势 | {old_amt} | {new_amt} | {缩量/放量} |
 | 行业景气度 | {old_outlook} | {new_outlook} | {转好/转差} |
+
+### 热点变化追踪
+
+| 检查项 | 上次 | 本次 | 变化方向 |
+|--------|------|------|---------|
+| 所属热点板块 | {old_sector} | {new_sector} | {持续/切换/退潮} |
+| 板块相对大盘 | {old_rel}% | {new_rel}% | {跑赢/跑输} |
+| 近期催化剂 | {old_catalyst} | {new_catalyst} | {加强/减弱} |
 
 ### 离场条件检查
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## V1.2.0 (2026-07-08)
+
+### 缠论层 (Chan Theory) — 新增 （V1.2.0-1）
+
+完整的缠中说禅（Chan Theory）技术分析实现，纯 Python 计算，基于现有 K 线数据，无需额外 API：
+
+- **K 线包含处理** — `kline_contain()`: 向上取高高 / 向下取低低，消除K线包含关系
+- **分型识别** — `find_fractals()`: 识别顶分型（3K中高最高）和底分型（3K中低最低）
+- **笔的构建** — `build_strokes()`: 相邻顶底分型交替连接，去重同向分型取极端值，标准笔≥5根K线
+- **线段构建** — `build_segments()`: 至少3笔重叠构成线段，特征序列包含处理
+- **中枢识别** — `find_pivots()`: 滑动窗口识别≥3段重叠区间，返回 zg/zd/zz_width
+- **趋势分类** — `classify_trend()`: 0中枢=单边，1中枢=盘整，≥2中枢=趋势
+- **背驰检测** — `detect_divergence()`: MACD 面积对比 + 力度衰减，区分顶背驰/底背驰及强弱
+- **买卖点定位** — `find_buy_sell_points()`: 一买/一卖（背驰终结点）、二买/二卖（回调确认）、三买/三卖（中枢突破回踩）
+- **全功能计算** — `chan_theory_full()`: 一键完成包含处理 → 分型 → 笔 → 线段 → 中枢 → 背驰 → 买卖点
+- **风控集成** — `chan_risk_assessment()`: 输出缠论评分 / 偏多偏空判断 / 买卖点信号 / 相对中枢位置
+
+### 代码提取为 Python 模块（V1.2.0-2）
+
+将 SKILL.md 中全部数据函数（行情/K线/基本面/资金面/信号/公告/期权/SEC/工具/技术指标）正式提取为可导入的 Python 模块，消除临时脚本 copy-paste：
+
+- **data.py** (615行) — 四合一数据层：HTTP会话 + 行情8函数 + K线6函数 + 基本面/资金面/信号等30函数
+- **indicators.py** (316行) — 技术指标：MA/MACD/RSI/KDJ/BOLL/支撑压力/止损止盈 + 缠论re-export
+- **screener.py** (113行) — 标的池三层筛选 + `batch_hk_quotes()` / `batch_hk_full()` 批量查询
+- **report.py** (236行) — `StockAnalyzer` 类，提供 `analyze_hk()` / `analyze_cn()` / `analyze_us()` / `analyze_hk_batch()` 一键全量分析
+- **scripts/analyze_hk.py** — 可直接运行的入口脚本：`uv run scripts/analyze_hk.py 03690`
+
+#### 文件整理
+
+- 删除旧模块：`client.py` / `quotes.py` / `kline.py` / `fundamental.py` → 合并为 `data.py`
+- 删除 `pyproject.toml` / `egg-info`，无需 pip install，`uv run` 直接使用
+- `chan.py` 保持不变（已在 V1.2.0-1 中建立）
+
+### 分析框架优化
+
+- 确立三维评分体系：**基本面(权重5) > 热点(权重3) > 缠论(权重2)**，满分50
+- 分析思路：基本面为估值锚 → 技术面辅助择时 → 热点是关键催化剂
+- 文档同步更新：CLAUDE.md / README.md / CHANGELOG.md
+
+---
+
 ## V1.1.0 (2026-07-03)
 
 ### A 股数据源支持（重大更新）

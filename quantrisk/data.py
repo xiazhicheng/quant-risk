@@ -1,0 +1,615 @@
+"""
+quantrisk — 数据层（Data Layer）
+
+合并四层数据获取：client 会话管理 + quotes 行情 + kline K线 + fundamental 基本面。
+全部 aiohttp 异步，零鉴权。
+
+用法:
+    from quantrisk.data import hk_stock_quote_tencent_async, stock_kline_yahoo_async, key_statistics_async
+    result = await hk_stock_quote_tencent_async("03690")
+"""
+import asyncio, aiohttp, json, re
+from datetime import datetime
+from typing import Optional
+
+# ═════════════════════════════════════════════════
+# HTTP 会话 / 并行执行 / 工具
+# ═════════════════════════════════════════════════
+
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+_async_session: Optional[aiohttp.ClientSession] = None
+_yahoo_crumb: Optional[str] = None
+_yahoo_session: Optional[aiohttp.ClientSession] = None
+
+def cn_market_prefix(code: str) -> str:
+    """A股代码 → 腾讯前缀: sh/sz/bj"""
+    if code.startswith(("6", "9")): return "sh"
+    if code.startswith(("0", "3")): return "sz"
+    if code.startswith(("4", "8")): return "bj"
+    return "sz"
+
+def cn_secid(code: str) -> str:
+    """A股代码 → 东财 secid"""
+    return f"{'1' if code.startswith(('6','9')) else '0'}.{code}"
+
+async def get_async_session() -> aiohttp.ClientSession:
+    global _async_session
+    if _async_session is None or _async_session.closed:
+        _async_session = aiohttp.ClientSession(
+            headers={"User-Agent": UA}, timeout=aiohttp.ClientTimeout(total=20))
+    return _async_session
+
+async def close_async_session():
+    global _async_session
+    if _async_session and not _async_session.closed: await _async_session.close()
+
+async def _get(url: str, **kw) -> str:
+    s = await get_async_session()
+    async with s.get(url, **kw) as r:
+        return await r.text()
+
+async def _get_json(url: str, **kw) -> dict:
+    s = await get_async_session()
+    async with s.get(url, **kw) as r:
+        t = await r.text(); return json.loads(t) if t.strip() else {}
+
+async def _get_gbk(url: str, **kw) -> str:
+    s = await get_async_session()
+    async with s.get(url, **kw) as r: return (await r.read()).decode("gbk")
+
+async def parallel_map(funcs: list, max_concurrency: int = 30) -> list:
+    sem = asyncio.Semaphore(max_concurrency)
+    async def _run(f):
+        async with sem: return await f()
+    return await asyncio.gather(*[_run(f) for f in funcs], return_exceptions=True)
+
+async def _get_yahoo() -> tuple:
+    global _yahoo_session, _yahoo_crumb
+    if _yahoo_session is None or _yahoo_session.closed:
+        _yahoo_session = aiohttp.ClientSession(
+            headers={"User-Agent": UA}, timeout=aiohttp.ClientTimeout(total=15))
+        await _yahoo_session.get("https://fc.yahoo.com")
+        async with _yahoo_session.get("https://query2.finance.yahoo.com/v1/test/getcrumb") as r:
+            _yahoo_crumb = (await r.text()).strip()
+    return _yahoo_session, _yahoo_crumb
+
+async def yahoo_quote_summary(symbol: str, modules: list[str]) -> dict:
+    s, crumb = await _get_yahoo()
+    async with s.get(f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
+                     params={"modules": ",".join(modules), "crumb": crumb}) as r:
+        return (await r.json()).get("quoteSummary", {}).get("result", [{}])[0]
+
+async def stock_search(keyword: str, count: int = 10) -> list[dict]:
+    """东财股票搜索"""
+    d = await _get_json("https://searchapi.eastmoney.com/api/suggest/get", params={
+        "input": keyword, "type": 14, "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": count})
+    mkts = {"105":"NASDAQ","106":"NYSE","107":"US_OTHER","116":"HK"}
+    return [{"code":s.get("Code"),"name":s.get("Name"),"market":mkts.get(str(s.get("MktNum","")),"")}
+            for s in d.get("QuotationCodeTable",{}).get("Data",[]) if str(s.get("MktNum","")) in mkts]
+
+async def stock_news(keyword: str, count: int = 10) -> list[dict]:
+    s,_ = await _get_yahoo()
+    async with s.get("https://query2.finance.yahoo.com/v1/finance/search",
+                     params={"q":keyword,"quotesCount":0,"newsCount":count}) as r:
+        news = (await r.json()).get("news",[])
+    return [{"title":n.get("title"),"publisher":n.get("publisher"),"link":n.get("link")} for n in news]
+
+async def market_stock_list(market:str="hk", sort_field:str="f3", sort_desc:bool=True,
+                             page:int=1, page_size:int=20) -> dict:
+    mkt_map = {"us_nasdaq":"m:105","us_nyse":"m:106","us_etf":"m:107","hk":"m:116"}
+    d = await _get_json("https://push2.eastmoney.com/api/qt/clist/get", params={
+        "fs":mkt_map.get(market,market), "fields":"f2,f3,f4,f5,f6,f7,f12,f14,f15,f16,f17,f18",
+        "pn":page, "pz":page_size, "fid":sort_field, "po":1 if sort_desc else 0})
+    diff = d.get("data",{}).get("diff",[]) or []
+    if isinstance(diff, dict): diff = list(diff.values())
+    stocks = [{"code":i.get("f12"),"name":i.get("f14"),"price":i.get("f2"),
+               "change_pct":round(i["f3"]/100,2) if i.get("f3") is not None else None,
+               "volume":i.get("f5"),"amount":i.get("f6")} for i in diff]
+    return {"total":d.get("data",{}).get("total",0),"stocks":stocks}
+
+async def ticker_to_cik(ticker: str) -> dict:
+    d = await _get_json("https://www.sec.gov/files/company_tickers.json",
+                        headers={"User-Agent":"global-stock-data/2.0"})
+    for _,v in d.items():
+        if v.get("ticker")==ticker.upper():
+            return {"ticker":ticker.upper(),"cik":str(v["cik_str"]).zfill(10),"company":v.get("title")}
+    return {}
+
+async def eastmoney_datacenter(report_name:str, columns:str="ALL", filter_str:str="",
+                                page_size:int=50, sort_columns:str="", sort_types:str="-1") -> list[dict]:
+    d = await _get_json(DATACENTER_URL, params={
+        "reportName":report_name,"columns":columns,"filter":filter_str,
+        "pageNumber":"1","pageSize":str(page_size),"sortColumns":sort_columns,
+        "sortTypes":sort_types,"source":"WEB","client":"WEB"})
+    return d.get("result",{}).get("data",[]) if d.get("result") else []
+
+# ═════════════════════════════════════════════════
+# L1: 行情层 (Quotes)
+# ═════════════════════════════════════════════════
+
+def _sf(v):
+    try: return float(v) if v and v!="-" else 0.0
+    except: return 0.0
+
+async def hk_stock_quote_tencent_async(code: str) -> dict:
+    """港股行情（腾讯 78 字段）。code: 00700, 03690, 09988"""
+    text = await _get_gbk(f"https://qt.gtimg.cn/q=r_hk{code}")
+    m = re.search(r'"(.+)"', text)
+    if not m: return {}
+    f = m.group(1).split("~")
+    if len(f)<50: return {}
+    return {"name":f[1],"price":_sf(f[3]),"change_pct":_sf(f[32]),"pe":_sf(f[39]),
+            "pb":_sf(f[56]),"market_cap_100m":_sf(f[44]),"high":_sf(f[33]),"low":_sf(f[34]),
+            "open":_sf(f[5]),"prev_close":_sf(f[4]),"volume_shares":int(_sf(f[6])),
+            "amount_100m":_sf(f[37]),"high_52w":_sf(f[35]),"low_52w":_sf(f[36]),
+            "amp":_sf(f[43]),"turnover_rate":_sf(f[38]),
+            "timestamp":f[30] if len(f)>30 else ""}
+
+async def us_stock_quote_tencent_async(ticker: str) -> dict:
+    """美股行情（腾讯 71 字段）。ticker: AAPL, TSLA"""
+    text = await _get_gbk(f"https://qt.gtimg.cn/q=us{ticker.upper()}")
+    m = re.search(r'"(.+)"', text)
+    if not m: return {}
+    f = m.group(1).split("~")
+    if len(f)<50: return {}
+    return {"name":f[1],"price":_sf(f[3]),"change_pct":_sf(f[32]),"pe":_sf(f[53]),
+            "pb":_sf(f[56]),"market_cap":_sf(f[44]),"high":_sf(f[33]),"low":_sf(f[34]),
+            "volume":int(_sf(f[6])),"high_52w":_sf(f[35]),"low_52w":_sf(f[36])}
+
+async def us_stock_quote_sina_async(ticker: str) -> dict:
+    """美股行情（新浪 36 字段）"""
+    text = await _get_gbk(f"https://hq.sinajs.cn/list=gb_{ticker.lower()}",
+                          headers={"Referer":"https://finance.sina.com.cn/"})
+    m = re.search(r'"(.+)"', text)
+    if not m: return {}
+    f = m.group(1).split(",")
+    if len(f)<30: return {}
+    return {"name":f[0],"price":float(f[1]),"change_pct":float(f[2]),
+            "open":float(f[5]) if f[5] else 0,"high":float(f[6]) if f[6] else 0,
+            "low":float(f[7]) if f[7] else 0,"volume":float(f[10]) if f[10] else 0,
+            "high_52w":float(f[8]) if f[8] else 0,"low_52w":float(f[9]) if f[9] else 0,
+            "market_cap":float(f[12]) if f[12] else 0,"eps":float(f[13]) if f[13] else 0,
+            "pe":float(f[14]) if f[14] else 0}
+
+async def hk_stock_quote_sina_async(code: str) -> dict:
+    """港股行情（新浪 25 字段）"""
+    text = await _get_gbk(f"https://hq.sinajs.cn/list=rt_hk{code}",
+                          headers={"Referer":"https://finance.sina.com.cn/"})
+    m = re.search(r'"(.+)"', text)
+    if not m: return {}
+    f = m.group(1).split(",")
+    return {"name":f[1],"open":float(f[2]) if f[2] else 0,"prev_close":float(f[3]) if f[3] else 0,
+            "high":float(f[4]) if f[4] else 0,"low":float(f[5]) if f[5] else 0,
+            "price":float(f[6]) if f[6] else 0,"change_pct":float(f[8]) if f[8] else 0,
+            "volume":float(f[12]) if f[12] else 0}
+
+async def stock_quote_eastmoney_async(ticker_or_code: str, secid_prefix: int = 105) -> dict:
+    """东财 push2 统一行情。105=NASDA, 106=NYSE, 116=港股"""
+    d = (await _get_json("https://push2.eastmoney.com/api/qt/stock/get", params={
+        "secid":f"{secid_prefix}.{ticker_or_code}",
+        "fields":"f43,f44,f45,f46,f47,f48,f55,f57,f58,f59,f60,f170"})).get("data")
+    if not d: return {}
+    dec = d.get("f59",3); div = 10**dec
+    def _p(k):
+        v=d.get(k); return round(v/div,dec) if v is not None and v!="-" else None
+    return {"code":d.get("f57"),"name":d.get("f58"),"price":_p("f43"),"high":_p("f44"),
+            "low":_p("f45"),"open":_p("f46"),"volume":d.get("f47"),"amount":d.get("f48"),
+            "turnover_rate":d.get("f55"),"prev_close":_p("f60"),
+            "change_pct":round(d["f170"]/100,2) if d.get("f170") is not None else None}
+
+async def cn_stock_quote_tencent_async(code: str) -> dict:
+    """A股实时行情（腾讯主推，不封IP）。code: 688017, 000858"""
+    text = await _get_gbk(f"https://qt.gtimg.cn/q={cn_market_prefix(code)}{code}")
+    m = re.search(r'"(.+)"', text)
+    if not m: return {}
+    f = m.group(1).split("~")
+    if len(f)<50: return {}
+    return {"name":f[1],"code":f[2],"price":_sf(f[3]),"change_pct":_sf(f[32]),
+            "pe_ttm":_sf(f[39]),"pb":_sf(f[46]),"market_cap_100m":_sf(f[44]),
+            "total_shares_100m":_sf(f[45]),"high":_sf(f[33]),"low":_sf(f[34]),
+            "turnover_rate":_sf(f[38]),"volume":_sf(f[6]),"amount_100m":_sf(f[37]),
+            "high_limit":_sf(f[48]),"low_limit":_sf(f[49]),"amp":_sf(f[43]),
+            "timestamp":f[30] if len(f)>30 else ""}
+
+async def cn_stock_quote_eastmoney_async(code: str) -> dict:
+    """A股行情（东财 push2）"""
+    d = (await _get_json("https://push2.eastmoney.com/api/qt/stock/get", params={
+        "secid":cn_secid(code),
+        "fields":"f43,f44,f45,f46,f47,f48,f55,f57,f58,f59,f60,f170,f116,f117,f100"})).get("data")
+    if not d: return {}
+    dec = d.get("f59",2); div = 10**dec
+    def _p(k):
+        v=d.get(k); return round(v/div,dec) if v is not None and v!="-" else None
+    return {"code":d.get("f57"),"name":d.get("f58"),"price":_p("f43"),"high":_p("f44"),
+            "low":_p("f45"),"open":_p("f46"),"volume":d.get("f47"),"amount":d.get("f48"),
+            "turnover_rate":d.get("f55"),"prev_close":_p("f60"),
+            "change_pct":round(d["f170"]/100,2) if d.get("f170") is not None else None,
+            "total_mv":_p("f116"),"float_mv":_p("f117")}
+
+async def cn_stock_basic_info_async(code: str) -> dict:
+    d = (await _get_json("https://push2.eastmoney.com/api/qt/stock/get", params={
+        "secid":cn_secid(code),
+        "fields":"f57,f58,f84,f85,f98,f86,f116,f117,f100,f120,f121"})).get("data")
+    if not d: return {}
+    return {"code":d.get("f57"),"name":d.get("f58"),"industry":d.get("f84"),
+            "listing_date":str(d.get("f98"))[:10] if d.get("f98") else None,
+            "total_mv_100m":(d.get("f116") or 0)/1e8,"float_mv_100m":(d.get("f117") or 0)/1e8}
+
+# ═════════════════════════════════════════════════
+# L2: K线层 (Kline)
+# ═════════════════════════════════════════════════
+
+async def us_stock_kline_sina_async(ticker: str, num: int = 120) -> list[dict]:
+    """美股日K（新浪，可回溯至1984年）"""
+    text = await _get("https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var/US_MinKService.getDailyK",
+                      params={"symbol":ticker.upper(),"num":num},
+                      headers={"Referer":"https://finance.sina.com.cn/"})
+    m = re.search(r'\((\[.+\])\)', text)
+    if not m: return []
+    items = json.loads(m.group(1))
+    return [{"date":i.get("d"),"open":float(i.get("o",0)),"high":float(i.get("h",0)),
+             "low":float(i.get("l",0)),"close":float(i.get("c",0)),"volume":int(i.get("v",0))}
+            for i in items]
+
+async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str = "1y") -> list[dict]:
+    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK"""
+    d = await _get_json(f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
+                        params={"interval":interval,"range":range_})
+    chart = d.get("chart",{}).get("result",[{}])[0]
+    ts = chart.get("timestamp",[])
+    q = chart.get("indicators",{}).get("quote",[{}])[0]
+    sub = "m" in interval or "h" in interval
+    result = []
+    for i, t in enumerate(ts):
+        if q["open"][i] is None: continue
+        result.append({"date":datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M" if sub else "%Y-%m-%d"),
+                       "open":round(q["open"][i],2),"high":round(q["high"][i],2),
+                       "low":round(q["low"][i],2),"close":round(q["close"][i],2),
+                       "volume":int(q["volume"][i])})
+    return result
+
+async def cn_stock_kline_tencent_async(code: str, days: int = 120) -> list[dict]:
+    """A股日K线（腾讯，前复权，不封IP）"""
+    url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},m,,{days}"
+    d = await _get_json(url, headers={"Referer":"https://finance.qq.com/"})
+    data = d.get("data",{})
+    key = f"{cn_market_prefix(code)}{code}"
+    klines = data.get(key,{}).get("m",[]) or data.get(key,{}).get("day",[]) or []
+    if not klines or not klines[0]:
+        klines = data.get(key,{}).get("qfq",[]) or data.get(key,{}).get("day",[]) or []
+    if not klines or not klines[0]: return []
+    return [{"date":i[0],"open":float(i[1]),"high":float(i[2]),"low":float(i[3]),
+             "close":float(i[4]),"volume":int(i[5])} for i in klines if len(i)>=6]
+
+async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
+    """A股日K（百度，带MA5/10/20）"""
+    d = await _get_json("https://gupiao.baidu.com/api/single/stockday",
+                        params={"code":cn_secid(code),"start":start,"format":"json"},
+                        headers={"Referer":"https://gupiao.baidu.com/"})
+    items = d.get("data",[]) if isinstance(d,dict) else d
+    if not items: return []
+    return [{"date":i.get("date"),"open":float(i.get("open",0)),"high":float(i.get("high",0)),
+             "low":float(i.get("low",0)),"close":float(i.get("close",0)),"volume":int(i.get("volume",0)),
+             "ma5":float(i["ma"][0]) if i.get("ma") and len(i["ma"])>0 else None,
+             "ma10":float(i["ma"][1]) if i.get("ma") and len(i["ma"])>1 else None,
+             "ma20":float(i["ma"][2]) if i.get("ma") and len(i["ma"])>2 else None}
+            for i in items]
+
+# mootdx A股K线（同步，TCP直连）
+try:
+    from mootdx.quotes import Quotes as _MootdxQuotes; _MOOTDX_OK = True
+except ImportError: _MOOTDX_OK = False
+
+def _tdx_client():
+    if not _MOOTDX_OK: raise ImportError("mootdx 未安装: uv add mootdx")
+    servers = [("119.147.212.81",7709),("180.153.18.170",7709),
+               ("59.175.238.38",7709),("112.74.214.43",7709)]
+    import socket
+    for ip,port in servers:
+        s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.settimeout(1.5)
+        try: s.connect((ip,port)); s.close(); return _MootdxQuotes.factory(market="std",server=(ip,port))
+        except: s.close(); continue
+    return _MootdxQuotes.factory(market="std")
+
+def cn_stock_kline_tdx_sync(code:str,frequency:int=9,start:int=0,count:int=200) -> list[dict]:
+    """A股K线（mootdx TCP）。frequency: 9=日线, 10=周, 11=月, 8=1分钟等"""
+    try:
+        client = _tdx_client(); df = client.bars(symbol=code,frequency=frequency,start=start,count=count)
+        if df is None or df.empty: return []
+        return [{"date":str(r.get("date",""))[:19],"open":round(float(r.get("open",0)),2),
+                 "high":round(float(r.get("high",0)),2),"low":round(float(r.get("low",0)),2),
+                 "close":round(float(r.get("close",0)),2),"volume":int(r.get("volume",0)),
+                 "amount":round(float(r.get("amount",0)),2)} for _,r in df.iterrows()]
+    except Exception as e:
+        print(f"[WARN] mootdx K线失败({code}): {e}"); return []
+
+def cn_financial_snapshot_sync(code:str) -> dict:
+    """A股最新季报财务快照（mootdx）"""
+    try:
+        client = _tdx_client(); df = client.finance(symbol=code)
+        if df is None or df.empty: return {}
+        r = df.iloc[-1].to_dict()
+        return {"eps":round(float(r.get("eps",0)),4),"total_equity":float(r.get("equity",0)),
+                "revenue_total":float(r.get("revenue",0)),"net_profit":float(r.get("net_profit",0)),
+                "roe_pct":round(float(r.get("roe",0))*100,2)}
+    except Exception as e:
+        print(f"[WARN] mootdx 财务快照失败({code}): {e}"); return {}
+
+# ═════════════════════════════════════════════════
+# L4-L11: 基本面 / 资金面 / 信号 / 工具 (Fundamental)
+# ═════════════════════════════════════════════════
+
+# L4 — 基本面
+async def key_indicators_eastmoney_async(secucode:str, page_size:int=4) -> list[dict]:
+    """关键财务指标（东财 GMAININDICATOR）"""
+    market = "hk" if secucode.endswith(".HK") else "us"
+    return await eastmoney_datacenter(
+        f"RPT_{'HK' if market=='hk' else 'US'}F10_FN_GMAININDICATOR",
+        filter_str=f'(SECUCODE="{secucode}")', page_size=page_size,
+        sort_columns="REPORT_DATE", sort_types="-1")
+
+async def financial_statements_eastmoney_async(secucode:str, statement:str="balance", page_size:int=200) -> list[dict]:
+    """财报三表（东财 datacenter）"""
+    rmap = {"balance":{"us":"RPT_USF10_FN_BALANCE","hk":"RPT_HKF10_FN_BALANCE"},
+            "income":{"us":"RPT_USF10_FN_INCOME","hk":"RPT_HKF10_FN_INCOME"},
+            "cashflow":{"us":"RPT_USSK_FN_CASHFLOW","hk":"RPT_HKSK_FN_CASHFLOW"}}
+    market = "hk" if secucode.endswith(".HK") else "us"
+    return await eastmoney_datacenter(rmap[statement][market],
+        filter_str=f'(SECUCODE="{secucode}")', page_size=page_size,
+        sort_columns="REPORT_DATE", sort_types="-1")
+
+async def key_statistics_async(symbol:str) -> dict:
+    """Yahoo 关键指标（英文）"""
+    data = await yahoo_quote_summary(symbol, ["financialData","defaultKeyStatistics","summaryDetail"])
+    fd,ks,sd = data.get("financialData",{}),data.get("defaultKeyStatistics",{}),data.get("summaryDetail",{})
+    def _v(d,k): v=d.get(k,{}); return v.get("raw") if isinstance(v,dict) else v
+    return {"current_price":_v(fd,"currentPrice"),"target_mean":_v(fd,"targetMeanPrice"),
+            "recommendation":fd.get("recommendationKey"),"trailing_pe":_v(sd,"trailingPE"),
+            "forward_pe":_v(ks,"forwardPE"),"peg_ratio":_v(ks,"pegRatio"),
+            "price_to_book":_v(ks,"priceToBook"),"enterprise_value":_v(ks,"enterpriseValue"),
+            "profit_margins":_v(ks,"profitMargins"),"return_on_equity":_v(fd,"returnOnEquity"),
+            "return_on_assets":_v(fd,"returnOnAssets"),"earnings_growth":_v(fd,"earningsGrowth"),
+            "revenue_growth":_v(fd,"revenueGrowth"),"beta":_v(ks,"beta"),
+            "dividend_yield":_v(sd,"dividendYield"),"market_cap":_v(sd,"marketCap"),
+            "total_revenue":_v(fd,"totalRevenue"),"total_cash":_v(fd,"totalCash"),
+            "total_debt":_v(fd,"totalDebt")}
+
+async def analyst_estimates_async(symbol:str) -> dict:
+    data = await yahoo_quote_summary(symbol, ["earningsTrend","recommendationTrend","upgradeDowngradeHistory"])
+    return {"eps_trend":[{"period":t.get("period"),"eps_estimate":t.get("earningsEstimate",{}).get("avg",{}).get("raw"),
+                         "revenue_estimate":t.get("revenueEstimate",{}).get("avg",{}).get("raw"),
+                         "num_analysts":t.get("earningsEstimate",{}).get("numberOfAnalysts",{}).get("raw")}
+                        for t in data.get("earningsTrend",{}).get("trend",[])],
+            "rating_trend":data.get("recommendationTrend",{}).get("trend",[])}
+
+async def institutional_holders_async(symbol:str) -> dict:
+    data = await yahoo_quote_summary(symbol, ["institutionOwnership","majorHoldersBreakdown"])
+    mhb = data.get("majorHoldersBreakdown",{})
+    def _v(d,k): v=d.get(k,{}); return v.get("raw") if isinstance(v,dict) else v
+    overview = {"insiders_pct":_v(mhb,"insidersPercentHeld"),"institutions_pct":_v(mhb,"institutionsPercentHeld"),
+                "institutions_float_pct":_v(mhb,"institutionsFloatPercentHeld"),"institutions_count":_v(mhb,"institutionsCount")}
+    holders = [{"name":h.get("organization"),"shares":_v(h,"position"),"value":_v(h,"value"),"pct_held":_v(h,"pctHeld")}
+               for h in data.get("institutionOwnership",{}).get("ownershipList",[])[:10]]
+    return {"overview":overview,"top_holders":holders}
+
+async def financial_statements_yahoo_async(symbol:str, quarterly:bool=False) -> dict:
+    sfx = "Quarterly" if quarterly else ""
+    data = await yahoo_quote_summary(symbol, [f"incomeStatementHistory{sfx}",f"balanceSheetHistory{sfx}",f"cashflowStatementHistory{sfx}"])
+    def _ext(k):
+        stmts = data.get(k,{}).get("incomeStatementHistory" if "income" in k else "balanceSheetStatements" if "balance" in k else "cashflowStatements",[])
+        return [{k2:v["raw"] if isinstance(v,dict) and "raw" in v else v for k2,v in stmt.items()} for stmt in stmts]
+    return {"income":_ext(f"incomeStatementHistory{sfx}"),"balance":_ext(f"balanceSheetHistory{sfx}"),"cashflow":_ext(f"cashflowStatementHistory{sfx}")}
+
+async def cn_key_indicators_async(code:str, page_size:int=4) -> list[dict]:
+    """A股关键财务指标（东财）"""
+    secucode = f"{'SH' if code.startswith(('6','9')) else 'SZ'}{code}"
+    return await eastmoney_datacenter("RPT_LICO_FN_CPD", filter_str=f'(SECUCODE="{secucode}")',
+                                      page_size=page_size, sort_columns="REPORT_DATE", sort_types="-1")
+
+async def cn_financial_statements_sina_async(code:str, report_type:str="lrb", num:int=8) -> list[dict]:
+    """A股三表（新浪）。lrb=利润表, fzb=资产负债表, llb=现金流量表"""
+    d = await _get_json("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData", params={
+        "symbol":cn_market_prefix(code)+code,"scale":num,"datalen":1,"type":report_type},
+        headers={"Referer":"https://vip.stock.finance.sina.com.cn/"})
+    return d if isinstance(d,list) else []
+
+def cn_eps_forecast_sync(code:str) -> list[dict]:
+    """机构一致预期EPS（同花顺）"""
+    import requests
+    try:
+        html = requests.get(f"https://basic.10jqka.com.cn/{code}/index.html",
+                            headers={"User-Agent":UA}, timeout=10).text
+        m = re.search(r'var\s+resData\s*=\s*({.+?});', html, re.DOTALL)
+        if not m: return []
+        data = json.loads(m.group(1))
+        eps = data.get("eps",data.get("EPS",{}))
+        items = eps.get("data",eps.get("items",eps.get("list",[]))) if isinstance(eps,dict) else []
+        if isinstance(items,dict): items = list(items.values())
+        return [{"year":str(i.get("year",i.get("reportDate","")))[:4],"eps":float(i.get("val",i.get("eps",0))),
+                 "count":int(i.get("count",i.get("num",0)))} for i in items[:5] if isinstance(i,dict)]
+    except Exception as e:
+        print(f"[WARN] 一致预期EPS失败({code}): {e}"); return []
+
+# L5 — 资金面
+async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:int=100) -> list[dict]:
+    d = (await _get_json("https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get", params={
+        "secid":f"{secid_prefix}.{ticker_or_code}","klt":101,
+        "fields1":"f1,f2,f3,f7","fields2":"f51,f52,f53,f54,f55,f56,f57","lmt":limit})).get("data")
+    if not d or not d.get("klines"): return []
+    return [{"date":p[0],"main_net":float(p[1]),"small_net":float(p[2]),"mid_net":float(p[3]),
+             "big_net":float(p[4]),"super_big_net":float(p[5]),
+             "main_pct":float(p[6]) if len(p)>6 and p[6] else 0} for p in [l.split(",") for l in d["klines"]]]
+
+async def cn_fund_flow_minute_async(code:str) -> list[dict]:
+    """A股分钟级资金流向"""
+    return await fund_flow_daily_async(code, secid_prefix=int(cn_secid(code).split(".")[0]), limit=200)
+
+async def cn_margin_trading_async(code:str, page_size:int=30) -> list[dict]:
+    """融资融券"""
+    market = "SH" if code.startswith(("6","9")) else "SZ"
+    return await eastmoney_datacenter("RPTA_WEB_MARGINTRADING_DETAILS",
+        filter_str=f'(SECURITY_CODE="{code}")(TRADE_MARKET_CODE="{market}")',
+        page_size=page_size, sort_columns="TRADE_DATE", sort_types="-1")
+
+async def cn_block_trade_async(code:str, page_size:int=20) -> list[dict]:
+    market="SH" if code.startswith(("6","9")) else "SZ"
+    return await eastmoney_datacenter("RPT_DATA_BLOCKTRADE",
+        filter_str=f'(SECURITY_CODE="{code}")(MARKET="{market}")',
+        page_size=page_size, sort_columns="TRADE_DATE", sort_types="-1")
+
+async def cn_holder_num_change_async(code:str, page_size:int=10) -> list[dict]:
+    market="SH" if code.startswith(("6","9")) else "SZ"
+    return await eastmoney_datacenter("RPTA_WEB_HOLDERNUM_CHANGE",
+        filter_str=f'(SECUCODE="{market}{code}")', page_size=page_size,
+        sort_columns="END_DATE", sort_types="-1")
+
+async def cn_dividend_history_async(code:str, page_size:int=20) -> list[dict]:
+    market="SH" if code.startswith(("6","9")) else "SZ"
+    return await eastmoney_datacenter("RPTA_WEB_DIVIDEND_HISTORY",
+        filter_str=f'(SECUCODE="{market}{code}")', page_size=page_size,
+        sort_columns="REPORT_DATE", sort_types="-1")
+
+# L6 — A股信号
+async def ths_hot_stocks_async(date:str=None) -> list[dict]:
+    """当日强势股+题材归因（同花顺）"""
+    if not date:
+        date = datetime.now().strftime("%Y%m%d")
+    try:
+        s = await get_async_session()
+        async with s.get("https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool", params={
+            "page":1,"limit":200,"field":"199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004",
+            "filter":"HS,GEM2STAR","order_field":"330324","order_type":"0","date":date}) as r:
+            info = (await r.json()).get("data",{}).get("info",[])
+    except Exception as e:
+        print(f"[WARN] 同花顺强势股失败: {e}"); return []
+    return [{"code":i.get("code"),"name":i.get("name"),"price":i.get("latest"),
+             "pct":i.get("change_rate"),"reason":i.get("reason_type",""),"high_days":i.get("high_days","")}
+            for i in info]
+
+async def northbound_flow_async() -> dict:
+    """北向资金分钟级流向"""
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/ulist.np/get", params={
+            "fields":"f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124",
+            "secids":"1.000001,0.399001"}, headers={"Referer":"https://quote.eastmoney.com/"}) as r:
+            d = await r.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff,dict): diff = list(diff.values())
+        sh,sz = 0.0,0.0
+        for i in diff:
+            c=str(i.get("f12",""))
+            if c=="000001": sh=(i.get("f62") or 0)/100
+            elif c=="399001": sz=(i.get("f62") or 0)/100
+        return {"sh_net":round(sh,2),"sz_net":round(sz,2),"total":round(sh+sz,2)}
+    except: return {}
+
+async def cn_concept_blocks_async(code:str) -> dict:
+    """个股所属板块（行业/概念/地域）"""
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/slist/get", params={
+            "spt":3,"secids":cn_secid(code),"fields":"f12,f14,f3,f4"},
+            headers={"Referer":"https://quote.eastmoney.com/"}) as r:
+            d = await r.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff,dict): diff = list(diff.values())
+        industry,concepts,region = "",[],""
+        for i in diff:
+            bk=str(i.get("f12","")); name=i.get("f14","")
+            if bk.startswith("BK"):
+                if bk.startswith("BK08") and not industry: industry=name
+                elif bk.startswith("BK09"): region=name
+                else: concepts.append(name)
+        return {"industry":industry,"concept_tags":concepts[:20],"region":region}
+    except: return {}
+
+async def cn_dragon_tiger_board_async(code:str, look_back:int=30) -> list[dict]:
+    """龙虎榜"""
+    return await eastmoney_datacenter("RPTA_WEB_DRAGON_TIGER_LIST",
+        filter_str=f'(SECURITY_CODE="{code}")', page_size=look_back,
+        sort_columns="TRADE_DATE", sort_types="-1")
+
+async def cn_lockup_expiry_async(code:str, forward_days:int=90) -> list[dict]:
+    """限售解禁"""
+    return await eastmoney_datacenter("RPTA_WEB_LOCKUP_EXPIRY",
+        filter_str=f'(SECURITY_CODE="{code}")', page_size=forward_days,
+        sort_columns="EXPIRE_DATE", sort_types="1")
+
+async def cn_industry_ranking_async(top_n:int=20) -> list[dict]:
+    """行业板块涨跌排名"""
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/clist/get", params={
+            "fs":"m:90+t:2","fields":"f2,f3,f4,f5,f6,f12,f14","pn":1,"pz":top_n,"fid":"f3","po":1}) as r:
+            d = await r.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff,dict): diff = list(diff.values())
+        return [{"industry":i.get("f14"),"pct":round((i.get("f3") or 0)/100,2),
+                 "up":i.get("f4"),"down":i.get("f5")} for i in diff if i.get("f14")]
+    except Exception as e:
+        print(f"[WARN] 行业排名失败: {e}"); return []
+
+# L8 — 公告
+async def cninfo_announcements_async(code:str, page_size:int=30) -> list[dict]:
+    """A股公告检索（巨潮 cninfo）"""
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent":UA}) as sess:
+            async with sess.post("http://www.cninfo.com.cn/new/fulltextSearch/full", data={
+                "searchkey":code,"sdate":"","edate":"","isfulltext":"false",
+                "sortName":"pubdate","sortType":"desc","pageNum":1}) as r:
+                data = await r.json()
+        results = data.get("announcements",[]) if isinstance(data,dict) else []
+        return [{"date":r.get("announcementDate",""),"title":r.get("announcementTitle",""),
+                 "type":r.get("announcementTypeName",""),"url":r.get("adjunctUrl","")}
+                for r in results[:page_size]]
+    except: return []
+
+# L9 — 期权（仅美股）
+async def options_chain_async(symbol:str, expiration:int=None) -> dict:
+    s,crumb = await _get_yahoo()
+    params = {"crumb":crumb}
+    if expiration: params["date"] = expiration
+    async with s.get(f"https://query2.finance.yahoo.com/v7/finance/options/{symbol}", params=params) as r:
+        oc = (await r.json()).get("optionChain",{}).get("result",[{}])[0]
+    opts = oc.get("options",[{}])[0] if oc.get("options") else {}
+    def _po(os):
+        def _v(k): v=o.get(k,{}); return v.get("raw") if isinstance(v,dict) else v
+        return [{"strike":_v("strike"),"last_price":_v("lastPrice"),"bid":_v("bid"),
+                 "ask":_v("ask"),"volume":_v("volume"),"open_interest":_v("openInterest"),
+                 "implied_volatility":_v("impliedVolatility"),"in_the_money":o.get("inTheMoney")}
+                for o in os]
+    return {"expiration_dates":oc.get("expirationDates",[]),"calls":_po(opts.get("calls",[])),
+            "puts":_po(opts.get("puts",[])),"underlying_price":oc.get("quote",{}).get("regularMarketPrice")}
+
+# L10 — SEC Filing（仅美股）
+async def sec_filings_async(cik:str, form_type:str=None) -> dict:
+    async with aiohttp.ClientSession(headers={"User-Agent":"global-stock-data/2.0"}) as sess:
+        async with sess.get(f"https://data.sec.gov/submissions/CIK{cik}.json") as r:
+            data = await r.json()
+    recent = data.get("filings",{}).get("recent",{})
+    filings = []
+    for i in range(len(recent.get("form",[]))):
+        if form_type and recent["form"][i]!=form_type: continue
+        filings.append({"form":recent["form"][i],"date":recent["filingDate"][i],
+                        "accession_number":recent["accessionNumber"][i]})
+    return {"company_name":data.get("name"),"cik":cik,"filings":filings[:50]}
+
+async def sec_xbrl_facts_async(cik:str, metrics:list[str]=None) -> dict:
+    async with aiohttp.ClientSession(headers={"User-Agent":"global-stock-data/2.0"}) as sess:
+        async with sess.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json") as r:
+            facts = await r.json()
+    us_gaap = facts.get("facts",{}).get("us-gaap",{})
+    if not metrics:
+        return {"company":facts.get("entityName"),"total_metrics":len(us_gaap),
+                "available_metrics":[{"name":k,"label":v.get("label")} for k,v in us_gaap.items()]}
+    result = {}
+    for mn in metrics:
+        m = us_gaap.get(mn,{})
+        if not m: result[mn]=[]; continue
+        unit_key = "USD" if "USD" in m.get("units",{}) else (list(m["units"].keys())[0] if m.get("units") else None)
+        if not unit_key: result[mn]=[]; continue
+        result[mn] = [{"end":e.get("end"),"val":e.get("val"),"form":e.get("form")}
+                      for e in m["units"][unit_key] if e.get("form") in ("10-K","10-Q")][-20:]
+    return {"company":facts.get("entityName"),"metrics":result}

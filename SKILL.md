@@ -94,11 +94,11 @@ SEC Filing层：EDGAR submissions + XBRL（仅美股）
 
 ### 第 3 步 — 微观三维评分排序
 
-使用 `quantrisk` 模块中的 `key_indicators_eastmoney_async` 和 `kline_tickflow_async` 获取基本面和K线，自动计算各项指标和缠论信号。
+使用 `quantrisk` 模块中的 `key_indicators_eastmoney_async` 获取基本面，`hk_kline_tencent_async`（腾讯源，主推）获取K线，`kline_tickflow_async` 兜底备选。自动计算各项指标和缠论信号。
 
 评分标准：每维 1-5 分
 - 基本面评分依据：营收增速、净利增速、ROE、毛利率、负债率
-- 热点评分依据：板块今日涨幅和市场位置
+- 热点评分依据：板块资金净流入排名、个股资金流向、板块内龙头地位、20日动量
 - 缠论评分依据：MA60位置、MACD柱方向、背驰信号、中枢位置
 
 **总分 = 基本面评分 × 5 + 热点评分 × 3 + 缠论评分 × 2**
@@ -1614,6 +1614,25 @@ async def fund_flow_daily_async(ticker_or_code: str, secid_prefix: int = 105, li
     return result
 ```
 
+### 港股资金流 — 券商级并行查询
+
+```python
+async def batch_hk_capital_flow_async(codes: list[str]) -> dict[str, float]:
+    '''并行获取港股主力资金净流入。返回 {code: main_net_inflow (元)}'''
+    async def _fetch(code):
+        try:
+            d = await fund_flow_daily_async(code, secid_prefix=116, limit=1)
+            if d:
+                return code, d[-1].get('main_net', 0.0)
+        except:
+            pass
+        return code, 0.0
+    funcs = [lambda c=code: _fetch(c) for code in codes]
+    results = await parallel_map(funcs, max_concurrency=20)
+    return {c: v for c, v in results if isinstance(v, (int, float))}
+```
+
+
 ### 5.1 A股资金流 — 东财 push2his（分钟级）
 
 ```python
@@ -1829,6 +1848,51 @@ async def cn_industry_ranking_async(top_n: int = 20) -> list[dict]:
 
 ---
 
+## Layer 7: 新闻层（实时财经新闻）
+
+### 金十数据快讯
+
+```python
+async def jin10_flash_async(count: int = 20) -> list[dict]:
+    \"\"\"金十数据快讯（API可能不可达，保留接口备用）\"\"\"
+    try:
+        d = await _get_json("https://flash-api.jin10.com/get_flash_list",
+                             params={"channel":"-8200","vip":"1","max_time":"0"})
+        return [{"time":i.get("time",""),"content":i.get("content",""),"title":i.get("title","")}
+                for i in (d.get("data") or [])[:count]]
+    except:
+        return []
+```
+
+### 华尔街见闻快讯
+
+```python
+async def wallstreetcn_flash_async(channel: str = "global-channel", count: int = 20) -> list[dict]:
+    \"\"\"华尔街见闻快讯。channel: global-channel(全球/宏观) / us-stock-channel(美股) / a-stock-channel(A股)\"\"\"
+    d = await _get_json("https://api-one.wallstcn.com/apiv1/content/lives",
+                         params={"channel":channel,"limit":count})
+    items = d.get("data",{}).get("items",[])
+    return [{"title":i.get("title","").strip(),
+             "content":(i.get("content_text") or "").strip(),
+             "time":i.get("display_time",i.get("created_at","")),
+             "channels":i.get("channels",[]),
+             "author":i.get("author",{}).get("display_name","") if i.get("author") else ""}
+            for i in items]
+```
+
+### 个股新闻热度
+
+```python
+async def stock_news_sentiment_async(code: str, name: str = "") -> dict:
+    \"\"\"个股新闻热度检测（基于Yahoo搜索）\"\"\"
+    try:
+        news = await stock_news(f"{code} {name}".strip(), count=5)
+        return {"news_count":len(news),"recent_titles":[n.get("title","") for n in news]}
+    except:
+        return {"news_count":0,"recent_titles":[]}
+```
+
+
 ## Layer 8: A股公告层（巨潮 cninfo）
 
 ### 8.1 A股公告检索 — 巨潮 cninfo
@@ -2025,6 +2089,7 @@ def batch_hk_full(codes: list[str]) -> dict:
 |------|---------|------|
 | A股行情 | 腾讯 sh/sz（47字段，不封IP） | 东财 push2 secid:0-1 |
 | A股日K线 | 腾讯（前复权，不封IP） | 百度（带MA）/ mootdx（多周期）|
+| 港股资金流 | 东财 push2his（secid_prefix=116） | — |
 | A股资金流 | 东财 push2his | — |
 | A股融资融券/大宗/股东 | 东财 datacenter | — |
 | A股强势股/题材 | 同花顺 | — |
@@ -2039,7 +2104,7 @@ def batch_hk_full(codes: list[str]) -> dict:
 | 港股行情 | 腾讯 r_hkXXXXX（78字段） | 新浪/东财 push2 |
 | 美股行情 | 新浪 gb_XXXX（36字段） | 腾讯/东财 push2 |
 | 美股K线 | 新浪 | Yahoo chart |
-| 港股K线 | Yahoo chart | — |
+| 港股K线 | 腾讯fqkline(日K/周K) | Yahoo chart / TickFlow(兜底) |
 | 关键指标(中文) | 东财 GMAININDICATOR | — |
 | 关键指标(英文) | Yahoo quoteSummary | — |
 | 财报三表(中文) | 东财 datacenter | — |
@@ -2050,6 +2115,7 @@ def batch_hk_full(codes: list[str]) -> dict:
 | 期权链(仅美股) | Yahoo options | — |
 | SEC Filing | EDGAR | — |
 | 搜索 | 东财 search | Yahoo search |
+| 新闻 | 华尔街见闻快讯 | Yahoo新闻 / 金十数据 |
 | 全市场列表 | 东财 push2 clist | — |
 
 ---

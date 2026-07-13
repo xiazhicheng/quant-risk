@@ -1,14 +1,18 @@
 {
-  "updatedAt": "2026-07-08T18:47:00.000Z",
-  "command": "update",
+  "updatedAt": "2026-07-09T20:20:37.000Z",
+  "command": "bulk-update",
   "gitHead": "4a1ae4c1182a20d9203a0d833eeccba327cd2cd4",
   "changes": [
-    "TickFlow K-line integration in data.py (+130 lines) and report.py (active fallback for all 3 markets)",
-    "HK quote expanded financial fields: pe_ttm, roe, profit_margin, revenue_growth, gross_margin, debt_ratio, dividend_yield from Tencent 78-field API",
-    "HK fundamentals 4-tier fallback chain documented",
-    "Mandatory stock recommendation 3-step workflow in SKILL.md with output template",
-    "CLAUDE.md line counts updated, design decisions added",
-    "All openwiki pages updated to reflect above changes"
+    "Fixed stock_kline_yahoo_async: None result handling + HK leading-zero auto-strip",
+    "Added hk_kline_tencent_async: Tencent fqkline HK daily/weekly K-line fallback",
+    "Added scripts/recommend_hk.py: full HK stock recommendation pipeline (3-step)",
+    "Added scripts/chan_mtf.py: multi-timeframe Chan Theory (5m/60m/日K/周K)",
+    "Expanded HK stock screening pool from 58→114 stocks across 8 sectors",
+    "SKILL.md synced with all code changes (function fixes + new functions + script refs)",
+    "Fixed market_stock_list_async -> market_stock_list function name in SKILL.md",
+    "Installed tickflow dependency + fixed uv cache permissions",
+    "Superpowers skill upgraded to v2.0.0 with 14 sub-skills from obra/superpowers",
+    "Migrated all skills from ~/.claude/skills/ to ~/.codex/skills/"
   ],
   "model": "deepseek-v4-flash"
 }

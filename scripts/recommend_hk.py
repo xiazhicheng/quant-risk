@@ -10,9 +10,11 @@ from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from quantrisk.data import (hk_stock_quote_tencent_async, kline_tickflow_async,
+from quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tencent_async,
+                             stock_kline_yahoo_async, kline_tickflow_async,
                              parallel_map, key_indicators_eastmoney_async,
-                             close_async_session, close_tickflow)
+                             batch_hk_capital_flow_async, close_async_session,
+                             close_tickflow)
 from quantrisk.indicators import calc_ma, calc_macd, chan_risk_assessment
 
 SECTORS = {
@@ -87,17 +89,22 @@ def meso_filter(st):
     return passed, elim
 
 
-async def score_one(p):
+async def score_one(p, sector_ranking=None, capital_flow=None):
     c = p["c"]
-    kl = await kline_tickflow_async(f"{c}.HK", "1d", 365)
+    # 备选链: 腾讯 > Yahoo > TickFlow
+    kl = await hk_kline_tencent_async(c, "day", 365)
     if not kl or len(kl) < 20:
         try:
-            from quantrisk.data import stock_kline_yahoo_async
             kl = await stock_kline_yahoo_async(f"{int(c)}.HK", "1d", "1y")
         except Exception:
             kl = []
+    if not kl or len(kl) < 20:
+        try:
+            kl = await kline_tickflow_async(f"{c}.HK", "1d", 365)
+        except Exception:
+            kl = []
     fb = await fb_score(p)
-    hot = await hot_score(p, kl)
+    hot = await hot_score(p, kl, sector_ranking, capital_flow)
     ch, cd = await chan_score(p, kl)
     total = fb * 5 + hot * 3 + ch * 2
     return {"c": c, "n": p["n"], "s": p["s"], "p": p["p"], "mc": p["mc"], "pe": p["pe"],
@@ -131,19 +138,70 @@ async def fb_score(p):
     return max(1, min(5, round(s)))
 
 
-async def hot_score(p, kl):
-    s, sec = 3.0, p["s"]
-    hm = {"互联网/IT": 0.5, "消费/食品/零售": 0.3}
-    wm = {"公用事业/基建/交运": -0.3, "通信/运营商": -0.3}
-    s += hm.get(sec, 0) + wm.get(sec, 0)
+async def hot_score(p, kl, sector_ranking=None, capital_flow=None):
+    """基于实际资金流向的热点评分。资金净流入+板块龙头=热点"""
+    s, sec, c = 3.0, p["s"], p["c"]
+    flow = capital_flow.get(c, 0) if capital_flow else 0
+    sec_flow_data = None
+
+    # ① 大资金在追哪个板块（板块主力净流入排名）
+    if sector_ranking:
+        for rank, (name, data) in enumerate(sector_ranking):
+            if name == sec:
+                sec_flow_data = data
+                total = data["total_flow"]
+                if rank == 0 and total > 0:
+                    s += 1.2  # 板块资金流入第一
+                elif rank < 3 and total > 0:
+                    s += 0.8
+                elif rank < 5:
+                    s += 0.3 if total > 0 else -0.3
+                else:
+                    s -= 0.6  # 资金大幅流出板块
+                break
+
+    # ② 个股资金流向（龙头 = 板块内净流入第一）
+    if flow > 5e8:
+        s += 0.8  # 主力净流入>5亿
+    elif flow > 2e8:
+        s += 0.6  # >2亿
+    elif flow > 1e8:
+        s += 0.4  # >1亿
+    elif flow > 5e7:
+        s += 0.2
+    elif flow > 1e7:
+        s += 0.1
+    elif flow < -5e7:
+        s -= 0.5
+    elif flow < -1e7:
+        s -= 0.25
+
+    # ③ 板块内资金龙头判定
+    if sector_ranking:
+        for name, data in sector_ranking:
+            if name == sec:
+                break
+    if sector_ranking:
+        for name, data in sector_ranking:
+            if name == sec:
+                ranked = sorted(data["stocks"], key=lambda x: x["flow"], reverse=True)
+                for rank, st in enumerate(ranked):
+                    if st["code"] == c:
+                        if rank == 0 and flow > 0:
+                            s += 0.5  # 板块龙头 + 净流入
+                        elif rank < 3 and flow > 0:
+                            s += 0.25
+                        break
+                break
+
+    # ④ 20日动量（辅助）
     if kl and len(kl) >= 20:
         pc = (kl[-1]["close"] - kl[-20]["close"]) / kl[-20]["close"] * 100
-        if pc > 10: s += 1
-        elif pc > 5: s += 0.5
-        elif pc < -10: s -= 1
-        elif pc < -5: s -= 0.5
-    amt = sf(p["q"].get("amount_100m"))
-    if amt > 30: s += 0.5
+        if pc > 15: s += 0.5
+        elif pc > 8: s += 0.25
+        elif pc < -10: s -= 0.5
+        elif pc < -5: s -= 0.25
+
     return max(1, min(5, round(s)))
 
 
@@ -200,18 +258,32 @@ async def main():
     print(f"  剔除: {len(elim)} 只")
     for c, n, r in elim: print(f"    - {c} {n}: {r}")
     print(f"  通过: {len(passed)} 只\n")
-    print(f"[Step 3] 并行评分 {len(passed)} 只候选标的...")
-    scored = await asyncio.gather(*[score_one(p) for p in passed])
+    print(f"[Step 3] 资金流向分析+并行评分 {len(passed)} 只候选标的...")
+    capital_flow = await batch_hk_capital_flow_async([p["c"] for p in passed])
+    sector_flow = {}
+    for p in passed:
+        sec, flow = p["s"], capital_flow.get(p["c"], 0)
+        if sec not in sector_flow:
+            sector_flow[sec] = {"total_flow": 0.0, "stocks": []}
+        sector_flow[sec]["total_flow"] += flow
+        sector_flow[sec]["stocks"].append({"code": p["c"], "name": p["n"], "flow": flow})
+    sector_ranking = sorted(sector_flow.items(), key=lambda x: x[1]["total_flow"], reverse=True)
+    print("  资金流向板块排名（前4）：")
+    for i, (name, data) in enumerate(sector_ranking[:4]):
+        top = sorted(data["stocks"], key=lambda x: x["flow"], reverse=True)[0]
+        print(f"    {i+1}. {name}: 主力净{data['total_flow']/1e8:+.2f}亿  龙头:{top['name']}(+{top['flow']/1e8:.2f}亿)")
+    scored = await asyncio.gather(*[score_one(p, sector_ranking=sector_ranking, capital_flow=capital_flow) for p in passed])
     scored = [s for s in scored if s]
     scored.sort(key=lambda x: x["total"], reverse=True)
     print(f"  评分完成\n")
-    print_report(ds, ss, elim, scored, len(passed))
+    print()
+    print_report(ds, ss, elim, scored, len(passed), capital_flow, sector_ranking)
     print("\n> ⚠️ 声明：以上分析仅基于公开市场数据，不构成投资建议。")
     await close_async_session()
     await close_tickflow()
 
 
-def print_report(ds, ss, elim, scored, passed_cnt):
+def print_report(ds, ss, elim, scored, passed_cnt, capital_flow=None, sector_ranking=None):
     top10 = scored[:10]
     print("=" * 80, "\n")
     print(f"## 港股选股推荐 | {ds}\n")
@@ -241,7 +313,9 @@ def print_report(ds, ss, elim, scored, passed_cnt):
     print()
     for s in top10[:5]:
         idx = scored.index(s) + 1
-        print(f"#### {idx}. {s['n']}（{s['c']}）— {fmt(s['p'])} 港元\n")
+        chg = s.get("q", {}).get("change_pct", 0)
+        chg_str = f"{chg:+.2f}%" if chg else "0.00%"
+        print(f"#### {idx}. {s['n']}（{s['c']}）— {fmt(s['p'])} 港元 | {chg_str}")
         ind = s.get("ind", {})
         pe_str = fmt(s.get("pe"))
         rev_str = fmt(sf(s.get("rev")))
@@ -258,12 +332,34 @@ def print_report(ds, ss, elim, scored, passed_cnt):
         pv = d.get("pv", "")
         mc_str = d.get("mc", "")
         v_str = d.get("v", "等待信号")
-        fb_j = (f"营收={rev_str}%/净利={ny_str}%/ROE={roe_str}/"
-                f"毛利率={gr_str}/负债率={dr_str}/PE={pe_str}")
-        fb_j += "。基本面优秀。" if s["fb"] >= 4 else ("。基本面稳健。" if s["fb"] >= 3 else "。基本面一般。")
-        hot_j = f"{s['s']}板块表现{'活跃' if s['hot']>=4 else '温和' if s['hot']>=3 else '偏弱'}"
-        chan_j = f"MA60={pp}/现价={fmt(s['p'])}/{pv}%。MACD柱={mh}/{mc_str}/{v_str}"
-        chan_j += "。结构向好。" if s["ch"] >= 4 else ("。结构中性。" if s["ch"] >= 3 else "。结构偏空。")
+        fb_j = (f"PE={pe_str}/营收={rev_str}%/净利={ny_str}%/ROE={roe_str}/"
+                f"毛利率={gr_str}/负债率={dr_str}")
+        fb_j += "。基本面优秀。" if s["fb"] >= 4 else ("。基本面稳健。" if s["fb"] >= 3 else "。基本面需关注。")
+        # 热点分解
+        nm_count = s.get("news_mentions", 0)
+        sp = ss.get(s["s"], {})
+        sec_ap = sp.get("ap", 0)
+        flow = capital_flow.get(s["c"], 0) if capital_flow else 0
+        sec_j = f"板块资金{sf(s['s'])>0:.2f}亿元"  # placeholder
+        if sector_ranking:
+            for rk, (name, data) in enumerate(sector_ranking):
+                if name == s["s"]:
+                    sec_j = f"{name}净{data['total_flow']/1e8:+.2f}亿"
+                    break
+        flow_str = f"主力净{flow/1e8:+.2f}亿" if abs(flow) > 1e4 else ""
+        hot_j = sec_j
+        if flow_str:
+            hot_j += f" | {flow_str}"
+        if sector_ranking:
+            for name, data in sector_ranking:
+                if name == s["s"]:
+                    ranked = sorted(data["stocks"], key=lambda x: x["flow"], reverse=True)
+                    if ranked and ranked[0]["code"] == s["c"] and flow > 0:
+                        hot_j += " | ⭐板块龙头"
+                    break
+        sig = v_str if v_str and v_str != "等待信号" else "macd待确认"
+        chan_j = f"MA60={pp}/现价={fmt(s['p'])}/MACD柱={mh}/{sig}"
+        chan_j += "。结构向好。" if s["ch"] >= 4 else ("。结构中性。" if s["ch"] >= 3 else "。结构需谨慎。")
         print("| 维度 | 评分 | 依据 |")
         print("|:----:|:----:|------|")
         print(f"| 📊 **基本面** | **{s['fb']}/5** | {fb_j} |")
@@ -274,12 +370,13 @@ def print_report(ds, ss, elim, scored, passed_cnt):
         adv = ("强烈关注，适合布局" if t >= 35 else
                "可适当关注，等待入场时机" if t >= 28 else
                "纳入观察清单，等待催化剂" if t >= 22 else "暂时回避，等待改善")
-        print(f"**建议**：{adv}。市值{fmt(s.get('mc'))}亿。")
+        sl_price = "N/A"
         kl = s.get("kl", [])
         if kl and len(kl) >= 20:
             from quantrisk.indicators import calc_stop_loss_take_profit
             sltp = calc_stop_loss_take_profit(entry_price=s["p"], klines=kl[-60:])
-            print(f"**止损**：{sltp.get('stop_loss', 'N/A')} | **目标**：{sltp.get('take_profit', 'N/A')}")
+            sl_price = str(sltp.get('stop_loss', 'N/A'))
+        print(f"**建议**：{adv}。止损 {sl_price}。")
         print()
     print("### 综合建议\n")
     print("| 标的 | 建议 | 入场区间 | 止损 | 目标 |")

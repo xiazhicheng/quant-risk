@@ -272,10 +272,17 @@ async def us_stock_kline_sina_async(ticker: str, num: int = 120) -> list[dict]:
             for i in items]
 
 async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str = "1y") -> list[dict]:
-    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK"""
+    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK（港股自动去前导零）"""
+    # 港股自动去前导零 (Yahoo不接受前导零如"09999.HK")
+    parts = symbol.split(".")
+    if len(parts) == 2 and parts[0].isdigit():
+        symbol = f"{int(parts[0])}.{parts[1]}"
     d = await _get_json(f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
                         params={"interval":interval,"range":range_})
-    chart = d.get("chart",{}).get("result",[{}])[0]
+    chart = d.get("chart", {})
+    if not chart or not chart.get("result") or not chart["result"] or not chart["result"][0]:
+        return []
+    chart = chart["result"][0]
     ts = chart.get("timestamp",[])
     q = chart.get("indicators",{}).get("quote",[{}])[0]
     sub = "m" in interval or "h" in interval
@@ -287,6 +294,35 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
                        "low":round(q["low"][i],2),"close":round(q["close"][i],2),
                        "volume":int(q["volume"][i])})
     return result
+async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 120) -> list[dict]:
+    """腾讯港股K线（日K/周K）。code: 5位数字代码，period: day/week，count: 条数。
+    注意：分钟级(5m/60m)只返回当天1根，不建议用于缠论分析。"""
+    url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{code},{period},,,{count},qfq"
+    d = await _get_json(url, headers={"Referer": "https://finance.qq.com/"})
+    data = d.get("data", {})
+    hk_key = f"hk{code}"
+    klines_data = data.get(hk_key, {}).get(period, [])
+    if not klines_data:
+        return []
+    result = []
+    for item in klines_data:
+        if len(item) < 6:
+            continue
+        bar = {
+            "date": str(item[0])[:10],
+            "open": float(item[1]),
+            "close": float(item[2]),
+            "high": float(item[3]),
+            "low": float(item[4]),
+            "volume": int(float(item[5])),
+        }
+        # Daily data has an extra metadata dict; minute data doesn't
+        if len(item) > 6 and isinstance(item[6], dict):
+            bar["metadata"] = item[6]
+        result.append(bar)
+    return result
+
+
 
 async def cn_stock_kline_tencent_async(code: str, days: int = 120) -> list[dict]:
     """A股日K线（腾讯，前复权，不封IP）"""
@@ -870,3 +906,51 @@ async def sec_xbrl_facts_async(cik:str, metrics:list[str]=None) -> dict:
         result[mn] = [{"end":e.get("end"),"val":e.get("val"),"form":e.get("form")}
                       for e in m["units"][unit_key] if e.get("form") in ("10-K","10-Q")][-20:]
     return {"company":facts.get("entityName"),"metrics":result}
+
+# ── Layer 7: 新闻层 ──────────────────────────
+
+async def jin10_flash_async(count: int = 20) -> list[dict]:
+    """金十数据快讯（API可能不可达，保留接口备用）"""
+    try:
+        d = await _get_json("https://flash-api.jin10.com/get_flash_list",
+                             params={"channel":"-8200","vip":"1","max_time":"0"})
+        return [{"time":i.get("time",""),"content":i.get("content",""),"title":i.get("title","")}
+                for i in (d.get("data") or [])[:count]]
+    except:
+        return []
+
+async def wallstreetcn_flash_async(channel: str = "global-channel", count: int = 20) -> list[dict]:
+    """华尔街见闻快讯。
+    channel: global-channel(全球/宏观) / us-stock-channel(美股) / a-stock-channel(A股)
+             forex-channel(外汇) / goldc-channel(黄金) / oil-channel(原油)"""
+    d = await _get_json("https://api-one.wallstcn.com/apiv1/content/lives",
+                         params={"channel":channel,"limit":count})
+    items = d.get("data",{}).get("items",[])
+    return [{"title":i.get("title","").strip(),
+             "content":(i.get("content_text") or "").strip(),
+             "time":i.get("display_time",i.get("created_at","")),
+             "channels":i.get("channels",[]),
+             "author":i.get("author",{}).get("display_name","") if i.get("author") else ""}
+            for i in items]
+
+async def stock_news_sentiment_async(code: str, name: str = "") -> dict:
+    """个股新闻热度检测（基于Yahoo搜索）"""
+    try:
+        news = await stock_news(f"{code} {name}".strip(), count=5)
+        return {"news_count":len(news),"recent_titles":[n.get("title","") for n in news]}
+    except:
+        return {"news_count":0,"recent_titles":[]}
+
+async def batch_hk_capital_flow_async(codes: list[str]) -> dict[str, float]:
+    """并行获取港股主力资金净流入。返回 {code: main_net_inflow (元)}"""
+    async def _fetch(code):
+        try:
+            d = await fund_flow_daily_async(code, secid_prefix=116, limit=1)
+            if d:
+                return code, d[-1].get("main_net", 0.0)
+        except:
+            pass
+        return code, 0.0
+    funcs = [lambda c=code: _fetch(c) for code in codes]
+    results = await parallel_map(funcs, max_concurrency=20)
+    return {c: v for c, v in results if isinstance(v, (int, float))}

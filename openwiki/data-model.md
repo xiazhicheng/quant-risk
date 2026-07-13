@@ -210,6 +210,32 @@ Added in V1.1.0 (2026-07-03). A-share has unique data sources not available for 
 - **Market prefix helper**: `cn_market_prefix(code)` → `sh`/`sz`/`bj` based on code prefix
 - **EastMoney secid helper**: `cn_secid(code)` → `1.xxxxxx` or `0.xxxxxx`
 - **mootdx TCP client**: A-share specific multi-period K-lines and financial snapshots via `mootdx`
+
+| `us_stock_kline_sina_async` | US | daily | Sina (back to 1984) | — |
+| `stock_kline_yahoo_async` | US/HK | **all** (5m/60m/daily) | Yahoo chart v8 | — |
+| `kline_tickflow_async` | ALL | daily/weekly/monthly | TickFlow SDK | Yahoo |
+| `cn_stock_kline_tencent_async` | A-share | daily/5m/60m | Tencent (adjust, no IP block) | Baidu / mootdx |
+| `hk_kline_tencent_async` | **HK** | **daily/weekly** | Tencent fqkline (120 bars) | — |
+| `cn_stock_kline_baidu_async` | A-share | daily (with MA) | Baidu | — |
+
+**Yahoo K-line fix (2026-07-09)**:
+- Auto-strips leading zeros for HK stocks (`09999.HK` → `9999.HK`), fixes `"result": None` crash
+- Supports all Yahoo intervals: `5m`, `15m`, `30m`, `60m`, `1h`, `1d`, `1w`, `1mo`
+
+**Tencent HK K-line** (`hk_kline_tencent_async`, new in 2026-07-09):
+- Endpoint: `web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{code},{period},,,{count},qfq`
+- Daily: up to 120 bars with full history; Weekly: up to 120 bars (~2.5 years)
+- ⚠️ Minute-level (5m/60m): only returns current day's last bar — not usable for Chan Theory
+
+**Multi-source fallback chain** (used by `scripts/chan_mtf.py`):
+| Period | 1st | 2nd | 3rd |
+|--------|-----|-----|-----|
+| 5m | Yahoo | — | — |
+| 60m | Yahoo | — | — |
+| 日K | TickFlow | Tencent fqkline | Yahoo daily |
+| 周K | Tencent fqkline | — | — |
+
+*Source: `/quantrisk/data.py` functions `stock_kline_yahoo_async`, `kline_tickflow_async`, `hk_kline_tencent_async`*
 - **Capital flow (L5)**: Unique margin trading, block trades, shareholder count
 - **Signals (L6)**: Dragon-tiger board, northbound flow, lockup expiry — A-share only concepts
 - **Announcements (L8)**: CNINFO (巨潮) is China's official listed company announcement platform

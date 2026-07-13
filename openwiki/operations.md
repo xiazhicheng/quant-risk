@@ -61,6 +61,44 @@ result = asyncio.run(analyze_hk("03690"))
 
 ---
 
+## HK Stock Recommendation (3-Step Pipeline)
+
+```bash
+# Full HK stock recommendation (8 sectors, 114 stocks, 3D scoring → TOP10)
+python3 scripts/recommend_hk.py
+```
+
+Automated pipeline following SKILL.md's mandatory 3-step workflow:
+1. **Step 1**: Cross-sector full-market scan — 8 sectors, 114 representative stocks
+2. **Step 2**: Meso hard-constraint filter — market cap≥50B, price≥1HKD, PE≤80, flag net profit decline>50%
+3. **Step 3**: Micro 3D scoring — fundamental×5 + hot×3 + chan×2 → ranked TOP10 with stop-loss/target
+
+## Multi-Timeframe Chan Theory Analysis
+
+```bash
+# Single stock (5m/60m/日K/周K multi-timeframe Chan theory)
+python3 scripts/chan_mtf.py 09999
+
+# Batch comparison
+python3 scripts/chan_mtf.py 09999 00700 02269
+```
+
+Auto-detects available data sources (Yahoo → TickFlow → Tencent fqkline) and produces:
+- 5-minute short-term + 60-minute medium-term + daily long-term + weekly ultra-long
+- Multi-period resonance/divergence signals
+- Chan Theory verdict, pivot positions, buy/sell points, support/resistance levels
+
+### Data Source Fallback Chain
+
+| Period | Primary | Fallback |
+|--------|---------|----------|
+| 5m | Yahoo (intraday) | — (only Yahoo has HK minute data) |
+| 60m | Yahoo (intraday) | — |
+| 日K | TickFlow | Tencent fqkline → Yahoo daily |
+| 周K | Tencent fqkline | — |
+
+*Source: `/scripts/chan_mtf.py`*
+
 ## Stock Screener: Three-Tier Filtering
 
 Located in `/quantrisk/screener.py` (~113 lines), used for the stock recommendation workflow:

@@ -33,6 +33,9 @@
 uv run scripts/analyze_hk.py 03690              # Analyze Meituan (single)
 uv run scripts/analyze_hk.py 03690 00268 00700   # Batch analyze multiple HK stocks
 uv run scripts/analyze_hk.py 03690 --json        # JSON output mode
+python3 scripts/recommend_hk.py                  # Full HK stock recommendation (114 stocks, TOP10)
+python3 scripts/chan_mtf.py 09999                # Multi-timeframe Chan Theory analysis
+python3 scripts/chan_mtf.py 09999 00700 02269    # Batch multi-timeframe comparison
 ```
 
 **Requirements**: Python 3.10+, `uv` package manager, and install dependencies:

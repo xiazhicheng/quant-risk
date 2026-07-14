@@ -726,9 +726,27 @@ def cn_eps_forecast_sync(code:str) -> list[dict]:
 
 # L5 — 资金面
 async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:int=100) -> list[dict]:
-    d = (await _get_json("https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get", params={
-        "secid":f"{secid_prefix}.{ticker_or_code}","klt":101,
-        "fields1":"f1,f2,f3,f7","fields2":"f51,f52,f53,f54,f55,f56,f57","lmt":limit})).get("data")
+    """获取个股日度资金流向。push2his 为历史API，限流时自动降级到 push2。"""
+    s = await get_async_session()
+    # push2his 已被IP限流，改用 push2（数据一致，主域名更稳定）
+    url = "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"
+    for attempt in range(3):
+        try:
+            async with s.get(url, params={
+                "secid":f"{secid_prefix}.{ticker_or_code}","klt":101,
+                "fields1":"f1,f2,f3,f7","fields2":"f51,f52,f53,f54,f55,f56,f57","lmt":limit},
+                headers={"Referer":"https://quote.eastmoney.com/"}) as r:
+                d = (await r.json()).get("data")
+            if d and d.get("klines"):
+                break
+        except Exception:
+            if attempt < 2:
+                import asyncio
+                await asyncio.sleep(1 + attempt * 2)
+                continue
+            return []
+    else:
+        return []
     if not d or not d.get("klines"): return []
     return [{"date":p[0],"main_net":float(p[1]),"small_net":float(p[2]),"mid_net":float(p[3]),
              "big_net":float(p[4]),"super_big_net":float(p[5]),

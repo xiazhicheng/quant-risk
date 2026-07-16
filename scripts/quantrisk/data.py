@@ -5,8 +5,8 @@ quantrisk — 数据层（Data Layer）
 全部 aiohttp 异步，零鉴权（TickFlow 需 API Key）。
 
 用法:
-    from quantrisk.data import hk_stock_quote_tencent_async, stock_kline_yahoo_async, key_statistics_async
-    from quantrisk.data import kline_tickflow_async  # 免费免注册，无需 API Key
+    from scripts.quantrisk.data import hk_stock_quote_tencent_async, stock_kline_yahoo_async, key_statistics_async
+    from scripts.quantrisk.data import kline_tickflow_async  # 免费免注册，无需 API Key
     result = await hk_stock_quote_tencent_async("03690")
 
 数据源:

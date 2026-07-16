@@ -1,8 +1,8 @@
 # Data Layer & Sources
 
-**Source file**: `/quantrisk/data.py` (~872 lines)
+**Source file**: `/scripts/quantrisk/data.py` (~974 lines)
 
-The data layer is organized into **11 layers** (numbered with gaps to allow future insertions). All functions are `async` using `aiohttp` and return consistent dict/list formats.
+The data layer is organized into **12 layers** (numbered with gaps to allow future insertions). All functions are `async` using `aiohttp` and return consistent dict/list formats.
 
 ---
 
@@ -32,7 +32,7 @@ The Tencent HK quote endpoint (`qt.gtimg.cn/q=r_hkXXXXX`) returns 78 raw fields.
 | `gross_margin` | Gross margin % | f[72] | → 0 if <72 fields |
 | `debt_ratio` | Debt ratio % | f[74] | → 0 if <74 fields |
 
-*Source: `/quantrisk/data.py` lines 148-166*
+*Source: `/scripts/quantrisk/data.py` lines 148-166*
 
 These fields enable **instant fundamental assessment** for any Hong Kong stock from the quote alone, covering bank/insurance stocks where EastMoney's datacenter has no data.
 
@@ -55,7 +55,8 @@ Historical OHLCV data with `{date, open, high, low, close, volume}` format.
 | A-share | Tencent (`cn_stock_kline_tencent_async`, forward-adjusted) | Baidu / mootdx / TickFlow |
 
 Key functions:
-- `stock_kline_yahoo_async(symbol, interval, range_)` — Yahoo Finance v8 chart API, handles any interval (1m to 1mo). Range supports "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max".
+- `stock_kline_yahoo_async(symbol, interval, range_)` — Yahoo Finance v8 chart API, handles any interval (1m to 1mo). Range supports "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max". **HK stocks**: auto-strips leading zero from symbol (e.g. `"09999.HK"` → `"9999.HK"`) since Yahoo does not accept leading zeros.
+- `hk_kline_tencent_async(code, period, count)` — Tencent fqkline HK daily/weekly K-lines. `code`: 5-digit code, `period`: `day`/`week`, `count`: number of bars. Returns `{date, open, high, low, close, volume}`. **Note**: minute-level (5m/60m) returns only 1 bar per day, unsuitable for Chan Theory.
 - `cn_stock_kline_tencent_async(code, days)` — A-share daily K-lines with forward price adjustment, no IP blocking.
 - `cn_stock_kline_baidu_async(code, start)` — A-share K-lines with built-in MA5/MA10/MA20 from Baidu.
 - `cn_stock_kline_tdx_sync(code)` — A-share multi-period via `mootdx` TCP client (minute/day/week/month).
@@ -64,7 +65,7 @@ Key functions:
 
 ## TickFlow K-Line Backup (Free Tier)
 
-**Functions**: `kline_tickflow_async()`, `kline_tickflow_batch_async()`, `close_tickflow()`, `_get_tickflow()` in `/quantrisk/data.py` lines 318-445
+**Functions**: `kline_tickflow_async()`, `kline_tickflow_batch_async()`, `close_tickflow()`, `_get_tickflow()` in `/scripts/quantrisk/data.py` lines 318-445
 
 TickFlow provides **free, no-registration** historical K-line data for all three markets, now implemented as native Python functions in `data.py` (moved from SKILL.md in V1.2.0):
 
@@ -79,13 +80,13 @@ TickFlow provides **free, no-registration** historical K-line data for all three
 
 **Batch function** (`kline_tickflow_batch_async`, lines 390-445): Accepts a list of symbols and returns `{symbol: [kline_dict, ...], ...}`. Handles the raw API response format manually (iterating timestamp/open/high/low/close/volume arrays). Returns `{}` on failure.
 
-Used as **active fallback** in all three market analyzers. When primary K-line sources (Yahoo/Tencent/Sina) return fewer than 20 candles, `StockAnalyzer` calls `kline_tickflow_async()` to supplement. See `/quantrisk/report.py` lines 62-66 (HK), 101-106 (CN), 145-149 (US).
+Used as **active fallback** in all three market analyzers. When primary K-line sources (Yahoo/Tencent/Sina) return fewer than 20 candles, `StockAnalyzer` calls `kline_tickflow_async()` to supplement. See `/scripts/quantrisk/report.py` lines 62-66 (HK), 101-106 (CN), 145-149 (US).
 
 ---
 
 ## Layer 3: Technical Indicators (技术指标层)
 
-Handled by `/quantrisk/indicators.py`. Pure Python calculations from K-line data:
+Handled by `/scripts/quantrisk/indicators.py`. Pure Python calculations from K-line data:
 - `calc_ma()` — Simple moving averages + EMA12/EMA26
 - `calc_macd()` — MACD with DIF, DEA, histogram
 - `calc_rsi()` — RSI6, RSI12, RSI24
@@ -96,7 +97,7 @@ Handled by `/quantrisk/indicators.py`. Pure Python calculations from K-line data
 
 ## Layer 3.5: Chan Theory (缠论层)
 
-Handled by `/quantrisk/chan.py`. See [Chan Theory Module](chan-theory.md) for full documentation.
+Handled by `/scripts/quantrisk/chan.py`. See [Chan Theory Module](chan-theory.md) for full documentation.
 
 ---
 
@@ -109,7 +110,7 @@ Handled by `/quantrisk/chan.py`. See [Chan Theory Module](chan-theory.md) for fu
 
 Key functions:
 - `key_indicators_eastmoney_async(secucode, page_size)` — Revenue, profit, ROE, gross margin, debt ratio from EastMoney datacenter
-- `hk_fundamentals_async(code)` — **HK unified fundamentals** with 4-tier fallback chain: EastMoney → Tencent 78-field quote (new PE_TTM/ROE/gross_margin/debt_ratio fields) → Yahoo key stats → Yahoo financial statements. See `/quantrisk/data.py` lines 501-607. The Tencent quote fallback (Level 2) is especially important for bank/insurance stocks where EastMoney's datacenter has no data.
+- `hk_fundamentals_async(code)` — **HK unified fundamentals** with 4-tier fallback chain: EastMoney → Tencent 78-field quote (PE_TTM/ROE/gross_margin/debt_ratio/营收增速) → Yahoo key stats → Yahoo financial statements. See `/scripts/quantrisk/data.py` lines 537-630. The Tencent quote fallback (Level 2) is especially important for bank/insurance stocks where EastMoney's datacenter has no data.
 - `key_statistics_async(symbol)` — Yahoo key statistics (forward PE, target price, recommendation, institutional ownership)
 - `cn_financial_statements_sina_async(code)` — A-share 3 financial statements from Sina
 - `cn_eps_forecast_sync(code)` — A-share analyst consensus EPS from 同花顺
@@ -119,8 +120,10 @@ Key functions:
 
 ## Layer 5: Capital Flow (资金面层)
 
-A-share only (with HK/US from quotes/fundamentals):
+A-share (with HK using EastMoney push2 via `batch_hk_capital_flow_async`):
 - `cn_fund_flow_minute_async(code)` — Intraday capital flow (main/super-large/large/medium/small orders)
+- `fund_flow_daily_async(ticker_or_code, secid_prefix, limit)` — Daily fund flow. Uses **push2** instead of push2his (push2his was IP-rate-limited). Retries up to 3 times with exponential backoff. Returns `{date, main_net, small_net, mid_net, big_net, super_big_net}`.
+- `batch_hk_capital_flow_async(codes)` — Parallel HK stock capital flow via `fund_flow_daily_async(secid_prefix=116)`
 - `cn_margin_trading_async(code)` — Margin trading (融资融券)
 - `cn_block_trade_async(code)` — Block trades (大宗交易)
 - `cn_holder_num_change_async(code)` — Shareholder count changes
@@ -136,6 +139,19 @@ A-share only (with HK/US from quotes/fundamentals):
 - `cn_dragon_tiger_board_async()` — Dragon-tiger board (龙虎榜, top daily movers)
 - `cn_lockup_expiry_async()` — Lockup expiration warnings
 - `cn_industry_ranking_async(top_n)` — Sector performance ranking
+
+---
+
+## Layer 7: News & Sentiment (新闻舆情层 — HK/A-share)
+
+Introduced in V1.2.1 for capital-flow-based hot scoring support:
+
+- `jin10_flash_async(count)` — 金十数据 flash news (API may be unreachable; kept as backup)
+- `wallstreetcn_flash_async(channel, count)` — 华尔街见闻 flash news; channels: `global-channel` (global/macro), `us-stock-channel`, `a-stock-channel`, `forex-channel`, `goldc-channel`, `oil-channel`
+- `stock_news_sentiment_async(code, name)` — Stock news sentiment check (Yahoo search based), returns `{news_count, recent_titles}`
+- `batch_hk_capital_flow_async(codes)` — Parallel HK stock capital flow; returns `{code: main_net_inflow (元)}`; uses `fund_flow_daily_async` with EastMoney push2 (secid_prefix=116)
+
+*Source: `/scripts/quantrisk/data.py` lines 924-974*
 
 ---
 
@@ -171,7 +187,7 @@ A-share only (with HK/US from quotes/fundamentals):
 ## HTTP Session Infrastructure
 
 ```python
-# Session management in /quantrisk/data.py
+# Session management in /scripts/quantrisk/data.py
 _async_session: Optional[aiohttp.ClientSession]  # Main session for EastMoney, Tencent, Sina
 _yahoo_session: Optional[aiohttp.ClientSession]   # Separate session for Yahoo (crumb auth)
 _kline_tickflow_session                           # TickFlow session (lazy init via _get_tickflow())
@@ -235,7 +251,7 @@ Added in V1.1.0 (2026-07-03). A-share has unique data sources not available for 
 | 日K | TickFlow | Tencent fqkline | Yahoo daily |
 | 周K | Tencent fqkline | — | — |
 
-*Source: `/quantrisk/data.py` functions `stock_kline_yahoo_async`, `kline_tickflow_async`, `hk_kline_tencent_async`*
+*Source: `/scripts/quantrisk/data.py` functions `stock_kline_yahoo_async`, `kline_tickflow_async`, `hk_kline_tencent_async`*
 - **Capital flow (L5)**: Unique margin trading, block trades, shareholder count
 - **Signals (L6)**: Dragon-tiger board, northbound flow, lockup expiry — A-share only concepts
 - **Announcements (L8)**: CNINFO (巨潮) is China's official listed company announcement platform
@@ -244,11 +260,11 @@ Added in V1.1.0 (2026-07-03). A-share has unique data sources not available for 
 
 | File | What to Find |
 |------|-------------|
-| `/quantrisk/data.py` lines 1-83 | Session management, parallel_map, Yahoo auth, utility functions |
-| `/quantrisk/data.py` lines 83-140 | L1: Quote functions for all 3 markets (HK Tencent expanded with 10+ new fields) |
-| `/quantrisk/data.py` lines 140-315 | L2: K-line functions for all markets |
-| `/quantrisk/data.py` lines 315-440 | TickFlow implementation: `_get_tickflow`, `kline_tickflow_async`, `kline_tickflow_batch_async`, `close_tickflow` |
-| `/quantrisk/data.py` lines 440-630 | L4-L11: Fundamentals, capital flow, signals, announcements, options, SEC |
-| `/quantrisk/data.py` lines 630-872 | L4: `hk_fundamentals_async()` with 4-tier fallback chain, Yahoo financial statements, L5-L11 |
+| `/scripts/quantrisk/data.py` lines 1-83 | Session management, parallel_map, Yahoo auth, utility functions |
+| `/scripts/quantrisk/data.py` lines 83-166 | L1: Quote functions for all 3 markets (HK Tencent expanded with 10+ new fields) |
+| `/scripts/quantrisk/data.py` lines 166-390 | L2: K-line functions for all markets (includes `hk_kline_tencent_async`, Yahoo leading zero fix) |
+| `/scripts/quantrisk/data.py` lines 390-530 | TickFlow implementation + `hk_fundamentals_async()` with 4-tier fallback |
+| `/scripts/quantrisk/data.py` lines 530-924 | L4-L11: Fundamentals, capital flow (push2 fix), signals, announcements, options, SEC |
+| `/scripts/quantrisk/data.py` lines 924-974 | L7: News & sentiment (金十, 华尔街见闻, stock news sentiment, HK capital flow) |
 | `/CLAUDE.md` | Data source priority table (lines 29-46) |
 | `/CHANGELOG.md` V1.1.0 | A-share data source additions |

@@ -6,5 +6,5 @@
 #   screener.py    — 标的池三层筛选 + 批量查询（~110行）
 #   report.py      — StockAnalyzer 一键全量分析入口（~230行）
 # 用法:
-#   from quantrisk.report import analyze_hk
+#   from scripts.quantrisk.report import analyze_hk
 #   import asyncio; result = asyncio.run(analyze_hk("03690"))

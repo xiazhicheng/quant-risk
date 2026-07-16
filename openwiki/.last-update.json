@@ -1,18 +1,6 @@
 {
-  "updatedAt": "2026-07-09T20:20:37.000Z",
-  "command": "bulk-update",
-  "gitHead": "4a1ae4c1182a20d9203a0d833eeccba327cd2cd4",
-  "changes": [
-    "Fixed stock_kline_yahoo_async: None result handling + HK leading-zero auto-strip",
-    "Added hk_kline_tencent_async: Tencent fqkline HK daily/weekly K-line fallback",
-    "Added scripts/recommend_hk.py: full HK stock recommendation pipeline (3-step)",
-    "Added scripts/chan_mtf.py: multi-timeframe Chan Theory (5m/60m/日K/周K)",
-    "Expanded HK stock screening pool from 58→114 stocks across 8 sectors",
-    "SKILL.md synced with all code changes (function fixes + new functions + script refs)",
-    "Fixed market_stock_list_async -> market_stock_list function name in SKILL.md",
-    "Installed tickflow dependency + fixed uv cache permissions",
-    "Superpowers skill upgraded to v2.0.0 with 14 sub-skills from obra/superpowers",
-    "Migrated all skills from ~/.claude/skills/ to ~/.codex/skills/"
-  ],
+  "updatedAt": "2026-07-14T04:20:02.616Z",
+  "command": "update",
+  "gitHead": "952a1207d7fb3ecdc978694dea6c7e74cbb9868d",
   "model": "deepseek-v4-flash"
 }

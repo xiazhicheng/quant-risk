@@ -24,7 +24,7 @@ The script outputs: price, change %, PE, market cap, daily range, turnover, forw
 ### Python API
 
 ```python
-from quantrisk.report import StockAnalyzer
+from scripts.quantrisk.report import StockAnalyzer
 import asyncio
 
 async def main():
@@ -52,12 +52,12 @@ asyncio.run(main())
 ### Convenience Functions (auto-close sessions)
 
 ```python
-from quantrisk.report import analyze_hk, analyze_cn, analyze_us, analyze_hk_batch
+from scripts.quantrisk.report import analyze_hk, analyze_cn, analyze_us, analyze_hk_batch
 
 result = asyncio.run(analyze_hk("03690"))
 ```
 
-*Source: `/quantrisk/report.py` lines 220-253*
+*Source: `/scripts/quantrisk/report.py` lines 220-253*
 
 ---
 
@@ -72,6 +72,17 @@ Automated pipeline following SKILL.md's mandatory 3-step workflow:
 1. **Step 1**: Cross-sector full-market scan — 8 sectors, 114 representative stocks
 2. **Step 2**: Meso hard-constraint filter — market cap≥50B, price≥1HKD, PE≤80, flag net profit decline>50%
 3. **Step 3**: Micro 3D scoring — fundamental×5 + hot×3 + chan×2 → ranked TOP10 with stop-loss/target
+
+**Output format**: Full report with:
+- Section ①: sector table (sector | count | performance | 量比/资金)
+- Section ②: elimination detail table
+- Section ③: TOP10 ranking table
+- Per-stock breakdown: 3-row score table + detailed analysis paragraphs (基本面分析/热点分析/缠论分析) per stock
+- 综合建议: table with columns 标的 | 建议 | 买入点 | 止损点 | 止盈点
+- ⚠️ 风险提示 section with data-missing and sector-concentration warnings
+- 市场概况 section with overall market statistics
+
+**Session cleanup**: After reporting, the script explicitly calls `close_async_session()` and `close_tickflow()` then `gc.collect()` to release resources.
 
 ## Multi-Timeframe Chan Theory Analysis
 
@@ -101,14 +112,14 @@ Auto-detects available data sources (Yahoo → TickFlow → Tencent fqkline) and
 
 ## Stock Screener: Three-Tier Filtering
 
-Located in `/quantrisk/screener.py` (~113 lines), used for the stock recommendation workflow:
+Located in `/scripts/quantrisk/screener.py` (~113 lines), used for the stock recommendation workflow:
 
 ### Tier 1: Macro Scan — `build_candidate_pool()`
 
 Scans top-performing sectors and collects candidate stocks:
 1. Fetches sector performance ranking via `cn_industry_ranking_async()`
 2. Selects top N positive sectors
-3. For each sector, fetches top stocks via `market_stock_list_async()`
+3. For each sector, fetches top stocks via `market_stock_list()`
 
 ### Tier 2: Meso Filter — `filter_candidates()`
 
@@ -129,7 +140,7 @@ Returns `{hot_score, fundamental_score, chan_score, total_score}`
 ### Batch Query Helpers
 
 ```python
-from quantrisk.screener import batch_hk_quotes, batch_key_indicators, batch_hk_full
+from scripts.quantrisk.screener import batch_hk_quotes, batch_key_indicators, batch_hk_full
 
 quotes = batch_hk_quotes(["03690", "00268"])           # Async batch quotes
 indicators = batch_key_indicators(["03690.HK"])         # Async batch fundamentals
@@ -180,7 +191,7 @@ Each dimension scored 1-5. Data sources: `key_indicators_eastmoney_async` for fu
 
 ### Output Template
 
-The output must follow this exact structure (from `/SKILL.md` lines 112-181):
+The output must follow this exact structure (from `/SKILL.md` lines 115-181):
 
 1. **Section ①** — 全市场扫描（8 板块）: table of sector | count | performance
 2. **Section ②** — 中观过滤（剔除明细）: table of eliminated ticker | reason
@@ -214,9 +225,13 @@ The SKILL.md enforces a strict output template for stock recommendations. The pi
 ### Installation as Claude Code Skill
 
 ```bash
-mkdir -p ~/.claude/skills/quant-risk/quantrisk
+mkdir -p ~/.claude/skills/quant-risk/scripts
 curl -o ~/.claude/skills/quant-risk/SKILL.md \
   https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/SKILL.md
+# 同步代码模块
+git clone https://github.com/xiazhicheng/quant-risk.git /tmp/_qr && \
+cp -r /tmp/_qr/scripts ~/.claude/skills/quant-risk/scripts && \
+rm -rf /tmp/_qr
 ```
 
 ---
@@ -247,7 +262,7 @@ finally:
 result = asyncio.run(analyze_hk("03690"))
 
 # Direct session cleanup
-from quantrisk.data import close_async_session, close_tickflow
+from scripts.quantrisk.data import close_async_session, close_tickflow
 await close_async_session()
 await close_tickflow()
 ```
@@ -283,11 +298,11 @@ await close_tickflow()
 
 | File | Purpose | When to Edit |
 |------|---------|-------------|
-| `/quantrisk/data.py` | All data fetching functions | Add new data sources or markets |
-| `/quantrisk/chan.py` | Chan Theory calculations | Tweak thresholds or add new pattern recognition |
-| `/quantrisk/indicators.py` | Technical indicator calculations | Add new indicators or visualization helpers |
-| `/quantrisk/screener.py` | Stock pool filtering + batch queries | Modify screening criteria or add markets |
-| `/quantrisk/report.py` | StockAnalyzer unified analysis (~253 lines) | Add new analysis dimensions or output fields |
+| `/scripts/quantrisk/data.py` | All data fetching functions | Add new data sources or markets |
+| `/scripts/quantrisk/chan.py` | Chan Theory calculations | Tweak thresholds or add new pattern recognition |
+| `/scripts/quantrisk/indicators.py` | Technical indicator calculations | Add new indicators or visualization helpers |
+| `/scripts/quantrisk/screener.py` | Stock pool filtering + batch queries | Modify screening criteria or add markets |
+| `/scripts/quantrisk/report.py` | StockAnalyzer unified analysis (~253 lines) | Add new analysis dimensions or output fields |
 | `/scripts/analyze_hk.py` | CLI entrypoint | Add new CLI flags or output formats |
 | `/SKILL.md` | Claude Code Skill integration | Update trigger keywords, templates, or screening rules |
 | `/CLAUDE.md` | Project conventions for AI agents | Update design decisions or conventions |

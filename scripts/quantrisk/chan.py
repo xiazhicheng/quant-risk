@@ -5,7 +5,7 @@ quantrisk — 缠论（Chan Theory）+ 技术指标计算模块
 纯 Python 计算，零外部依赖（不需要 numpy/pandas）。
 
 用法:
-    from quantrisk.chan import chan_risk_assessment, chan_theory_full
+    from scripts.quantrisk.chan import chan_risk_assessment, chan_theory_full
     assessment = chan_risk_assessment(klines)
 """
 

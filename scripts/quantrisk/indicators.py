@@ -6,7 +6,7 @@ quantrisk — 技术指标 + 辅助分析 + 缠论统一导入模块
 缠论 API: 从 .chan 导入并 re-export，一站式调用
 
 用法:
-    from quantrisk.indicators import calc_macd, chan_risk_assessment
+    from scripts.quantrisk.indicators import calc_macd, chan_risk_assessment
 """
 
 from .chan import (

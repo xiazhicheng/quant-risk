@@ -8,9 +8,9 @@
 """
 import asyncio, json, sys
 from pathlib import Path
+# Ensure project root is on sys.path so `scripts.*` imports work
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from quantrisk.report import StockAnalyzer
+from scripts.quantrisk.report import StockAnalyzer
 
 async def main():
     args = sys.argv[1:]

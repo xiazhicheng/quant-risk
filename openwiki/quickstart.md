@@ -3,7 +3,7 @@
 **quant-risk** is a full-lifecycle quantitative risk control toolkit covering **US stocks, A-shares, and Hong Kong stocks**. It implements a four-stage risk control framework with a three-dimensional scoring system.
 
 - **Source**: <https://github.com/xiazhicheng/quant-risk>
-- **Version**: 1.2.0+ (2026-07-08, with TickFlow integration, HK financial fields, recommendation templates)
+- **Version**: 1.2.1+ (2026-07-13, with TickFlow K-line fallback for all 3 markets, HK financial fields, recommendation templates, capital-flow-based hot scoring, Layer 7 news)
 - **License**: Apache 2.0
 
 ---
@@ -51,17 +51,32 @@ uv add aiohttp  # Required for async HTTP data fetching
 
 ```
 quant-risk/
-├── quantrisk/                   # Python package (importable)
-│   ├── __init__.py              # Module docstring with usage examples
-│   ├── data.py                  # Data layer: quotes, K-lines, fundamentals, capital flow, signals, options, SEC, TickFlow (~872 lines)
+├── scripts/                     # All code unified here
+│   ├── quantrisk/               # Python package (importable via scripts.quantrisk.*)
+│   │   ├── __init__.py
+│   │   ├── data.py              # Data layer: quotes, K-lines, fundamentals, capital flow, signals, news, options, SEC, TickFlow
+│   │   ├── chan.py              # Chan Theory: 分型→笔→线段→中枢→背驰→买卖点
+│   │   ├── indicators.py        # Technical indicators: MA/MACD/RSI/KDJ/BOLL + Chan re-export
+│   │   ├── screener.py          # Stock pool filtering + batch queries
+│   │   └── report.py            # StockAnalyzer unified analysis entry
+│   ├── formatter.py             # Selection report formatter (Pydantic + rendering)
+│   ├── formatters/              # 4-stage risk formatters
+│   └── *.py                     # Entry scripts: analyze_hk.py, recommend_hk.py, portfolio.py, chan_mtf.py
+├── SKILL.md                     # Skill definition
+├── AGENTS.md                    # Project conventions
+└── README.md                    # Project overview
+```
 │   ├── chan.py                  # Chan Theory: fractals→strokes→segments→pivots→divergence→buy/sell points (~553 lines)
 │   ├── indicators.py            # Technical indicators: MA/MACD/RSI/KDJ/BOLL + support/resistance + Chan re-exports (~316 lines)
 │   ├── screener.py              # Three-tier candidate pool filtering + batch queries (~113 lines)
 │   └── report.py                # StockAnalyzer — one-click full analysis entrypoint (~253 lines)
 ├── scripts/
-│   └── analyze_hk.py            # Runnable entry script for HK stock analysis
+│   ├── analyze_hk.py            # Runnable entry script for HK stock analysis
+│   ├── recommend_hk.py          # Full HK stock recommendation (114 stocks, 3-step pipeline)
+│   └── chan_mtf.py              # Multi-timeframe Chan Theory (5m/60m/日K/周K)
 ├── SKILL.md                     # Claude Code Skill definition (data functions + risk control templates)
 ├── CLAUDE.md                    # Project conventions and design decisions (for AI coding agents)
+├── AGENTS.md                    # Agent instructions for Codex
 ├── CHANGELOG.md                 # Version history
 └── README.md                    # Project overview (this file)
 ```

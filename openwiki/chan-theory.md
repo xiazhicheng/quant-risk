@@ -1,6 +1,6 @@
 # Chan Theory (缠论) Module
 
-**Source file**: `/quantrisk/chan.py` (~553 lines)
+**Source file**: `/scripts/quantrisk/chan.py` (~553 lines)
 
 A complete implementation of the **Chan Zhong Shuo Chan (缠中说禅)** technical analysis framework. Pure Python calculations — no numpy, no pandas, no external dependencies.
 
@@ -194,6 +194,6 @@ The `chan_risk_assessment()` function maps Chan Theory signals to a 1-5 score an
 
 - **All Chan functions assume K-line format**: `{"date", "open", "high", "low", "close", "volume"}`. This is the same format returned by all data sources.
 - **No external dependencies**: Everything is pure Python. If you need to add new technical analysis features, keep them dependency-free.
-- **Re-exported from indicators.py**: The module `/quantrisk/indicators.py` imports and re-exports all Chan Theory functions with `__all__`, so users can do `from quantrisk.indicators import chan_risk_assessment`.
+- **Re-exported from indicators.py**: The module `/scripts/quantrisk/indicators.py` imports and re-exports all Chan Theory functions with `__all__`, so users can do `from scripts.quantrisk.indicators import chan_risk_assessment`.
 - **K-line minimums**: The pipeline needs ≥20 K-lines for reliable results, ≥100 for proper pivot/segment analysis.
 - **Performance**: All operations are O(n) or O(n²) on K-line count. For 500-1000 candles, runtime is negligible.

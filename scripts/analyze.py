@@ -128,6 +128,7 @@ def format_result(code: str, r: Dict[str, Any], market: str,
     ind = r.get("indicator", {})
     basic = r.get("basic_info", {})
     blocks = r.get("concept_blocks", {})
+    company_profile = r.get("company_profile", {})
     name = r.get("name", "未知")
     hot_sectors = hot_sectors or {}
 
@@ -175,6 +176,12 @@ def format_result(code: str, r: Dict[str, Any], market: str,
         ("目标价", target_str, "券商平均目标价"),
         ("评级", rec, "buy/hold/sell 一致预期"),
     ]
+    # 主营业务（港股优先从 company_profile 取，CN/US 暂不展示）
+    business = company_profile.get("business", "") if company_profile else ""
+    if business:
+        # 截断过长描述，避免表格过宽
+        short = (business[:80] + "…") if len(business) > 80 else business
+        rows_fund.append(("主营业务", short, "来自新浪个股信息页"))
     if ind:
         rev = _safe(ind.get("OPERATE_INCOME"), None)
         rev_yoy = _safe(ind.get("OPERATE_INCOME_YOY"), None)
@@ -255,7 +262,7 @@ def format_result(code: str, r: Dict[str, Any], market: str,
         ]
 
     # ── 表 4：技术分析 ──
-    sup_str = res_str = cur_sup_str = cur_res_str = "-"
+    sup_str = res_str = cur_sup_str = cur_res_str = sl_str = tp_str = "-"
     if t.get("error"):
         rows_tech = [("状态", f"⚠️ {t['error']}")]
         chan_extra = ""

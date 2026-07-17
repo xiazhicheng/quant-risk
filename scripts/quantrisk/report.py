@@ -7,7 +7,7 @@ from typing import Optional
 from .data import (
     close_async_session, close_tickflow, hk_stock_quote_tencent_async, hk_stock_quote_sina_async,
     stock_kline_yahoo_async, key_statistics_async, key_indicators_eastmoney_async,
-    kline_tickflow_async,
+    kline_tickflow_async, hk_company_profile_async,
 )
 from .indicators import (
     calc_ma, calc_macd, calc_rsi, calc_kdj, calc_boll,
@@ -31,16 +31,17 @@ class StockAnalyzer:
 
     async def analyze_hk(self, code: str) -> dict:
         """港股全量分析（行情+K线+技术+基本面+缠论）"""
-        symbol = f"{int(code)}.HK" if code.isdigit() else code
-        secucode = f"{code}.HK"
+        symbol = f"{code}.HK"
+        secucode = symbol
 
         # 并行获取
-        qt_tx, qt_sina, yahoo_stats, indicators, klines = await self._gather(
+        qt_tx, qt_sina, yahoo_stats, indicators, klines, company_profile = await self._gather(
             hk_stock_quote_tencent_async(code),
             hk_stock_quote_sina_async(code),
             key_statistics_async(symbol),
             key_indicators_eastmoney_async(secucode, page_size=4),
             stock_kline_yahoo_async(symbol, "1d", "2y"),
+            hk_company_profile_async(code),
         )
 
         # 合并行情
@@ -49,6 +50,7 @@ class StockAnalyzer:
         if isinstance(yahoo_stats, BaseException): yahoo_stats = {}
         if isinstance(indicators, BaseException): indicators = []
         if isinstance(klines, BaseException): klines = []
+        if isinstance(company_profile, BaseException): company_profile = {}
 
         quote = dict(qt_tx)
         if not quote.get("name") and isinstance(qt_sina, dict):
@@ -74,6 +76,7 @@ class StockAnalyzer:
             "indicator": ind,
             "technicals": tech,
             "klines_count": len(klines) if isinstance(klines, list) else 0,
+            "company_profile": company_profile,
         }
 
     # ── A股全量分析 ──

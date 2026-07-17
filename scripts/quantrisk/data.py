@@ -147,7 +147,9 @@ def _sf(v):
     except: return 0.0
 
 async def hk_stock_quote_tencent_async(code: str) -> dict:
-    """港股行情（腾讯 78 字段）。code: 00700, 03690, 09988"""
+    """港股行情（腾讯 78 字段）。code: 00700, 03690, 09988, 00020"""
+    # 腾讯需要5位补零 (e.g. 0020 → 00020)
+    code = code.zfill(5)
     text = await _get_gbk(f"https://qt.gtimg.cn/q=r_hk{code}")
     m = re.search(r'"(.+)"', text)
     if not m: return {}
@@ -203,6 +205,28 @@ async def hk_stock_quote_sina_async(code: str) -> dict:
             "high":float(f[4]) if f[4] else 0,"low":float(f[5]) if f[5] else 0,
             "price":float(f[6]) if f[6] else 0,"change_pct":float(f[8]) if f[8] else 0,
             "volume":float(f[12]) if f[12] else 0}
+
+
+async def hk_company_profile_async(code: str) -> dict:
+    """港股公司资料（新浪 info 页面，提取主营业务描述）。返回 {business: str}"""
+    code = code.zfill(5)
+    url = f"https://stock.finance.sina.com.cn/hkstock/info/{code}.html"
+    try:
+        text = await _get_gbk(url, headers={"User-Agent": "Mozilla/5.0"})
+    except Exception:
+        return {}
+
+    # 提取"公司业务"单元格内容
+    m = re.search(r"公司业务</span></td>\s*<td[^>]*>(.*?)</td>", text, re.DOTALL)
+    if not m:
+        return {}
+    raw = m.group(1).strip()
+    # 清理 HTML 标签
+    business = re.sub(r"<[^>]+>", "", raw).strip()
+    if not business:
+        return {}
+    return {"business": business}
+
 
 async def stock_quote_eastmoney_async(ticker_or_code: str, secid_prefix: int = 105) -> dict:
     """东财 push2 统一行情。105=NASDA, 106=NYSE, 116=港股"""
@@ -287,14 +311,22 @@ async def us_stock_kline_sina_async(ticker: str, num: int = 120) -> list[dict]:
             for i in items]
 
 async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str = "1y") -> list[dict]:
-    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK（港股自动去前导零）。
+    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK。
     使用 adjclose（前复权收盘价），兼容所有拆股/分红事件。"""
-    # 港股自动去前导零 (Yahoo不接受前导零如"09999.HK")
+    # Yahoo 对港股 ticker 格式不统一：部分接受前导零(0020.HK)，部分不接受(09999.HK→9999.HK)。
+    # 先试原始格式，再试去前导零格式，确保覆盖两种情况。
+    candidates = [symbol]
     parts = symbol.split(".")
     if len(parts) == 2 and parts[0].isdigit():
-        symbol = f"{int(parts[0])}.{parts[1]}"
-    d = await _get_json(f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
-                        params={"interval":interval,"range":range_})
+        stripped = f"{int(parts[0])}.{parts[1]}"
+        if stripped != symbol:
+            candidates.append(stripped)
+    for sym in candidates:
+        d = await _get_json(f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}",
+                            params={"interval":interval,"range":range_})
+        chart = d.get("chart", {})
+        if chart.get("result") and chart["result"] and chart["result"][0]:
+            break
     chart = d.get("chart", {})
     if not chart or not chart.get("result") or not chart["result"] or not chart["result"][0]:
         return []

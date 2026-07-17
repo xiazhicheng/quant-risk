@@ -48,8 +48,9 @@ async def get_async_session() -> aiohttp.ClientSession:
     return _async_session
 
 async def close_async_session():
-    global _async_session
+    global _async_session, _yahoo_session
     if _async_session and not _async_session.closed: await _async_session.close()
+    if _yahoo_session and not _yahoo_session.closed: await _yahoo_session.close()
 
 async def _get(url: str, **kw) -> str:
     s = await get_async_session()
@@ -247,13 +248,27 @@ async def cn_stock_quote_eastmoney_async(code: str) -> dict:
             "total_mv":_p("f116"),"float_mv":_p("f117")}
 
 async def cn_stock_basic_info_async(code: str) -> dict:
-    d = (await _get_json("https://push2.eastmoney.com/api/qt/stock/get", params={
-        "secid":cn_secid(code),
-        "fields":"f57,f58,f84,f85,f98,f86,f116,f117,f100,f120,f121"})).get("data")
-    if not d: return {}
-    return {"code":d.get("f57"),"name":d.get("f58"),"industry":d.get("f84"),
-            "listing_date":str(d.get("f98"))[:10] if d.get("f98") else None,
-            "total_mv_100m":(d.get("f116") or 0)/1e8,"float_mv_100m":(d.get("f117") or 0)/1e8}
+    """A股基本信息（行业/市值等）— 使用 curl 避免 aiohttp 连接问题"""
+    import json
+    url = (f"https://push2.eastmoney.com/api/qt/stock/get?secid={cn_secid(code)}"
+           f"&fields=f57,f58,f84,f85,f98,f86,f116,f117,f100,f120,f121,f127,f128,f129")
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            f"/usr/bin/curl -s --max-time 15 -H 'Referer: https://quote.eastmoney.com/' '{url}'",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        if not stdout or len(stdout) < 50:
+            return {}
+        d = json.loads(stdout.decode())
+        data = d.get("data") or {}
+        if not data:
+            return {}
+        return {"code":data.get("f57"),"name":data.get("f58"),"industry":data.get("f127"),
+                "listing_date":str(data.get("f98"))[:10] if data.get("f98") else None,
+                "total_mv_100m":(data.get("f116") or 0)/1e8,"float_mv_100m":(data.get("f117") or 0)/1e8}
+    except Exception as e:
+        print(f"[WARN] cn_stock_basic_info_async({code}) 失败: {e}")
+        return {}
 
 # ═════════════════════════════════════════════════
 # L2: K线层 (Kline)
@@ -272,7 +287,8 @@ async def us_stock_kline_sina_async(ticker: str, num: int = 120) -> list[dict]:
             for i in items]
 
 async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str = "1y") -> list[dict]:
-    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK（港股自动去前导零）"""
+    """Yahoo K线（美股+港股通用）。symbol: AAPL 或 0700.HK（港股自动去前导零）。
+    使用 adjclose（前复权收盘价），兼容所有拆股/分红事件。"""
     # 港股自动去前导零 (Yahoo不接受前导零如"09999.HK")
     parts = symbol.split(".")
     if len(parts) == 2 and parts[0].isdigit():
@@ -285,13 +301,16 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
     chart = chart["result"][0]
     ts = chart.get("timestamp",[])
     q = chart.get("indicators",{}).get("quote",[{}])[0]
+    adj = chart.get("indicators",{}).get("adjclose",[{}])[0].get("adjclose", [])
     sub = "m" in interval or "h" in interval
     result = []
     for i, t in enumerate(ts):
         if q["open"][i] is None: continue
+        # 优先用 adjclose（前复权），缺失时回退 close
+        close_price = adj[i] if (i < len(adj) and adj[i] is not None) else q["close"][i]
         result.append({"date":datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M" if sub else "%Y-%m-%d"),
                        "open":round(q["open"][i],2),"high":round(q["high"][i],2),
-                       "low":round(q["low"][i],2),"close":round(q["close"][i],2),
+                       "low":round(q["low"][i],2),"close":round(float(close_price),2),
                        "volume":int(q["volume"][i])})
     return result
 async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 120) -> list[dict]:
@@ -326,13 +345,14 @@ async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 12
 
 async def cn_stock_kline_tencent_async(code: str, days: int = 120) -> list[dict]:
     """A股日K线（腾讯，前复权，不封IP）"""
-    url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},m,,{days}"
+    url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},qfq,,{days}"
     d = await _get_json(url, headers={"Referer":"https://finance.qq.com/"})
     data = d.get("data",{})
     key = f"{cn_market_prefix(code)}{code}"
-    klines = data.get(key,{}).get("m",[]) or data.get(key,{}).get("day",[]) or []
+    # 优先前复权 qfq，兜底原始 m
+    klines = data.get(key,{}).get("qfq",[]) or data.get(key,{}).get("m",[]) or data.get(key,{}).get("day",[]) or []
     if not klines or not klines[0]:
-        klines = data.get(key,{}).get("qfq",[]) or data.get(key,{}).get("day",[]) or []
+        klines = data.get(key,{}).get("m",[]) or data.get(key,{}).get("day",[]) or []
     if not klines or not klines[0]: return []
     return [{"date":i[0],"open":float(i[1]),"high":float(i[2]),"low":float(i[3]),
              "close":float(i[4]),"volume":int(i[5])} for i in klines if len(i)>=6]
@@ -361,11 +381,15 @@ async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
 _kline_tickflow_session = None
 
 async def _get_tickflow() -> "AsyncTickFlow":
-    """懒初始化 TickFlow free session"""
+    """懒初始化 TickFlow free session（抑制 TickFlow 输出的 banner）"""
     global _kline_tickflow_session
     if _kline_tickflow_session is None:
         from tickflow import AsyncTickFlow
-        _kline_tickflow_session = await AsyncTickFlow.free().__aenter__()
+        import os, sys, contextlib
+        devnull = os.devnull
+        with open(devnull, 'w') as fnull:
+            with contextlib.redirect_stdout(fnull):
+                _kline_tickflow_session = await AsyncTickFlow.free().__aenter__()
     return _kline_tickflow_session
 
 async def close_tickflow():
@@ -861,6 +885,21 @@ async def cn_industry_ranking_async(top_n:int=20) -> list[dict]:
                  "up":i.get("f4"),"down":i.get("f5")} for i in diff if i.get("f14")]
     except Exception as e:
         print(f"[WARN] 行业排名失败: {e}"); return []
+
+async def hk_industry_ranking_async(top_n:int=20) -> list[dict]:
+    """港股行业板块涨跌排名（东财 push2, fs=m:0+t:3 表示港股板块）"""
+    try:
+        s = await get_async_session()
+        async with s.get("https://push2.eastmoney.com/api/qt/clist/get", params={
+            "fs":"m:0+t:3","fields":"f2,f3,f4,f5,f6,f12,f14","pn":1,"pz":top_n,"fid":"f3","po":1},
+            headers={"Referer":"https://quote.eastmoney.com/"}) as r:
+            d = await r.json()
+        diff = (d.get("data") or {}).get("diff") or []
+        if isinstance(diff,dict): diff = list(diff.values())
+        return [{"industry":i.get("f14"),"pct":round((i.get("f3") or 0)/100,2),
+                 "up":i.get("f4"),"down":i.get("f5")} for i in diff if i.get("f14")]
+    except Exception as e:
+        print(f"[WARN] 港股行业排名失败: {e}"); return []
 
 # L8 — 公告
 async def cninfo_announcements_async(code:str, page_size:int=30) -> list[dict]:

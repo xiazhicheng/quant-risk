@@ -40,7 +40,7 @@ class StockAnalyzer:
             hk_stock_quote_sina_async(code),
             key_statistics_async(symbol),
             key_indicators_eastmoney_async(secucode, page_size=4),
-            stock_kline_yahoo_async(symbol, "1d", "1y"),
+            stock_kline_yahoo_async(symbol, "1d", "2y"),
         )
 
         # 合并行情
@@ -61,7 +61,7 @@ class StockAnalyzer:
 
         # 技术指标 — Yahoo K线不足时用 TickFlow 备选
         if not klines or len(klines) < 20:
-            tickflow_klines = await kline_tickflow_async(f"{code}.HK", "1d", 365)
+            tickflow_klines = await kline_tickflow_async(f"{code}.HK", "1d", 730)
             if tickflow_klines and len(tickflow_klines) >= 20:
                 klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)
@@ -86,7 +86,7 @@ class StockAnalyzer:
 
         quote, klines, basic, ind, blocks = await self._gather(
             cn_stock_quote_tencent_async(code),
-            cn_stock_kline_tencent_async(code, 365),
+            cn_stock_kline_tencent_async(code, 730),
             cn_stock_basic_info_async(code),
             cn_key_indicators_async(code),
             cn_concept_blocks_async(code),
@@ -101,7 +101,7 @@ class StockAnalyzer:
         # 腾讯K线不足时用 TickFlow 备选
         if not klines or len(klines) < 20:
             tf_code = f"{code}.SH" if code.startswith(("6","9")) else f"{code}.SZ"
-            tickflow_klines = await kline_tickflow_async(tf_code, "1d", 365)
+            tickflow_klines = await kline_tickflow_async(tf_code, "1d", 730)
             if tickflow_klines and len(tickflow_klines) >= 20:
                 klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)
@@ -121,14 +121,13 @@ class StockAnalyzer:
 
     async def analyze_us(self, ticker: str) -> dict:
         """美股全量分析"""
-        from .data import (us_stock_quote_tencent_async, us_stock_quote_sina_async,
-                           us_stock_kline_sina_async)
+        from .data import (us_stock_quote_tencent_async, us_stock_quote_sina_async,)
 
         qt_tx, qt_sina, yahoo_stats, klines = await self._gather(
             us_stock_quote_tencent_async(ticker),
             us_stock_quote_sina_async(ticker),
             key_statistics_async(ticker.upper()),
-            us_stock_kline_sina_async(ticker, 365),
+            stock_kline_yahoo_async(ticker.upper(), "1d", "2y"),
         )
 
         if isinstance(qt_tx, BaseException): qt_tx = {}
@@ -137,14 +136,26 @@ class StockAnalyzer:
         if isinstance(klines, BaseException): klines = []
 
         quote = qt_tx or {}
-        if not quote.get("name") and isinstance(qt_sina, dict):
-            quote["name"] = qt_sina.get("name", "")
-        if not quote.get("price") and isinstance(qt_sina, dict):
-            quote["price"] = qt_sina.get("price", 0)
+        if isinstance(qt_sina, dict) and qt_sina:
+            # 用新浪补全腾讯缺失/异常字段
+            if not quote.get("name"):
+                quote["name"] = qt_sina.get("name", "")
+            if not quote.get("price"):
+                quote["price"] = qt_sina.get("price", 0)
+            if not quote.get("open"):
+                quote["open"] = qt_sina.get("open", 0)
+            if not quote.get("pe") or quote["pe"] <= 0 or quote["pe"] > 5000:
+                quote["pe"] = qt_sina.get("pe", quote["pe"])
+            if not quote.get("high_52w") or quote["high_52w"] <= 0:
+                quote["high_52w"] = qt_sina.get("high_52w", 0)
+            if not quote.get("low_52w") or quote["low_52w"] <= 0:
+                quote["low_52w"] = qt_sina.get("low_52w", 0)
+            if not quote.get("market_cap") or quote["market_cap"] <= 0:
+                quote["market_cap"] = qt_sina.get("market_cap", 0)
 
         # 美股K线不足时用 TickFlow 备选
         if not klines or len(klines) < 20:
-            tickflow_klines = await kline_tickflow_async(f"{ticker.upper()}.US", "1d", 365)
+            tickflow_klines = await kline_tickflow_async(f"{ticker.upper()}.US", "1d", 730)
             if tickflow_klines and len(tickflow_klines) >= 20:
                 klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)

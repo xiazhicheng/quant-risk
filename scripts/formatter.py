@@ -159,7 +159,57 @@ def validate(data: dict[str, Any]) -> SelectionReport:
         raise FormatValidationError("\n".join(lines))
 
 
-# ── 模板 ────────────────────────────────────────────────────
+# ── 模板 ────────────────────────────────────────────
+
+MARKET_CONFIG = {
+    "hk": {
+        "title": "港股选股推荐",
+        "scan_label": "全市场扫描（8 板块）",
+        "scan_header": "| 板块 | 扫描只数 | 今日表现 |\n|------|:-------:|---------|",
+        "elim_label": "中观过滤（剔除明细）",
+        "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
+        "passed_label": "通过过滤",
+        "score_label": "三维评分 TOP10",
+        "score_header": "| 排名 | 标的 | 板块 | 基本面(×5) | 热点(×3) | 缠论(×2) | 总分 | 建议 |\n|:----:|------|:----:|:----------:|:--------:|:--------:|:----:|------|",
+        "detail_label": "各股详细分析",
+        "summary_label": "综合建议",
+        "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
+        "price_unit": "港元",
+    },
+    "cn": {
+        "title": "A股选股推荐",
+        "scan_label": "全市场扫描（行业板块）",
+        "scan_header": "| 板块 | 扫描只数 | 今日表现 |\n|------|:-------:|---------|",
+        "elim_label": "中观过滤（剔除明细）",
+        "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
+        "passed_label": "通过过滤",
+        "score_label": "三维评分 TOP10",
+        "score_header": "| 排名 | 标的 | 板块 | 基本面(×5) | 热点(×3) | 缠论(×2) | 总分 | 建议 |\n|:----:|------|:----:|:----------:|:--------:|:--------:|:----:|------|",
+        "detail_label": "各股详细分析",
+        "summary_label": "综合建议",
+        "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
+        "price_unit": "元",
+    },
+    "us": {
+        "title": "US Stock Selection",
+        "scan_label": "Full Market Scan (Sectors)",
+        "scan_header": "| Sector | Count | Today |\n|--------|:-----:|-------|",
+        "elim_label": "Filter Detail",
+        "elim_header": "| Eliminated | Reason |\n|------------|--------|",
+        "passed_label": "passed filter",
+        "score_label": "3D Scoring TOP10",
+        "score_header": "| Rank | Stock | Sector | Fundamental(×5) | Hot(×3) | Chan(×2) | Total | Advice |\n|:----:|------|:----:|:---------------:|:------:|:------:|:-----:|------|",
+        "detail_label": "Detailed Analysis",
+        "summary_label": "Summary",
+        "summary_header": "| Stock | Advice | Entry | Stop Loss | Target |\n|:-----|:------:|:------:|:---------:|:------:|",
+        "price_unit": "USD",
+    },
+}
+
+
+def _get_config(market: str = "hk") -> dict:
+    return MARKET_CONFIG.get(market, MARKET_CONFIG["hk"])
+
 
 SECTOR_ORDER = [
     "互联网/IT", "金融/保险/券商", "能源/资源/矿业", "通信/运营商",
@@ -177,36 +227,32 @@ CHAN_VERDICT = {
 }
 
 TEMPLATE = """\
-## 港股选股推荐 | {date}
+## {title} | {date}
 
-### ① 全市场扫描（8 板块）
+### ① {scan_label}
 
-| 板块 | 扫描只数 | 今日表现 |
-|------|:-------:|---------|
+{scan_header}
 {sector_rows}
 
-### ② 中观过滤（剔除明细）
+### ② {elim_label}
 
-| 剔除标的 | 原因 |
-|---------|------|
+{elim_header}
 {elim_rows}
 
-候选池 {passed_count} 只通过过滤。
+候选池 {passed_count} 只{passed_label}。
 
-### ③ 三维评分 TOP10
+### ③ {score_label}
 
-| 排名 | 标的 | 板块 | 基本面(×5) | 热点(×3) | 缠论(×2) | 总分 | 建议 |
-|:----:|------|:----:|:----------:|:--------:|:--------:|:----:|------|
+{score_header}
 {top10_rows}
 
-### ⭐ 各股详细分析
+### ⭐ {detail_label}
 
 {detail_rows}
 
-### 综合建议
+### {summary_label}
 
-| 标的 | 建议 | 入场区间 | 止损 | 目标 |
-|:----|:----:|:--------:|:----:|:----:|
+{summary_header}
 {summary_rows}
 
 > ⚠️ 声明：以上分析仅基于公开市场数据，不构成投资建议。
@@ -242,7 +288,7 @@ def _render_top10_rows(top10: list[Top10Item]) -> str:
     )
 
 
-def _render_detail_block(d: DetailItem) -> str:
+def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     pct = d.pct
     sign = "+" if isinstance(pct, (int, float)) and pct >= 0 else ""
     pct_str = f"{sign}{pct}" if isinstance(pct, (int, float)) else str(pct)
@@ -255,7 +301,7 @@ def _render_detail_block(d: DetailItem) -> str:
     ch_desc = CHAN_VERDICT.get(ch.score, "结构中性。")
 
     return f"""\
-#### {d.rank}. {d.name}（{d.code}）— {d.price} 港元 | {pct_str}%
+#### {d.rank}. {d.name}（{d.code}）— {d.price} {price_unit} | {pct_str}%
 
 | 维度 | 评分 | 依据 |
 |:----:|:----:|------|
@@ -267,8 +313,8 @@ def _render_detail_block(d: DetailItem) -> str:
 """
 
 
-def _render_detail_rows(details: list[DetailItem]) -> str:
-    return "\n".join(_render_detail_block(d) for d in details)
+def _render_detail_rows(details: list[DetailItem], price_unit: str = "港元") -> str:
+    return "\n".join(_render_detail_block(d, price_unit=price_unit) for d in details)
 
 
 def _render_summary_rows(summary: list[SummaryItem]) -> str:
@@ -280,13 +326,15 @@ def _render_summary_rows(summary: list[SummaryItem]) -> str:
 
 # ── 主入口 ───────────────────────────────────────────────────
 
-def format_output(data: dict[str, Any] | str) -> str:
+def format_output(data: dict[str, Any] | str, market: str = "hk") -> str:
     """
     校验 + 渲染裸数据，返回标准 markdown 报告。
 
+    market: 'hk' | 'cn' | 'us' — 根据市场切换模板标题和币种
+
     调用方使用模式：
         try:
-            report = format_output(raw_data)
+            report = format_output(raw_data, market="hk")
         except FormatValidationError as e:
             llm_retry(e.message)   # 把错误信息传给 LLM 修正
     """
@@ -294,13 +342,25 @@ def format_output(data: dict[str, Any] | str) -> str:
         data = json.loads(data)
 
     model: SelectionReport = validate(data)
+    cfg = _get_config(market)
 
     return TEMPLATE.format(
+        title=cfg["title"],
         date=model.date,
+        scan_label=cfg["scan_label"],
+        scan_header=cfg["scan_header"],
+        elim_label=cfg["elim_label"],
+        elim_header=cfg["elim_header"],
+        passed_label=cfg["passed_label"],
+        score_label=cfg["score_label"],
+        score_header=cfg["score_header"],
+        detail_label=cfg["detail_label"],
+        summary_label=cfg["summary_label"],
+        summary_header=cfg["summary_header"],
         sector_rows=_render_sector_rows(model.sectors),
         elim_rows=_render_elim_rows(model.eliminated),
         passed_count=model.passed_count,
         top10_rows=_render_top10_rows(model.top10),
-        detail_rows=_render_detail_rows(model.details),
+        detail_rows=_render_detail_rows(model.details, price_unit=cfg["price_unit"]),
         summary_rows=_render_summary_rows(model.summary),
     )

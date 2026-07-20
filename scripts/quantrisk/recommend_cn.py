@@ -11,8 +11,11 @@ from typing import Dict, List, Optional, Tuple
 
 from scripts.quantrisk.data import (
     cn_stock_quote_tencent_async,
+    cn_stock_quote_fallback,
     cn_stock_kline_tencent_async,
+    cn_stock_kline_fallback,
     cn_key_indicators_async,
+    cn_key_indicators_fallback,
     cn_stock_basic_info_async,
     cn_industry_ranking_async,
     cn_fund_flow_minute_async,
@@ -169,8 +172,8 @@ async def cn_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]
     qf = [lambda c=c: cn_stock_quote_tencent_async(c) for c in codes]
     qr = await parallel_map(qf, max_concurrency=20)
 
-    # 并行获取基本面（东财）
-    indf = [lambda c=c: cn_key_indicators_async(c, page_size=4) for c in codes]
+    # 并行获取基本面（东财→Yahoo→mootdx，三级 fallback）
+    indf = [lambda c=c: cn_key_indicators_fallback(c) for c in codes]
     ind = await parallel_map(indf, max_concurrency=20)
 
     # 构建结果字典（K线后面按需获取）
@@ -240,16 +243,7 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     async def _score_one(p):
         async with sem:
             c = p["c"]
-            try:
-                kl = await cn_stock_kline_tencent_async(c, days=365)
-            except Exception:
-                kl = []
-            if not kl or len(kl) < 20:
-                try:
-                    from scripts.quantrisk.data import kline_tickflow_async
-                    kl = await kline_tickflow_async(f"{c}.SZ", "1d", 365)
-                except Exception:
-                    kl = []
+            kl = await cn_stock_kline_fallback(c, days=365)
             s = await cn_score_one(p, kl, CN_SECTOR_PE_THRESHOLD, capital_flow)
             s["kl"] = kl
             return s

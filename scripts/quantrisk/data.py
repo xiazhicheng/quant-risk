@@ -15,7 +15,7 @@ quantrisk — 数据层（Data Layer）
     基本面 (L4): 东财 datacenter > Yahoo
     资金面 (L5): 东财 push2
 """
-import asyncio, aiohttp, json, re
+import asyncio, aiohttp, json, re, functools
 from datetime import datetime
 from typing import Optional
 
@@ -28,6 +28,60 @@ DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _async_session: Optional[aiohttp.ClientSession] = None
 _yahoo_crumb: Optional[str] = None
 _yahoo_session: Optional[aiohttp.ClientSession] = None
+
+# ═════════════════════════════════════════════════
+# 数据源调用统计 & retry 装饰器（Failover 基础设施）
+# ═════════════════════════════════════════════════
+
+_data_source_stats: dict = {"sources": {}, "total_calls": 0, "total_failures": 0}
+
+
+def _record_source(name: str, success: bool = True):
+    """记录数据源调用结果，用于监控和调试。"""
+    s = _data_source_stats.setdefault(name, {"ok": 0, "fail": 0})
+    s["ok" if success else "fail"] += 1
+    if success:
+        _data_source_stats["total_calls"] = _data_source_stats.get("total_calls", 0) + 1
+    else:
+        _data_source_stats["total_failures"] = _data_source_stats.get("total_failures", 0) + 1
+
+
+def get_data_source_stats() -> dict:
+    """返回各数据源成功/失败统计。"""
+    return dict(_data_source_stats)
+
+
+def reset_data_source_stats():
+    """重置数据源统计（测试用）。"""
+    _data_source_stats.clear()
+    _data_source_stats["sources"] = {}
+    _data_source_stats["total_calls"] = 0
+    _data_source_stats["total_failures"] = 0
+
+
+def retry_async(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0, logger=None):
+    """异步函数重试装饰器，指数退避。
+
+    用法:
+        @retry_async(max_attempts=3, delay=1.0)
+        async def fetch_data(...): ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_attempts):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exc = e
+                    if logger:
+                        logger(f"{func.__name__} 尝试 {attempt+1}/{max_attempts} 失败: {e}")
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(delay * (backoff ** attempt))
+            raise last_exc
+        return wrapper
+    return decorator
 
 def cn_market_prefix(code: str) -> str:
     """A股代码 → 腾讯前缀: sh/sz/bj"""
@@ -132,10 +186,15 @@ async def ticker_to_cik(ticker: str) -> dict:
 
 async def eastmoney_datacenter(report_name:str, columns:str="ALL", filter_str:str="",
                                 page_size:int=50, sort_columns:str="", sort_types:str="-1") -> list[dict]:
-    d = await _get_json(DATACENTER_URL, params={
-        "reportName":report_name,"columns":columns,"filter":filter_str,
-        "pageNumber":"1","pageSize":str(page_size),"sortColumns":sort_columns,
-        "sortTypes":sort_types,"source":"WEB","client":"WEB"})
+    """东财 datacenter 统一入口（带异常捕获）。"""
+    try:
+        d = await _get_json(DATACENTER_URL, params={
+            "reportName":report_name,"columns":columns,"filter":filter_str,
+            "pageNumber":"1","pageSize":str(page_size),"sortColumns":sort_columns,
+            "sortTypes":sort_types,"source":"WEB","client":"WEB"})
+    except Exception as e:
+        print(f"[WARN] 东财datacenter({report_name})失败: {e}")
+        return []
     return d.get("result",{}).get("data",[]) if d.get("result") else []
 
 # ═════════════════════════════════════════════════
@@ -243,7 +302,13 @@ async def stock_quote_eastmoney_async(ticker_or_code: str, secid_prefix: int = 1
             "change_pct":round(d["f170"]/100,2) if d.get("f170") is not None else None}
 
 async def cn_stock_quote_tencent_async(code: str) -> dict:
-    """A股实时行情（腾讯主推，不封IP）。code: 688017, 000858"""
+    """A股实时行情（腾讯主推，不封IP）。code: 688017, 000858
+
+    腾讯A股接口字段单位:
+      f[6]  = 成交量（手），需×100转成股
+      f[37] = 成交额（万元），需×10000转成元
+      f[44] = 总市值（亿），保持
+    """
     text = await _get_gbk(f"https://qt.gtimg.cn/q={cn_market_prefix(code)}{code}")
     m = re.search(r'"(.+)"', text)
     if not m: return {}
@@ -252,7 +317,9 @@ async def cn_stock_quote_tencent_async(code: str) -> dict:
     return {"name":f[1],"code":f[2],"price":_sf(f[3]),"change_pct":_sf(f[32]),
             "pe_ttm":_sf(f[39]),"pb":_sf(f[46]),"market_cap_100m":_sf(f[44]),
             "total_shares_100m":_sf(f[45]),"high":_sf(f[33]),"low":_sf(f[34]),
-            "turnover_rate":_sf(f[38]),"volume":_sf(f[6]),"amount_100m":_sf(f[37]),
+            "turnover_rate":_sf(f[38]),
+            "volume":int(_sf(f[6]) * 100) if _sf(f[6]) else 0,  # 手→股
+            "amount_100m":_sf(f[37]) * 10000,  # 万元→元
             "high_limit":_sf(f[48]),"low_limit":_sf(f[49]),"amp":_sf(f[43]),
             "timestamp":f[30] if len(f)>30 else ""}
 
@@ -293,6 +360,30 @@ async def cn_stock_basic_info_async(code: str) -> dict:
     except Exception as e:
         print(f"[WARN] cn_stock_basic_info_async({code}) 失败: {e}")
         return {}
+
+
+async def cn_stock_quote_fallback(code: str) -> dict:
+    """A股行情统一入口（腾讯→东财 push2）。任一源返回有效数据即终止。"""
+    # 1. 腾讯（主推，不封IP）
+    r = await cn_stock_quote_tencent_async(code)
+    if r and r.get("name"):
+        _record_source("cn_quote_tencent", True)
+        return r
+    _record_source("cn_quote_tencent", False)
+
+    # 2. 东财 push2（备选）
+    try:
+        r = await cn_stock_quote_eastmoney_async(code)
+        if r and r.get("name"):
+            _record_source("cn_quote_eastmoney", True)
+            return r
+        _record_source("cn_quote_eastmoney", False)
+    except Exception as e:
+        _record_source("cn_quote_eastmoney", False)
+        print(f"[WARN] 东财行情失败({code}): {e}")
+
+    return {}
+
 
 # ═════════════════════════════════════════════════
 # L2: K线层 (Kline)
@@ -402,6 +493,50 @@ async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
              "ma10":float(i["ma"][1]) if i.get("ma") and len(i["ma"])>1 else None,
              "ma20":float(i["ma"][2]) if i.get("ma") and len(i["ma"])>2 else None}
             for i in items]
+
+
+async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
+    """A股日K统一入口（腾讯qfq→百度→TickFlow）。任一源返回≥20根即终止。"""
+    kl = []
+
+    # 1. 腾讯前复权（主推）
+    try:
+        kl = await cn_stock_kline_tencent_async(code, days=days)
+        if len(kl) >= 20:
+            _record_source("cn_kline_tencent", True)
+            return kl
+        _record_source("cn_kline_tencent", False)
+    except Exception as e:
+        _record_source("cn_kline_tencent", False)
+        print(f"[WARN] 腾讯K线失败({code}): {e}")
+
+    # 2. 百度（备选，带MA）
+    try:
+        kl = await cn_stock_kline_baidu_async(code)
+        if len(kl) >= 20:
+            _record_source("cn_kline_baidu", True)
+            return kl
+        _record_source("cn_kline_baidu", False)
+    except Exception as e:
+        _record_source("cn_kline_baidu", False)
+        print(f"[WARN] 百度K线失败({code}): {e}")
+
+    # 3. TickFlow（最终备选）
+    try:
+        from scripts.quantrisk.data import kline_tickflow_async
+        # 判断交易所后缀（6/9=SH, 0/3=SZ, 4/8=BJ）
+        suffix = "SZ" if not code.startswith(("6", "9")) else "SH"
+        kl = await kline_tickflow_async(f"{code}.{suffix}", "1d", days)
+        if kl:
+            _record_source("cn_kline_tickflow", True)
+            return kl
+        _record_source("cn_kline_tickflow", False)
+    except Exception as e:
+        _record_source("cn_kline_tickflow", False)
+        print(f"[WARN] TickFlow K线失败({code}): {e}")
+
+    return kl if kl else []
+
 
 # ═════════════════════════════════════════════════
 # TickFlow K线（免费免注册，A股+港股+美股，前复权）
@@ -750,11 +885,92 @@ async def financial_statements_yahoo_async(symbol:str, quarterly:bool=False) -> 
         return [{k2:v["raw"] if isinstance(v,dict) and "raw" in v else v for k2,v in stmt.items()} for stmt in stmts]
     return {"income":_ext(f"incomeStatementHistory{sfx}"),"balance":_ext(f"balanceSheetHistory{sfx}"),"cashflow":_ext(f"cashflowStatementHistory{sfx}")}
 
+def _normalize_cn_indicators(data: list[dict]) -> list[dict]:
+    """将东财 datacenter RPT_LICO_FN_CPD 字段名映射为评分器可识别的标准化字段名。
+
+    RPT_LICO_FN_CPD 使用中文拼音缩写（如 XSMLL=销货毛利率、SJLTZ=净利增长率），
+    而 fb_score/meso_filter 期望英文字段名（GROSS_PROFIT_RATIO、HOLDER_PROFIT_YOY）。
+    此函数建立映射，保留原始字段不覆盖已有值，并对小数位做合理裁剪。
+    """
+    FIELD_MAP = {
+        "ROE": ("ROE", "WEIGHTAVG_ROE"),            # 加权净资产收益率
+        "JQROE": ("JQROE", "WEIGHTAVG_ROE"),        # 同上
+        "GROSS_PROFIT_RATIO": ("GROSS_PROFIT_RATIO", "XSMLL"),  # 销货毛利率
+        "DEBT_ASSET_RATIO": ("DEBT_ASSET_RATIO", "YSHZ", "SJLHZ"),  # 资产利润率/净资产利润率
+        "HOLDER_PROFIT_YOY": ("HOLDER_PROFIT_YOY", "SJLTZ"),     # 净利润增长率
+    }
+    PRECISION = {"ROE": 2, "JQROE": 2, "GROSS_PROFIT_RATIO": 2,
+                 "DEBT_ASSET_RATIO": 2, "HOLDER_PROFIT_YOY": 2}
+    result = []
+    for record in data:
+        n = dict(record)
+        for target_key, sources in FIELD_MAP.items():
+            if target_key in n:
+                continue  # 已有值不覆盖
+            for src in sources:
+                if src in n and n[src] is not None:
+                    v = n[src]
+                    # 裁剪小数位（东财原始精度常为 10+ 位）
+                    prec = PRECISION.get(target_key, 2)
+                    if isinstance(v, float):
+                        v = round(v, prec)
+                    n[target_key] = v
+                    break
+        result.append(n)
+    return result
+
+
 async def cn_key_indicators_async(code:str, page_size:int=4) -> list[dict]:
-    """A股关键财务指标（东财）"""
-    secucode = f"{'SH' if code.startswith(('6','9')) else 'SZ'}{code}"
-    return await eastmoney_datacenter("RPT_LICO_FN_CPD", filter_str=f'(SECUCODE="{secucode}")',
-                                      page_size=page_size, sort_columns="REPORT_DATE", sort_types="-1")
+    """A股关键财务指标（东财）。SECUCODE 格式: 600519.SH（交易所后缀在后）"""
+    secucode = f"{code}.{'SH' if code.startswith(('6','9')) else 'SZ'}"
+    data = await eastmoney_datacenter("RPT_LICO_FN_CPD", filter_str=f'(SECUCODE="{secucode}")',
+                                      page_size=page_size, sort_columns="REPORTDATE", sort_types="-1")
+    return _normalize_cn_indicators(data)
+
+
+async def cn_key_indicators_fallback(code: str) -> list[dict]:
+    """A股基本面统一入口（东财 datacenter → Yahoo keyStatistics → mootdx 同步快照）。
+
+    返回与 cn_key_indicators_async 兼容的 list[dict] 格式。
+    当东财 datacenter 因限流/宕机返回空数据时，自动降级到备选源。
+    """
+    # 注: SECUCODE 格式为 600519.SH（交易所后缀在后）
+    secucode = f"{code}.{'SH' if code.startswith(('6','9')) else 'SZ'}"
+
+    # 1. 东财 datacenter（主推，字段最全：营收增速/净利同比/ROE/毛利率/负债率）
+    data = await eastmoney_datacenter("RPT_LICO_FN_CPD",
+        filter_str=f'(SECUCODE="{secucode}")', page_size=4,
+        sort_columns="REPORTDATE", sort_types="-1")
+    if data:
+        _record_source("cn_indicator_eastmoney", True)
+        return _normalize_cn_indicators(data)
+    _record_source("cn_indicator_eastmoney", False)
+
+    # 2. Yahoo keyStatistics（备选，字段：PE/市值/营收/毛利率/ROE）
+    try:
+        ks = await yahoo_quote_summary(f"{secucode}", ["keyStatistics"])
+        if ks and ks.get("defaultKeyStatistics"):
+            _record_source("cn_indicator_yahoo", True)
+            return [ks["defaultKeyStatistics"]]
+        _record_source("cn_indicator_yahoo", False)
+    except Exception as e:
+        _record_source("cn_indicator_yahoo", False)
+        print(f"[WARN] Yahoo基本面失败({code}): {e}")
+
+    # 3. mootdx 同步快照（最后兜底：EPS/ROE/净利润/营收）
+    #    注意：mootdx 是 TCP 同步调用，必须在线程池执行避免阻塞 event loop
+    try:
+        loop = asyncio.get_running_loop()
+        snap = await loop.run_in_executor(None, lambda: cn_financial_snapshot_sync(code))
+        if snap:
+            _record_source("cn_indicator_mootdx", True)
+            return [snap]
+        _record_source("cn_indicator_mootdx", False)
+    except Exception as e:
+        _record_source("cn_indicator_mootdx", False)
+        print(f"[WARN] mootdx快照失败({code}): {e}")
+
+    return []
 
 async def cn_financial_statements_sina_async(code:str, report_type:str="lrb", num:int=8) -> list[dict]:
     """A股三表（新浪）。lrb=利润表, fzb=资产负债表, llb=现金流量表"""

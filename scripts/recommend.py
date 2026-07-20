@@ -4,7 +4,6 @@
 
 用法:
     uv run scripts/recommend.py                     # 港股推荐（默认）
-    uv run scripts/recommend.py --market hk         # 港股推荐
     uv run scripts/recommend.py --market cn         # A 股推荐
     uv run scripts/recommend.py --market us         # 美股推荐
     uv run scripts/recommend.py --market hk --json  # JSON 输出
@@ -31,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.formatter import format_output, FormatValidationError
+from scripts.quantrisk.data import close_async_session, close_tickflow
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -38,9 +38,9 @@ from scripts.formatter import format_output, FormatValidationError
 # ═══════════════════════════════════════════════════════════════
 
 async def run_hk_recommendation(min_stocks: int = 300) -> dict:
-    """港股推荐流程（复用原有 recommend_hk.py 逻辑）"""
-    print("港股推荐: 请使用 uv run scripts/recommend_hk.py")
-    sys.exit(1)
+    """港股推荐流程"""
+    from scripts.recommend_hk import hk_recommend_pipeline
+    return await hk_recommend_pipeline(min_stocks=min_stocks)
 
 
 async def run_cn_recommendation(min_stocks: int = 200) -> dict:
@@ -105,11 +105,10 @@ async def main():
 
     # 路由到对应市场
     if market == "hk":
-        # 港股使用原有 recommend_hk.py
-        print("港股推荐请使用: uv run scripts/recommend_hk.py")
-        return
+        print(f"🔍 港股推荐（候选池 {min_stocks}+ 只）...")
+        raw_data = await run_hk_recommendation(min_stocks)
 
-    if market == "cn":
+    elif market == "cn":
         print(f"🔍 A 股推荐（候选池 {min_stocks}+ 只）...")
         raw_data = await run_cn_recommendation(min_stocks)
 
@@ -132,9 +131,8 @@ async def main():
         print(f"❌ 格式校验失败:\n{e.message}")
         sys.exit(1)
     finally:
-        from scripts.quantrisk.data import close_async_session, close_tickflow
-        asyncio.run(close_async_session())
-        asyncio.run(close_tickflow())
+        await close_async_session()
+        await close_tickflow()
 
 
 if __name__ == "__main__":

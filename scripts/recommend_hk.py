@@ -756,52 +756,47 @@ async def chan_score(p, kl):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Main
+# 港股推荐 Pipeline（可被 recommend.py 统一调用）
 # ═══════════════════════════════════════════════════════════════
 
-async def main():
+async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
+    """港股推荐完整流程，返回 raw_data dict（与 cn_recommend_pipeline 格式一致）。
+
+    三步强制流程:
+      ① 跨板块全市场扫描（8个板块，动态 300+ 只标的）
+      ② 中观硬约束过滤（市值≥50亿HKD，股价≥1 HKD，PE≤80，标记净利恶化）
+      ③ 微观三维评分排序（基本面×5 + 热点×3 + 缠论×2）→ TOP10
+
+    Returns:
+        {date, sectors[], eliminated[], passed_count, top10[], details[], summary[]}
+    """
     ds = datetime.now().strftime("%Y-%m-%d")
-    # ── stdout 只输出正式报告（格式唯一且确定），进度信息不输出 ──
-    _log = lambda *a, **kw: None
 
     # ── 动态候选池 ──
-    _log("[Phase 0] 构建动态候选池...")
-    dynamic_pool = await fetch_dynamic_pool(min_stocks=300)
+    dynamic_pool = await fetch_dynamic_pool(min_stocks=min_stocks)
     if not dynamic_pool:
         dynamic_pool = load_dynamic_pool_cache() or []
-    _log(f"  动态池: {len(dynamic_pool)} 只\n")
 
     # ── 构建板块映射 ──
     sectors = build_sectors_from_pool(dynamic_pool)
     all_codes = sum(sectors.values(), [])
     code2sector = {c: s for s, codes in sectors.items() for c in codes}
-    _log(f"  合并后候选池: {len(all_codes)} 只（{len(sectors)} 个板块）")
-    for sec, codes in sorted(sectors.items()):
-        _log(f"    {sec}: {len(codes)} 只")
-    _log()
 
     # ── Step 1: 全市场扫描 ──
     st = await fetch_all(all_codes)
 
     # ── 板块表现 ──
-    _log("  板块表现:")
     ss = {}
     for sec, codes in sectors.items():
         chs = [sf(st[c]["q"].get("change_pct")) for c in codes if st.get(c, {}).get("q", {}).get("name")]
         ap = sum(chs) / len(chs) if chs else 0
         up = sum(1 for ch in chs if ch > 0)
         ss[sec] = {"c": len(chs), "ap": round(ap, 2), "up": up, "dn": len(chs) - up}
-        _log(f"    {sec}: {len(chs)}只 {ap:+.2f}% 涨{up}跌{len(chs)-up}")
 
     # ── Step 2: 中观过滤 ──
-    _log(f"\n[Step 2] 中观过滤...")
     passed, elim = meso_filter(st, sectors, code2sector)
-    _log(f"  剔除: {len(elim)} 只")
-    for c, n, r in elim: _log(f"    - {c} {n}: {r}")
-    _log(f"  通过: {len(passed)} 只\n")
 
     # ── Step 3: 并行评分 ──
-    _log(f"[Step 3] 资金流向分析+并行评分 {len(passed)} 只候选标的...")
     capital_flow = await batch_hk_capital_flow_async([p["c"] for p in passed])
     sector_flow = {}
     for p in passed:
@@ -811,28 +806,27 @@ async def main():
         sector_flow[sec]["total_flow"] += flow
         sector_flow[sec]["stocks"].append({"code": p["c"], "name": p["n"], "flow": flow})
     sector_ranking = sorted(sector_flow.items(), key=lambda x: x[1]["total_flow"], reverse=True)
-    _log("  资金流向板块排名（前4）：")
-    for i, (name, data) in enumerate(sector_ranking[:4]):
-        top = sorted(data["stocks"], key=lambda x: x["flow"], reverse=True)[0]
-        _log(f"    {i+1}. {name}: 主力净{data['total_flow']/1e8:+.2f}亿  龙头:{top['name']}(+{top['flow']/1e8:.2f}亿)")
 
     scored = await asyncio.gather(*[score_one(p, sector_ranking=sector_ranking, capital_flow=capital_flow) for p in passed])
     scored = [s for s in scored if s]
     scored.sort(key=lambda x: x["total"], reverse=True)
-    _log(f"  评分完成\n")
 
-    # ── 构建裸数据 → 格式引擎输出（Pydantic 校验 + 渲染）─
-    # stdout 只走这里，格式唯一且确定
+    # ── 构建裸数据 ──
     raw_data = build_selection_data(ds, ss, elim, scored, len(passed), capital_flow, sector_ranking)
+    return raw_data
+
+
+async def main():
+    raw_data = await hk_recommend_pipeline(min_stocks=300)
     try:
         report = format_output(raw_data)
         print(report)
     except FormatValidationError as e:
-        _log(f"\n{'=' * 60}")
-        _log("❌ 数据格式校验失败，需修正 JSON 结构后重试")
-        _log(f"{'=' * 60}")
-        _log(e.message)
-        _log(f"{'=' * 60}\n")
+        print(f"\n{'=' * 60}")
+        print("❌ 数据格式校验失败，需修正 JSON 结构后重试")
+        print(f"{'=' * 60}")
+        print(e.message)
+        print(f"{'=' * 60}\n")
         raise
     await close_async_session()
     await close_tickflow()

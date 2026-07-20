@@ -33,9 +33,11 @@
 uv run scripts/analyze_hk.py 03690              # Analyze Meituan (single)
 uv run scripts/analyze_hk.py 03690 00268 00700   # Batch analyze multiple HK stocks
 uv run scripts/analyze_hk.py 03690 --json        # JSON output mode
-python3 scripts/recommend_hk.py                  # Full HK stock recommendation (114 stocks, TOP10)
-python3 scripts/chan_mtf.py 09999                # Multi-timeframe Chan Theory analysis
-python3 scripts/chan_mtf.py 09999 00700 02269    # Batch multi-timeframe comparison
+uv run scripts/recommend.py --market hk           # HK stock recommendation (300+ stocks, TOP10)
+uv run scripts/recommend.py --market cn           # A-share stock recommendation (TOP10)
+uv run scripts/recommend.py --market us           # US stock recommendation (TOP10)
+python3 scripts/chan_mtf.py 09999                 # Multi-timeframe Chan Theory analysis
+python3 scripts/chan_mtf.py 09999 00700 02269     # Batch multi-timeframe comparison
 ```
 
 **Requirements**: Python 3.10+, `uv` package manager, and install dependencies:
@@ -61,7 +63,7 @@ quant-risk/
 │   │   └── report.py            # StockAnalyzer unified analysis entry
 │   ├── formatter.py             # Selection report formatter (Pydantic + rendering)
 │   ├── formatters/              # 4-stage risk formatters
-│   └── *.py                     # Entry scripts: analyze_hk.py, recommend_hk.py, portfolio.py, chan_mtf.py
+│   └── *.py                     # Entry scripts: analyze_hk.py, recommend.py, portfolio.py, chan_mtf.py
 ├── SKILL.md                     # Skill definition
 ├── AGENTS.md                    # Project conventions
 └── README.md                    # Project overview
@@ -71,9 +73,14 @@ quant-risk/
 │   ├── screener.py              # Three-tier candidate pool filtering + batch queries (~113 lines)
 │   └── report.py                # StockAnalyzer — one-click full analysis entrypoint (~253 lines)
 ├── scripts/
+│   ├── recommend.py             # Unified entry: --market hk|cn|us
 │   ├── analyze_hk.py            # Runnable entry script for HK stock analysis
-│   ├── recommend_hk.py          # Full HK stock recommendation (114 stocks, 3-step pipeline)
 │   └── chan_mtf.py              # Multi-timeframe Chan Theory (5m/60m/日K/周K)
+├── scripts/quantrisk/
+│   ├── recommend_hk.py          # HK recommendation adapter
+│   ├── recommend_cn.py          # A-share recommendation adapter
+│   ├── recommend_us.py          # US recommendation adapter
+│   ├── recommender.py           # Shared scoring/filter engine
 ├── SKILL.md                     # Claude Code Skill definition (data functions + risk control templates)
 ├── CLAUDE.md                    # Project conventions and design decisions (for AI coding agents)
 ├── AGENTS.md                    # Agent instructions for Codex

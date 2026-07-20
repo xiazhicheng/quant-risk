@@ -64,8 +64,8 @@ result = asyncio.run(analyze_hk("03690"))
 ## HK Stock Recommendation (3-Step Pipeline)
 
 ```bash
-# Full HK stock recommendation (8 sectors, 114 stocks, 3D scoring → TOP10)
-python3 scripts/recommend_hk.py
+# Full HK stock recommendation (8 sectors, 300+ stocks, 3D scoring → TOP10)
+uv run scripts/recommend.py --market hk
 ```
 
 Automated pipeline following SKILL.md's mandatory 3-step workflow:

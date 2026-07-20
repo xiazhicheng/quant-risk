@@ -143,6 +143,8 @@ def format_result(code: str, r: Dict[str, Any], market: str,
     amp = _safe(q.get("amp"), None)
     amp_str = _fmt_pct(amp) if amp is not None else "-"
     mcap = _mcap_display(q.get("market_cap_100m") or q.get("market_cap"), market)
+    tr = _safe(q.get("turnover_rate"), None)
+    tr_str = f"{tr:.2f}%" if isinstance(tr, (int, float)) else "-"
 
     rows_quote = [
         ("现价", price, "最新成交价"),
@@ -152,6 +154,7 @@ def format_result(code: str, r: Dict[str, Any], market: str,
         ("日内区间", f"{day_low} ~ {day_high}", "今日最低~最高"),
         ("振幅", amp_str, "当日波幅"),
         ("成交额/量", _fmt_amount(q.get("amount_100m") or q.get("volume") or q.get("amount", 0)) if market != "us" else _safe(q.get("volume"), "-"), "当日成交额"),
+        ("换手率", tr_str, "当日换手率"),
         ("市值", mcap, "总股本×现价"),
     ]
     # 美股显示 52 周区间
@@ -179,8 +182,8 @@ def format_result(code: str, r: Dict[str, Any], market: str,
     # 主营业务（港股优先从 company_profile 取，CN/US 暂不展示）
     business = company_profile.get("business", "") if company_profile else ""
     if business:
-        # 截断过长描述，避免表格过宽
-        short = (business[:80] + "…") if len(business) > 80 else business
+        # 截断过长描述，显示前100字
+        short = (business[:100] + "…") if len(business) > 100 else business
         rows_fund.append(("主营业务", short, "来自新浪个股信息页"))
     if ind:
         rev = _safe(ind.get("OPERATE_INCOME"), None)

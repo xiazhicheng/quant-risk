@@ -39,7 +39,8 @@ rm -rf /tmp/_qr
 quant-risk/
 ├── scripts/                       # 所有代码统一在此目录
 │   ├── analyze_hk.py              # 港股分析：uv run scripts/analyze_hk.py 03690
-│   ├── recommend_hk.py            # 港股选股推荐：uv run scripts/recommend_hk.py
+│   ├── quantrisk/                 # Python 包（scripts/quantrisk 子包）
+│   │   ├── recommend_hk.py        # 港股选股推荐适配器
 │   ├── portfolio.py               # 持仓诊断：uv run scripts/portfolio.py diagnose
 │   ├── chan_mtf.py                # 缠论多周期联立
 │   ├── formatter.py               # 选股推荐格式化器 (Pydantic + 渲染)

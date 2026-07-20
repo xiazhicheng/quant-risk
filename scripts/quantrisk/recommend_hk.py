@@ -19,7 +19,7 @@ from pathlib import Path
 # Ensure project root is on sys.path so `scripts.*` imports work
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-CACHE_FILE = Path(__file__).parent / ".hk_dynamic_pool_cache.json"
+CACHE_FILE = Path(__file__).parent.parent / ".hk_dynamic_pool_cache.json"
 
 # 行业 PE 阈值 — 超出标记但不淘汰，基本面评分会扣分
 # 依据各行业典型估值区间设定

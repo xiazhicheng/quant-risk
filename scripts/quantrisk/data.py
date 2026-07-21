@@ -998,27 +998,49 @@ def cn_eps_forecast_sync(code:str) -> list[dict]:
 
 # L5 — 资金面
 async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:int=100) -> list[dict]:
-    """获取个股日度资金流向。push2his 为历史API，限流时自动降级到 push2。"""
+    """获取个股日度资金流向。
+
+    A股使用 daykline/get 端点，港股(secid_prefix=116)使用 kline/get 端点（daykline/get对港股返回空）。
+    东财 fflow/kline/get 对部分港股覆盖不全，有数据的返回主力资金净流入，无数据的返回空数组。
+    """
+    import json as _json
     s = await get_async_session()
-    # push2his 已被IP限流，改用 push2（数据一致，主域名更稳定）
-    url = "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"
+
+    # 港股走 kline/get（daykline/get 对港股返回空数据）
+    urls = ["https://push2.eastmoney.com/api/qt/stock/fflow/kline/get",
+            "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"]
+    if secid_prefix == 116:
+        urls = urls  # kline/get 优先
+    else:
+        urls = list(reversed(urls))  # daykline/get 优先（A股）
+
     for attempt in range(3):
-        try:
-            async with s.get(url, params={
-                "secid":f"{secid_prefix}.{ticker_or_code}","klt":101,
-                "fields1":"f1,f2,f3,f7","fields2":"f51,f52,f53,f54,f55,f56,f57","lmt":limit},
-                headers={"Referer":"https://quote.eastmoney.com/"}) as r:
-                d = (await r.json()).get("data")
-            if d and d.get("klines"):
-                break
-        except Exception:
+        for url in urls:
+            try:
+                async with s.get(url, params={
+                    "secid":f"{secid_prefix}.{ticker_or_code}","klt":101,
+                    "fields1":"f1,f2,f3,f7","fields2":"f51,f52,f53,f54,f55,f56,f57","lmt":limit},
+                    headers={"Referer":"https://quote.eastmoney.com/"}) as r:
+                    text = await r.text()
+                    d = (_json.loads(text) if text else {}).get("data")
+                if d and d.get("klines"):
+                    break
+            except aiohttp.ServerDisconnectedError:
+                # 东财 fflow 端点高并发下经常触发 ServerDisconnectedError
+                # 尝试关闭旧会话后重试（下次 _fetch 会通过 get_async_session 重建会话）
+                s2 = await get_async_session()
+                if s2.closed:
+                    await close_async_session()
+                continue
+            except Exception:
+                continue
+        else:
             if attempt < 2:
                 import asyncio
                 await asyncio.sleep(1 + attempt * 2)
                 continue
             return []
-    else:
-        return []
+        break  # 成功获取数据，跳出外层循环
     if not d or not d.get("klines"): return []
     return [{"date":p[0],"main_net":float(p[1]),"small_net":float(p[2]),"mid_net":float(p[3]),
              "big_net":float(p[4]),"super_big_net":float(p[5]),

@@ -79,6 +79,17 @@ def _fmt_amount(v) -> str:
     return str(v)
 
 
+def _fmt_volume(v) -> str:
+    """成交量自动转万/亿股"""
+    if isinstance(v, (int, float)):
+        if abs(v) >= 1e8:
+            return f"{v / 1e8:.2f}亿股"
+        elif abs(v) >= 1e4:
+            return f"{v / 1e4:.2f}万股"
+        return f"{v:.0f}股"
+    return str(v)
+
+
 def _render_table(rows: List[Tuple[str, str]]) -> str:
     """三列 markdown 表格：指标 | 值 | 解释"""
     lines = ["| 指标 | 值 | 解释 |", "|------|-----|------|"]
@@ -143,8 +154,28 @@ def format_result(code: str, r: Dict[str, Any], market: str,
     amp = _safe(q.get("amp"), None)
     amp_str = _fmt_pct(amp) if amp is not None else "-"
     mcap = _mcap_display(q.get("market_cap_100m") or q.get("market_cap"), market)
-    tr = _safe(q.get("turnover_rate"), None)
-    tr_str = f"{tr:.2f}%" if isinstance(tr, (int, float)) else "-"
+    tr = q.get("turnover_rate")
+    # 腾讯API的turnover_rate字段经常返回0.0（截断），从成交量/市值/价格推算
+    vol_shares_raw = _safe(q.get("volume_shares"), None)
+    vol_str = _fmt_volume(vol_shares_raw) if vol_shares_raw is not None else "-"
+    if isinstance(tr, (int, float)) and tr > 0:
+        tr_str = f"{tr:.2f}%"
+    else:
+        # 推算: 换手率 = 成交量 / (市值 / 股价) × 100%
+        try:
+            mc = float(q.get("market_cap_100m") or 0) * 1e8
+            pr = float(q.get("price") or 0)
+            vs = float(vol_shares_raw or 0)
+            if mc > 0 and pr > 0 and vs > 0:
+                total_shares = mc / pr
+                tr_calc = vs / total_shares * 100
+                tr_str = f"{tr_calc:.4f}%"
+            else:
+                tr_str = "-"
+        except (ValueError, TypeError, ZeroDivisionError):
+            tr_str = "-"
+    vol_shares = _safe(q.get("volume_shares"), None)
+    vol_str = _fmt_volume(vol_shares) if vol_shares is not None else "-"
 
     rows_quote = [
         ("现价", price, "最新成交价"),
@@ -153,7 +184,8 @@ def format_result(code: str, r: Dict[str, Any], market: str,
         ("昨收", prev, "上一交易日收盘价"),
         ("日内区间", f"{day_low} ~ {day_high}", "今日最低~最高"),
         ("振幅", amp_str, "当日波幅"),
-        ("成交额/量", _fmt_amount(q.get("amount_100m") or q.get("volume") or q.get("amount", 0)) if market != "us" else _safe(q.get("volume"), "-"), "当日成交额"),
+        ("成交额", _fmt_amount(q.get("amount_100m") or q.get("amount", 0)) if market != "us" else _safe(q.get("volume"), "-"), "当日成交金额"),
+        ("成交量", vol_str, "当日成交股数"),
         ("换手率", tr_str, "当日换手率"),
         ("市值", mcap, "总股本×现价"),
     ]
@@ -211,7 +243,7 @@ def format_result(code: str, r: Dict[str, Any], market: str,
     cf = capital_flow or {}
     cf_note = ""
     if is_derived:
-        cf_note = "（从Tencent行情派生估算）"
+        cf_note = "（港股push2无资金流向数据，行情派生估算不可靠，已隐藏）"
 
     # 个股行业/板块
     if market == "hk":
@@ -223,7 +255,7 @@ def format_result(code: str, r: Dict[str, Any], market: str,
 
         rows_sentiment = [
             ("所属行业", _safe(stock_industry, "-"), "所属行业板块"),
-            ("资金流向(主力净流入)", _fmt_amount(cf.get("main_net", 0)) if cf else "暂无",
+            ("资金流向(主力净流入)", _fmt_amount(cf.get("main_net", 0)) if cf and not is_derived else "暂无",
              "主力机构当日净买入" + cf_note),
         ]
         # 港股热点板块
@@ -446,12 +478,14 @@ def format_json_result(code: str, r: Dict[str, Any], market: str) -> Dict[str, A
 def _fetch_capital_flow_sync(codes: List[str], secid_prefix: int) -> Dict[str, Dict[str, Any]]:
     """
     同步获取资金流向（curl 方式，aiohttp 连 push2.eastmoney.com 会断开）。
+    港股(secid_prefix=116) 使用 kline/get 端点，A股使用 daykline/get 端点。
     返回 {clean_code: {main_net, main_pct}}
     """
     import subprocess, time
     out = {}
+    endpoint = "kline" if secid_prefix == 116 else "daykline"
     for code in codes:
-        url = ("https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"
+        url = (f"https://push2.eastmoney.com/api/qt/stock/fflow/{endpoint}/get"
                f"?secid={secid_prefix}.{code}&klt=101"
                "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57&lmt=1")
         try:
@@ -463,8 +497,9 @@ def _fetch_capital_flow_sync(codes: List[str], secid_prefix: int) -> Dict[str, D
             klines = data.get("klines", [])
             if klines:
                 p = klines[-1].split(",")
+                # 字段顺序: date,main_net,small_net,mid_net,big_net,super_big_net,main_pct
                 out[code] = {
-                    "main_net": float(p[4]) if len(p) > 4 and p[4] else 0,
+                    "main_net": float(p[1]) if len(p) > 1 and p[1] else 0,
                     "main_pct": float(p[6]) if len(p) > 6 and p[6] else 0,
                 }
         except Exception:

@@ -4,6 +4,10 @@
 
 支持 **美股 + A 股 + 港股** 三大市场，基于 **基本面为主 + 热点驱动 + 缠论择时** 的三维评分体系。
 
+> **投资理念**：基本面为主（权重50%）→ 技术面为辅（权重20%）→ 结合当前热点（权重30%）
+>
+> **基本面一票否决**：营收<-30%、净利<-30% 或 PE<-10 的标的在进入评分池前直接淘汰，贯彻"基本面为主"原则
+>
 > 本项目基于 [global-stock-data](https://github.com/simonlin1212/global-stock-data) 改进，在原项目「美股港股全栈数据工具包」基础上，扩展了全生命周期风控框架和缠论模块。
 >
 > 兼容 Claude Code · Codex · OpenClaw
@@ -38,9 +42,8 @@ rm -rf /tmp/_qr
 ```
 quant-risk/
 ├── scripts/                       # 所有代码统一在此目录
+│   ├── recommend.py               # 统一推荐入口：--market hk|cn|us
 │   ├── analyze_hk.py              # 港股分析：uv run scripts/analyze_hk.py 03690
-│   ├── quantrisk/                 # Python 包（scripts/quantrisk 子包）
-│   │   ├── recommend_hk.py        # 港股选股推荐适配器
 │   ├── portfolio.py               # 持仓诊断：uv run scripts/portfolio.py diagnose
 │   ├── chan_mtf.py                # 缠论多周期联立
 │   ├── formatter.py               # 选股推荐格式化器 (Pydantic + 渲染)
@@ -51,16 +54,21 @@ quant-risk/
 │   │   ├── _holding.py            # 持仓监控
 │   │   ├── _alert.py              # 预警触发
 │   │   └── _disposal.py           # 处置决策
-│   └── quantrisk/                 # Python 模块（scripts/quantrisk 子包）
-│       ├── data.py                # 数据层：行情/K线/基本面/资金面/信号/公告/期权/SEC/工具
+│   └── quantrisk/                 # Python 包（scripts/quantrisk 子包）
+│       ├── __init__.py            # 包入口
+│       ├── recommender.py         # 共享评分/过滤引擎（meso_filter + fundamental_veto + fb/hot/ch_score）
+│       ├── recommend_hk.py        # 港股选股推荐适配器
+│       ├── recommend_cn.py        # A 股选股推荐适配器
+│       ├── recommend_us.py        # 美股选股推荐适配器
+│       ├── data.py                # 数据层：行情/K线/基本面/资金面/信号/公告/期权/SEC
 │       ├── chan.py                # 缠论：分型→笔→线段→中枢→背驰→买卖点
 │       ├── indicators.py          # 技术指标：MA/MACD/RSI/KDJ/BOLL + 支撑压力/止损止盈
-│       ├── screener.py            # 标的池三层筛选 + 批量查询
-│       ├── report.py              # StockAnalyzer 一键全量分析入口
-│       └── __init__.py            # 包入口
+│       ├── screener.py            # 标的池筛选 + 批量查询
+│       └── report.py              # StockAnalyzer 一键全量分析入口
 ├── portfolio.json                 # 持仓配置文件
 ├── SKILL.md                       # Skill 主定义（数据函数 + 风控模板）
 ├── AGENTS.md                      # 项目约定和设计决策
+├── AGENTS.md                      # Agent 指令
 └── README.md                      # 本文件
 ```
 
@@ -82,16 +90,42 @@ quant-risk/
 │  ├── SEC Filing EDGAR（仅美股）               │
 │  └── 工具层    搜索/新闻/CIK/全市场列表        │
 │                                              │
+│  共享引擎  recommender.py                    │
+│  ├── 中观过滤   meso_filter(市值/股价硬约束)  │
+│  ├── 基本面否决  fundamental_veto(营收/净利/PE)│
+│  ├── 基本面评分  fb_score(9维度,权重50%)       │
+│  ├── 热点评分    hot_score(6维度,权重30%)     │
+│  └── 缠论评分    chan_score(4维度,权重20%)    │
+│                                              │
 │  分析层                                        │
 │  ├── 技术指标  indicators.py (MA/MACD/RSI/KDJ)│
 │  ├── 缠论     chan.py (分型→笔→中枢→买卖点)   │
 │  └── 报告     report.py (StockAnalyzer)        │
+│                                              │
+│  市场适配器                                    │
+│  ├── recommend_hk.py  港股（动态300+候选池）  │
+│  ├── recommend_cn.py  A股（市值排序500只）     │
+│  └── recommend_us.py  美股（S&P 500 核心）    │
 └──────────────────────────────────────────────┘
 ```
 
 ## 三维评分体系
 
-分析以 **基本面为主(权重5) > 热点(权重3) > 缠论(权重2)** 排序，每维 1-5 分，满分 50。
+分析以 **基本面为主(50%) > 热点(30%) > 缠论(20%)** 加权，每维 1-5 分（百分位排名），满分 **100 分**。
+
+| 维度 | 权重 | 满分 | 评分(1-5) | 核心问题 |
+|------|:----:|:----:|:---------:|---------|
+| 📊 基本面 | 50% | 50 | 1-5 | 估值合理吗？盈利质量如何？财务健康吗？ |
+| 🔥 热点 | 30% | 30 | 1-5 | 是否在市场主线？有催化剂吗？ |
+| 🔧 缠论 | 20% | 20 | 1-5 | 结构位置在哪？有买卖点信号吗？ |
+
+**评分流程（4 层过滤）：**
+1. **中观过滤** — 市值≥50亿、股价≥1元（硬约束，不通过即淘汰）
+2. **基本面一票否决** — 营收<-30%、净利<-30%、PE<-10 直接淘汰（贯彻"基本面为主"）
+3. **三维原始分** — `fb_score`(9维度) + `hot_score`(6维度) + `chan_score`(4维度)
+4. **池内百分位排名** — 映射到 1~5 → 加权得分 = fb_w + hot_w + ch_w
+
+**建议阈值：** ≥70 强烈关注 | ≥56 可关注 | ≥44 观察 | <44 回避
 
 ## 使用示例
 

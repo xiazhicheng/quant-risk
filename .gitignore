@@ -16,3 +16,6 @@ design.md
 
 # 用户持仓配置（改为仅由 AgentMemory 管理）
 portfolio.json
+
+# 动态池缓存（自动生成，含实时数据）
+.hk_dynamic_pool_cache.json

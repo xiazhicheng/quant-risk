@@ -7,6 +7,7 @@ A股候选池: 东财全市场 A 股 → 行业板块 → 三维评分
 from __future__ import annotations
 
 import asyncio
+import aiohttp
 from typing import Dict, List, Optional, Tuple
 
 from scripts.quantrisk.data import (
@@ -23,6 +24,7 @@ from scripts.quantrisk.data import (
     eastmoney_datacenter,
     parallel_map,
     close_async_session,
+    get_async_session,
 )
 
 
@@ -57,66 +59,96 @@ def _parse_em_code(em_code: str) -> Optional[str]:
 
 
 async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]:
-    """从东财全市场拉取 A 股候选池（按市值排序，取前 500 只）
+    """从腾讯行情 API 拉取 A 股候选池（上海+深圳全市场）
+
+    东财 push2 在当前网络环境下不可用，改用腾讯行情 API 批量查询。
+    腾讯 API 支持一次查询 200+ 只股票，分批查询即可覆盖全市场。
 
     返回: [{code, name, industry, mcap, price, pe, sector}, ...]
     """
     try:
-        import asyncio, json
+        import json, asyncio, math
+
+        # 生成所有可能的 A 股代码
+        # 按优先级排序：上海主板(600000-605199) → 深圳主板(000000-003999) → 创业板(300000-301999)
+        all_codes = []
+        # 上海: 600000-605199
+        for i in range(600000, 605200):
+            all_codes.append(f"sh{i}")
+        # 深圳主板: 000000-003999
+        for i in range(0, 4000):
+            all_codes.append(f"sz{i:06d}")
+        # 深圳创业板: 300000-301999
+        for i in range(300000, 302000):
+            all_codes.append(f"sz{i}")
+
         candidates = []
-        page = 1
-        page_size = 100
-        max_pages = 5
+        batch_size = 200  # 腾讯 API 支持 200 个/批，实测可用
 
-        while len(candidates) < min_stocks and page <= max_pages:
-            url = (
-                "https://push2.eastmoney.com/api/qt/clist/get?"
-                f"fs=m:0+t:2,m:1+t:2"
-                f"&fields=f2,f3,f12,f14,f20,f37,f100"
-                f"&pn={page}&pz={page_size}&fid=f20&po=1"
-            )
-            proc = await asyncio.create_subprocess_shell(
-                f"/usr/bin/curl -s --max-time 15 '{url}'",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-            if not stdout or len(stdout) < 50:
+        for batch_start in range(0, len(all_codes), batch_size):
+            if len(candidates) >= min_stocks:
                 break
-            d = json.loads(stdout.decode())
-            diff = d.get("data", {}).get("diff", []) or []
-            if isinstance(diff, dict):
-                diff = list(diff.values())
-            if not diff:
-                break
+            batch = all_codes[batch_start:batch_start + batch_size]
+            url = "http://qt.gtimg.cn/q=" + ",".join(batch)
 
-            for item in diff:
-                code = str(item.get("f12", ""))
-                name = str(item.get("f14", ""))
-                if not code or not name:
+            # 重试 2 次
+            text = ""
+            for retry in range(3):
+                try:
+                    connector = aiohttp.TCPConnector(force_close=True, limit=1)
+                    async with aiohttp.ClientSession(connector=connector) as session:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                            raw = await resp.read()
+                            text = raw.decode("gbk")
+                    if text and len(text) >= 10:
+                        break
+                except Exception:
+                    if retry < 2:
+                        await asyncio.sleep(0.5)
+                    else:
+                        raise
+
+            if not text:
+                continue
+
+            for line in text.strip().split(";"):
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                parts = line.split("=", 1)
+                val = parts[1].strip("\"")
+                if not val:
+                    continue
+                fields = val.split("~")
+                if len(fields) < 46:
                     continue
 
+                name = fields[1]
+                code = fields[2]
+                price = float(fields[3]) if fields[3] else 0
+                pe = float(fields[39]) if fields[39] and fields[39] != "0.00" else 0
+                mcap = float(fields[44]) if fields[44] and fields[44] != "0.00" else 0
+
+                if not code or not name:
+                    continue
                 # 过滤 ETF/衍生品/ST
                 if any(kw in name for kw in ["ETF", "LOF", "REIT", "购", "沽", "牛", "熊"]):
                     continue
                 if name.startswith("ST"):
                     continue
-
-                price = item.get("f2") or 0
-                mcap = (item.get("f20") or 0) / 1e8  # 元 → 亿
-                pe = item.get("f37") or 0
-                industry = str(item.get("f100") or "其他").strip()
+                if price <= 0:
+                    continue
 
                 candidates.append({
                     "code": code,
                     "name": name,
-                    "industry": industry,
+                    "industry": "其他",
                     "market": "",
                     "mcap": mcap,
                     "price": price,
                     "pe": pe,
-                    "sector": industry,
+                    "sector": "其他",
                 })
-
-            page += 1
 
         return candidates
 

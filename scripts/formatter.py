@@ -70,8 +70,8 @@ class Top10Item(BaseModel):
     hot: float = Field(..., ge=1, le=5, description="热点评分 1-5")
     ch: float = Field(..., ge=1, le=5, description="缠论评分 1-5")
     fb_w: float = Field(..., ge=0, le=50, description="基本面加权得分 0-50")
-    hot_w: float = Field(..., ge=0, le=30, description="热点加权得分 0-30")
-    ch_w: float = Field(..., ge=0, le=20, description="缠论加权得分 0-20")
+    hot_w: float = Field(..., ge=0, le=25, description="热点加权得分(技术面子分)")
+    ch_w: float = Field(..., ge=0, le=25, description="缠论加权得分(技术面子分)")
     total: float = Field(..., ge=0, le=100, description="总分 0-100")
     advice: str = Field(..., description="建议")
 
@@ -90,13 +90,13 @@ class FbDetail(BaseModel):
 
 class HotDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=30, description="热点加权得分 0-30")
+    score_w: float = Field(..., ge=0, le=25, description="热点加权得分(技术面子分)")
     desc: str = Field(..., description="热点描述")
 
 
 class ChanDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=20, description="缠论加权得分 0-20")
+    score_w: float = Field(..., ge=0, le=25, description="缠论加权得分(技术面子分)")
     ma60: Any = Field(default="?", description="MA60")
     price: Any = Field(default="?", description="现价")
     macd_hist: Any = Field(default="?", description="MACD柱")
@@ -253,7 +253,7 @@ MARKET_CONFIG = {
         "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
         "passed_label": "通过过滤",
         "score_label": "三维评分 TOP10",
-        "score_header": "| 排名 | 标的 | 板块 | 基本面(50分) | 热点(30分) | 缠论(20分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:--------:|:--------:|:-----:|------|",
+        "score_header": "| 排名 | 标的 | 板块 | 基本面(50分) | 技术面(50分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:-----:|------|",
         "detail_label": "各股详细分析",
         "summary_label": "综合建议",
         "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
@@ -266,8 +266,8 @@ MARKET_CONFIG = {
         "elim_label": "中观过滤（剔除明细）",
         "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
         "passed_label": "通过过滤",
-        "score_label": "三维评分 TOP10",
-        "score_header": "| 排名 | 标的 | 板块 | 基本面(50分) | 热点(30分) | 缠论(20分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:--------:|:--------:|:-----:|------|",
+        "score_label": "二维评分 TOP10",
+        "score_header": "| 排名 | 标的 | 板块 | 基本面(50分) | 技术面(50分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:-----:|------|",
         "detail_label": "各股详细分析",
         "summary_label": "综合建议",
         "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
@@ -281,7 +281,7 @@ MARKET_CONFIG = {
         "elim_header": "| Eliminated | Reason |\n|------------|--------|",
         "passed_label": "passed filter",
         "score_label": "3D Scoring TOP10",
-        "score_header": "| Rank | Stock | Sector | Fundamental(50pt) | Hot(30pt) | Chan(20pt) | Total(100pt) | Advice |\n|:----:|------|:----:|:---------------:|:------:|:------:|:-----:|------|",
+        "score_header": "| Rank | Stock | Sector | Fundamental(50pt) | Technical(50pt) | Total(100pt) | Advice |\n|:----:|------|:----:|:---------------:|:--------------:|:-----:|------|",
         "detail_label": "Detailed Analysis",
         "summary_label": "Summary",
         "summary_header": "| Stock | Advice | Entry | Stop Loss | Target |\n|:-----|:------:|:------:|:---------:|:------:|",
@@ -413,7 +413,7 @@ def _render_vetoed_section(vetoed: list[VetoedItem]) -> str:
 
 def _render_top10_rows(top10: list[Top10Item]) -> str:
     return "\n".join(
-        f"| ⭐{t.rank} | **{t.code} {t.name}** | {t.sector} | {t.fb_w:.1f} | {t.hot_w:.1f} | {t.ch_w:.1f} | "
+        f"| ⭐{t.rank} | **{t.code} {t.name}** | {t.sector} | {t.fb_w:.1f} | {t.hot_w + t.ch_w:.1f} | "
         f"**{t.total:.1f}** | {t.advice} |"
         for t in top10
     )
@@ -495,12 +495,12 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     return f"""\
 #### {d.rank}. {d.name}（{d.code}）— {d.advice} ✅ | 总分 {d.total}/100
 
-**结论**：{fb_desc}（{fb.score_w}/50） + {ch_desc}（{ch.score_w}/20） → **{timing_verdict}**
+**结论**：{fb_desc}（{fb.score_w}/50） + 技术面 {hot.score_w + ch.score_w}/50 → **{timing_verdict}**
 
 **论据**：
 - 📊 **基本面 {fb.score_w}/50**：{fb_summary}
-- 🔥 **热点 {hot.score_w}/30**：{hot.desc}
-- 🔧 **缠论 {ch.score_w}/20**：{ch_summary}{ch_deep_block}
+- 🔥 **热点(子分)** {hot.score}/5 ({hot.score_w}分)：{hot.desc}
+- 🔧 **缠论(子分)** {ch.score}/5 ({ch.score_w}分)：{ch_summary}{ch_deep_block}
 
 **定价**：入场 {d.price} → 止损 {d.stop_loss}（{sl_pct:.1f}%）→ 目标 {d.take_profit}
 """

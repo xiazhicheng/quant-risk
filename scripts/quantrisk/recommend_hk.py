@@ -414,8 +414,8 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
             "hot": s["hot"],
             "ch": s["ch"],
             "fb_w": s.get("fb_w", round(s["fb"] * 10, 1)),
-            "hot_w": s.get("hot_w", round(s["hot"] * 6, 1)),
-            "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+            "hot_w": s.get("hot_w", round(s["hot"] * 5, 1)),
+            "ch_w": s.get("ch_w", round(s["ch"] * 5, 1)),
             "total": t,
             "advice": advice,
         })
@@ -498,12 +498,12 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
             },
             "hot": {
                 "score": s["hot"],
-                "score_w": s.get("hot_w", round(s["hot"] * 6, 1)),
+                "score_w": s.get("hot_w", round(s["hot"] * 5, 1)),
                 "desc": hot_desc,
             },
             "ch": {
                 "score": s["ch"],
-                "score_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+                "score_w": s.get("ch_w", round(s["ch"] * 5, 1)),
                 "ma60": ma60,
                 "price": _fmt_num(s.get("p")),
                 "macd_hist": _fmt_num(macd_hist) if macd_hist != "?" else "?",

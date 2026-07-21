@@ -615,10 +615,10 @@ def percentile_score_all(
         r["fb"] = round(1 + fb_pct * 4, 1)
         r["hot"] = round(1 + hot_pct * 4, 1)
         r["ch"] = round(1 + ch_pct * 4, 1)
-        # 加权得分：基本面50分(×10) + 热点30分(×6) + 缠论20分(×4) = 100分
+        # 加权得分：基本面50分(×10) + 技术面50分(hot×5 + ch×5) = 100分
         r["fb_w"] = round(r["fb"] * 10, 1)
-        r["hot_w"] = round(r["hot"] * 6, 1)
-        r["ch_w"] = round(r["ch"] * 4, 1)
+        r["hot_w"] = round(r["hot"] * 5, 1)
+        r["ch_w"] = round(r["ch"] * 5, 1)
         r["total"] = round(r["fb_w"] + r["hot_w"] + r["ch_w"], 1)
         # 建议（按100分制）
         t = r["total"]
@@ -647,8 +647,8 @@ def score_one(
     hot = _clamp(hot_score(p, kl, sector_ranking, capital_flow, market))
     ch, cd = _clamp(chan_score(p, kl)[0]), chan_score(p, kl)[1]
     fb_w = round(fb * 10, 1)
-    hot_w = round(hot * 6, 1)
-    ch_w = round(ch * 4, 1)
+    hot_w = round(hot * 5, 1)
+    ch_w = round(ch * 5, 1)
     total = round(fb_w + hot_w + ch_w, 1)
 
     return {
@@ -714,8 +714,8 @@ def build_selection_data(
             "hot": s["hot"],
             "ch": s["ch"],
             "fb_w": s.get("fb_w", round(s["fb"] * 10, 1)),
-            "hot_w": s.get("hot_w", round(s["hot"] * 6, 1)),
-            "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+            "hot_w": s.get("hot_w", round(s["hot"] * 5, 1)),
+            "ch_w": s.get("ch_w", round(s["ch"] * 5, 1)),
             "total": t,
             "advice": advice,
         })
@@ -788,12 +788,12 @@ def build_selection_data(
             },
             "hot": {
                 "score": s["hot"],
-                "score_w": s.get("hot_w", round(s["hot"] * 6, 1)),
+                "score_w": s.get("hot_w", round(s["hot"] * 5, 1)),
                 "desc": hot_desc,
             },
             "ch": {
                 "score": s["ch"],
-                "score_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+                "score_w": s.get("ch_w", round(s["ch"] * 5, 1)),
                 "ma60": ma60,
                 "price": s.get("p"),
                 "macd_hist": macd_hist,

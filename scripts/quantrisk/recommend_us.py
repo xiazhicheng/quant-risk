@@ -193,22 +193,6 @@ async def us_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]
 
 
 # ═══════════════════════════════════════════════════════════════
-# 美股评分
-# ═══════════════════════════════════════════════════════════════
-
-async def us_score_one(
-    p: Dict[str, Any],
-    kl: List[Dict],
-    industry_thresholds: Dict[str, int] = None,
-    capital_flow: Optional[Dict[str, float]] = None,
-    sector_ranking: Optional[List[Tuple[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """美股单只股票三维评分"""
-    from scripts.quantrisk.recommender import score_one
-    return score_one(p, kl, sector_ranking, capital_flow, industry_thresholds, market="us")
-
-
-# ═══════════════════════════════════════════════════════════════
 # 美股主流程
 # ═══════════════════════════════════════════════════════════════
 
@@ -242,24 +226,27 @@ async def us_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
         s["ap"] = round(s["chg_sum"] / s["c"], 2) if s["c"] > 0 else 0
 
     # Step 3: 中观过滤
-    from scripts.quantrisk.recommender import meso_filter
+    from scripts.quantrisk.recommender import meso_filter, fundamental_veto
     passed, elim = meso_filter(st, US_SECTOR_PE_THRESHOLD, code2sector, secid_prefix="us")
+    # 基本面一票否决（贯彻"基本面为主"理念）
+    passed, vetoed = fundamental_veto(passed)
     passed_cnt = len(passed)
 
     # Step 4: 无资金流向数据，跳过
     capital_flow = None
 
-    # Step 5: 并行评分
-    scored = []
-    for p in passed:
-        c = p["c"]
-        kl = st.get(c, {}).get("klines", []) or []
-        s = await us_score_one(p, kl, US_SECTOR_PE_THRESHOLD)
-        scored.append(s)
+    # Step 5: K线已在 batch_analysis 中获取 → 共享原始分 → 百分位排名
+    from scripts.quantrisk.recommender import _raw_score_one, percentile_score_all
 
-    scored.sort(key=lambda x: x["total"], reverse=True)
+    raw_scores = [
+        _raw_score_one(p, st.get(p["c"], {}).get("klines", []) or [], US_SECTOR_PE_THRESHOLD,
+                       capital_flow=capital_flow, market="us")
+        for p in passed
+    ]
+
+    scored = percentile_score_all(raw_scores)
 
     # Step 6: 格式化
     from scripts.quantrisk.recommender import build_selection_data
-    raw_data = build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow)
+    raw_data = build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, vetoed=vetoed)
     return raw_data

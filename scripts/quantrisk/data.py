@@ -1259,3 +1259,28 @@ async def batch_hk_capital_flow_async(codes: list[str]) -> dict[str, float]:
     funcs = [lambda c=code: _fetch(c) for code in codes]
     results = await parallel_map(funcs, max_concurrency=20)
     return {c: v for c, v in results if isinstance(v, (int, float))}
+
+
+async def batch_hk_capital_flow_20d_async(codes: list[str]) -> dict[str, dict]:
+    """并行获取港股 20 日累计主力资金流向。
+
+    返回 {code: {"cumulative": 累计净流入, "avg": 日均净流入,
+                  "positive_days": 正流入天数, "total_days": 实际返回天数}}
+    """
+    async def _fetch(code):
+        try:
+            d = await fund_flow_daily_async(code, secid_prefix=116, limit=20)
+            if d and len(d) >= 2:
+                cum = sum(item.get("main_net", 0.0) for item in d)
+                avg = cum / len(d)
+                pos_days = sum(1 for item in d if item.get("main_net", 0.0) > 0)
+                return code, {
+                    "cumulative": cum, "avg": avg,
+                    "positive_days": pos_days, "total_days": len(d),
+                }
+        except:
+            pass
+        return code, {"cumulative": 0.0, "avg": 0.0, "positive_days": 0, "total_days": 0}
+    funcs = [lambda c=code: _fetch(c) for code in codes]
+    results = await parallel_map(funcs, max_concurrency=20)
+    return {c: v for c, v in results if isinstance(v, dict)}

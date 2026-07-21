@@ -149,20 +149,8 @@ async def fetch_cn_capital_flow(codes: List[str]) -> Dict[str, float]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# A股评分函数
+# A股批量分析
 # ═══════════════════════════════════════════════════════════════
-
-async def cn_score_one(
-    p: Dict[str, Any],
-    kl: List[Dict],
-    industry_thresholds: Dict[str, int] = None,
-    capital_flow: Optional[Dict[str, float]] = None,
-    sector_ranking: Optional[List[Tuple[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """A股单只股票三维评分（调用 shared_recommender）"""
-    from scripts.quantrisk.recommender import score_one
-    return score_one(p, kl, sector_ranking, capital_flow, industry_thresholds, market="cn")
-
 
 async def cn_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]:
     """A股批量分析（并行获取行情 + 基本面，K线按需获取）"""
@@ -220,13 +208,14 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
             ss[sector]["up"] += 1
         else:
             ss[sector]["dn"] += 1
-    # 求平均涨跌幅
     for sec, s_info in ss.items():
         s_info["ap"] = round(s_info["ap"] / max(s_info["c"], 1), 2)
 
     # Step 3: 中观过滤
-    from scripts.quantrisk.recommender import meso_filter
+    from scripts.quantrisk.recommender import meso_filter, fundamental_veto
     passed, elim = meso_filter(st, CN_SECTOR_PE_THRESHOLD, code2sector, secid_prefix="cn")
+    # 基本面一票否决（贯彻"基本面为主"理念）
+    passed, vetoed = fundamental_veto(passed)
     passed_cnt = len(passed)
 
     # Step 4: 资金流向（并行获取）
@@ -236,23 +225,34 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     except Exception:
         pass
 
-    # Step 5: 并行评分（K线按需获取，限流30并发）
-    from scripts.quantrisk.recommender import score_one
-    sem = asyncio.Semaphore(30)
+    # Step 5: 并行获取K线 → 共享原始分 → 百分位排名
+    from scripts.quantrisk.recommender import _raw_score_one, percentile_score_all
 
-    async def _score_one(p):
-        async with sem:
-            c = p["c"]
-            kl = await cn_stock_kline_fallback(c, days=365)
-            s = await cn_score_one(p, kl, CN_SECTOR_PE_THRESHOLD, capital_flow)
-            s["kl"] = kl
-            return s
+    # 并行获取所有 K 线
+    kline_tasks = [asyncio.create_task(cn_stock_kline_fallback(p["c"], days=365)) for p in passed]
+    kline_results = await asyncio.gather(*kline_tasks, return_exceptions=True)
+    kl_map = {}
+    for p, result in zip(passed, kline_results):
+        if isinstance(result, list) and result:
+            kl_map[p["c"]] = result
+        else:
+            kl_map[p["c"]] = []
 
-    scored = await asyncio.gather(*[_score_one(p) for p in passed])
-    scored = [s for s in scored if s]
-    scored.sort(key=lambda x: x["total"], reverse=True)
+    # 计算原始分
+    raw_scores = [
+        _raw_score_one(p, kl_map.get(p["c"], []), CN_SECTOR_PE_THRESHOLD,
+                       capital_flow=capital_flow, market="cn")
+        for p in passed
+    ]
+
+    # 池内百分位排名
+    scored = percentile_score_all(raw_scores)
+
+    # 补充 kl/ind 字段
+    for s in scored:
+        s["kl"] = kl_map.get(s["c"], [])
 
     # Step 6: 格式化
     from scripts.quantrisk.recommender import build_selection_data
-    raw_data = build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow)
+    raw_data = build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, vetoed=vetoed)
     return raw_data

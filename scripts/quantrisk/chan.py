@@ -540,6 +540,9 @@ def chan_risk_assessment(klines: list[dict]) -> dict:
         "segments_count": result["segments_count"],
         "divergences": divergences,
         "buy_sell_points": buy_sell,
+        # 深度缠论数据（供推荐模板使用）
+        "fractals": result.get("fractals", []),
+        "strokes": result.get("strokes", []),
     }
 
 

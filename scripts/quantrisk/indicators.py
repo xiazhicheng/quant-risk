@@ -259,7 +259,7 @@ def calc_stop_loss_take_profit(
             )
         atr = sum(tr) / len(tr)
 
-    if atr:
+    if atr and entry_price and entry_price > 0:
         sl = round(entry_price - 2 * atr, 2)
         tp = round(entry_price + 3 * atr, 2)
         sl_pct = round(2 * atr / entry_price * 100, 1)

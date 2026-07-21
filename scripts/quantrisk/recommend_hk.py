@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio, json, sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 # Ensure project root is on sys.path so `scripts.*` imports work
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -39,8 +40,15 @@ from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tence
                                      stock_kline_yahoo_async, kline_tickflow_async,
                                      parallel_map, key_indicators_eastmoney_async,
                                      batch_hk_capital_flow_async,
+                                     batch_hk_capital_flow_20d_async,
                                      close_async_session, close_tickflow)
-from scripts.quantrisk.indicators import calc_ma, calc_macd, chan_risk_assessment
+
+# 共享评分引擎（三市场统一使用百分位排名）
+from scripts.quantrisk.recommender import (
+    _raw_score_one, percentile_score_all,
+    meso_filter as shared_meso_filter,
+    fundamental_veto,
+)
 
 # ── 格式化引擎（Pydantic 校验 + 渲染） ──────────────────────
 from scripts.formatter import format_output, FormatValidationError
@@ -365,16 +373,18 @@ def _fmt_num(v):
         return "?"
 
 
-def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_ranking):
+def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_ranking, vetoed=None):
     """将内部数据结构转为 format_output() 所需的 JSON Schema。
 
     返回的 dict 结构:
-        {date, sectors[], eliminated[], passed_count, top10[], details[], summary[]}
+        {date, sectors[], eliminated[], vetoed[], passed_count, top10[], details[], summary[]}
+
+    Args:
+        vetoed: 基本面一票否决的标的 [(code, name, reason)]
     """
     from scripts.quantrisk.indicators import calc_stop_loss_take_profit
 
     top10 = scored[:10]
-    flow_all_zero = all(abs(v) < 1e4 for v in (capital_flow or {}).values()) if capital_flow else True
 
     # ── sectors ──
     sectors_data = []
@@ -394,7 +404,7 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
     top10_data = []
     for i, s in enumerate(top10):
         t = s["total"]
-        advice = "强烈关注" if t >= 35 else ("可关注" if t >= 28 else ("观察" if t >= 22 else "回避"))
+        advice = "强烈关注" if t >= 70 else ("可关注" if t >= 56 else ("观察" if t >= 44 else "回避"))
         top10_data.append({
             "rank": i + 1,
             "code": s["c"],
@@ -403,6 +413,9 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
             "fb": s["fb"],
             "hot": s["hot"],
             "ch": s["ch"],
+            "fb_w": s.get("fb_w", round(s["fb"] * 10, 1)),
+            "hot_w": s.get("hot_w", round(s["hot"] * 6, 1)),
+            "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
             "total": t,
             "advice": advice,
         })
@@ -422,19 +435,28 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
         sl_point = sltp.get("stop_loss") or round(s["p"] * 0.92, 2)
         tp_point = sltp.get("take_profit") or round(s["p"] * 1.15, 2)
         t = s["total"]
-        advice = ("强烈关注，适合布局" if t >= 35 else
-                  "可适当关注，等待入场时机" if t >= 28 else
-                  "纳入观察清单，等待催化剂" if t >= 22 else "暂时回避，等待改善")
+        advice = ("强烈关注，适合布局" if t >= 70 else
+                  "可适当关注，等待入场时机" if t >= 56 else
+                  "纳入观察清单，等待催化剂" if t >= 44 else "暂时回避，等待改善")
 
-        # 热点描述
-        if flow_all_zero:
-            kl_s = s.get("kl", [])
-            vr = 1.0
-            if kl_s and len(kl_s) >= 21:
-                vols = [k.get("volume", 0) for k in kl_s[-21:]]
-                if vols and vols[-1] > 0:
-                    avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
-                    vr = vols[-1] / max(avg_vol, 1)
+        # 热点描述 — 逐股判断：优先用主力资金流，无数据则用成交量替代（标注"替代"）
+        # 成交量替代公式: vr = 今日成交量 / 前20日日均成交量
+        # 分级: 放巨量(vr>2.0) | 放量(1.5<vr≤2.0) | 量平(0.5≤vr≤1.5) | 缩量(vr<0.5)
+        kl_s = s.get("kl", [])
+        vr = 1.0
+        if kl_s and len(kl_s) >= 21:
+            vols = [k.get("volume", 0) for k in kl_s[-21:]]
+            if vols and vols[-1] > 0:
+                avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
+                vr = vols[-1] / max(avg_vol, 1)
+
+        flow = capital_flow.get(s["c"], 0) if capital_flow else 0
+        if abs(flow) > 1e4:
+            # 有主力资金流数据
+            hot_desc = f"{s['s']}板块 主力净{flow/1e8:+.2f}亿"
+            vol_ratio = None  # 非替代
+        else:
+            # 无资金流数据，用成交量替代
             if vr > 2.0:
                 vol_desc = f"放巨量({vr:.1f}x)"
             elif vr > 1.5:
@@ -443,11 +465,8 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
                 vol_desc = f"缩量({vr:.1f}x)"
             else:
                 vol_desc = f"量平({vr:.1f}x)"
-            hot_desc = f"{s['s']}板块 {vol_desc} {'+' if chg >= 0 else ''}{chg:.2f}%"
-        else:
-            flow = capital_flow.get(s["c"], 0)
-            flow_str = f"主力净{flow/1e8:+.2f}亿" if abs(flow) > 1e4 else "无明显资金流入"
-            hot_desc = f"{s['s']}板块 {flow_str}"
+            hot_desc = f"{s['s']}板块 ⚡{vol_desc} [替代] {'+' if chg >= 0 else ''}{chg:.2f}%"
+            vol_ratio = vr  # 传递到 formatter
 
         # 缠论信号
         v_str = str(d.get("v", ""))
@@ -464,8 +483,12 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
             "pct": chg,
             "advice": advice,
             "stop_loss": sl_point,
+            "take_profit": tp_point,
+            "total": s["total"],
             "fb": {
                 "score": s["fb"],
+                "score_w": s.get("fb_w", round(s["fb"] * 10, 1)),
+                "debug": s.get("fb_debug", ""),
                 "pe": _fmt_num(s.get("pe")),
                 "revenue_yoy": _fmt_num(s.get("rev")),
                 "net_profit_yoy": _fmt_num(s.get("ny")),
@@ -475,15 +498,37 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
             },
             "hot": {
                 "score": s["hot"],
+                "score_w": s.get("hot_w", round(s["hot"] * 6, 1)),
                 "desc": hot_desc,
             },
             "ch": {
                 "score": s["ch"],
+                "score_w": s.get("ch_w", round(s["ch"] * 4, 1)),
                 "ma60": ma60,
                 "price": _fmt_num(s.get("p")),
                 "macd_hist": _fmt_num(macd_hist) if macd_hist != "?" else "?",
                 "signal": sig,
+                "ma_alignment": d.get("ma_alignment", ""),
+                "ma_trend": d.get("ma_trend", ""),
+                "mc": d.get("mc", ""),
+                "ma_pos_summary": d.get("ma_pos_summary", ""),
+                "ma_cross_short": d.get("ma_cross_short", ""),
+                "ma_cross_medium": d.get("ma_cross_medium", ""),
+                # 深度缠论（2026-07-21 新增）
+                "week_ma60": d.get("week_ma60", "?"),
+                "week_chan_verdict": d.get("week_chan_verdict", ""),
+                "day_ma5": _fmt_num(d.get("ma5")),
+                "day_bottom_fx": _fmt_num(d.get("day_bottom_fx")),
+                "day_top_fx": _fmt_num(d.get("day_top_fx")),
+                "day_bottom_fx_date": d.get("day_bottom_fx_date", ""),
+                "day_last_bi_dir": d.get("day_last_bi_dir", ""),
+                "day_above_ma5": bool(d.get("day_above_ma5", False)),
+                "buy_sell_detail": d.get("buy_sell_detail", ""),
+                "divergence_detail": d.get("divergence_detail", ""),
+                "chan_verdict": d.get("chan_verdict", ""),
             },
+            "capital_flow": capital_flow.get(s["c"], 0) if capital_flow else 0.0,
+            "vol_ratio": vol_ratio,
         })
 
     # ── summary ──
@@ -496,7 +541,7 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
         sl_point = sltp.get("stop_loss") or round(s["p"] * 0.92, 2)
         tp_point = sltp.get("take_profit") or round(s["p"] * 1.15, 2)
         t = s["total"]
-        advice = "强烈关注" if t >= 35 else ("可关注" if t >= 28 else ("观察" if t >= 22 else "回避"))
+        advice = "强烈关注" if t >= 70 else ("可关注" if t >= 56 else ("观察" if t >= 44 else "回避"))
         summary_data.append({
             "code": f"{s['c']} {s['n']}",
             "advice": advice,
@@ -505,10 +550,14 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
             "take_profit": tp_point,
         })
 
+    # 基本面一票否决记录
+    vetoed_data = [{"code": c, "name": n, "reason": r} for c, n, r in (vetoed or [])]
+
     return {
         "date": ds,
         "sectors": sectors_data,
         "eliminated": eliminated_data,
+        "vetoed": vetoed_data,
         "passed_count": passed_cnt,
         "top10": top10_data,
         "details": details_data,
@@ -516,243 +565,101 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, sector_
     }
 
 
-async def score_one(p, sector_ranking=None, capital_flow=None):
-    c = p["c"]
-    # 备选链: 腾讯 > Yahoo > TickFlow
+async def _fetch_klines(c: str) -> Tuple[str, List[Dict], List[Dict]]:
+    """异步获取单只股票K线（备选链: 腾讯 > Yahoo > TickFlow）。
+
+    Returns: (code, kl_daily, kl_weekly)
+    """
+    kl = None
+    # 日K
     try:
         kl = await hk_kline_tencent_async(c, "day", 365)
+        if kl and len(kl) < 20:
+            kl = None
     except Exception:
-        kl = []
-    if not kl or len(kl) < 20:
+        kl = None
+    if not kl:
         try:
             kl = await stock_kline_yahoo_async(f"{int(c)}.HK", "1d", "1y")
+            if kl and len(kl) < 20:
+                kl = None
         except Exception:
-            kl = []
-    if not kl or len(kl) < 20:
+            kl = None
+    if not kl:
         try:
             kl = await kline_tickflow_async(f"{c}.HK", "1d", 365)
+            if kl and len(kl) < 20:
+                kl = None
         except Exception:
-            kl = []
-    fb = await fb_score(p, p.get("s", "其他"))
-    hot = await hot_score(p, kl, sector_ranking, capital_flow)
-    ch, cd = await chan_score(p, kl)
-    total = fb * 5 + hot * 3 + ch * 2
-    return {"c": c, "n": p["n"], "s": p["s"], "p": p["p"], "mc": p["mc"], "pe": p["pe"],
-            "fb": fb, "hot": hot, "ch": ch, "total": total, "pw": p.get("pw", ""),
-            "ny": p.get("ny"), "rev": p.get("rev"), "kl": kl, "cd": cd, "q": p["q"], "ind": p["ind"]}
+            kl = None
 
-
-async def fb_score(p, sector=None):
-    ind = p["ind"]
-    rev = sf(p.get("rev"))
-    ny = sf(p.get("ny"))
-    roe = (sf(ind.get("ROE")) or sf(ind.get("JQROE")) or 0)
-    gr = (sf(ind.get("GROSS_PROFIT_RATIO")) or 0)
-    dr = (sf(ind.get("DEBT_ASSET_RATIO")) or 0)
-    pe = p.get("pe", 0)
-    s = 3.0
-    if rev > 30: s += 1
-    elif rev > 15: s += 0.5
-    elif rev < -10: s -= 1
-    elif rev < 0: s -= 0.5
-    if roe > 20: s += 1
-    elif roe > 10: s += 0.5
-    elif 0 < roe < 3: s -= 0.5
-    elif roe < 0: s -= 1.0
-    if gr > 60: s += 1
-    elif gr > 30: s += 0.5
-    elif 0 < gr < 10: s -= 0.5
-    if dr > 0:
-        if dr < 30: s += 0.5
-        elif dr > 70: s -= 0.5
-
-    # PE 按行业阈值评分：用相对估值倍数（实际PE / 行业阈值）判断
-    pe_limit = SECTOR_PE_THRESHOLD.get(sector or "其他", SECTOR_PE_THRESHOLD["其他"])
-    if pe > 0:
-        pe_ratio = pe / pe_limit
-        if pe_ratio <= 0.5:   # PE 远低于行业均值，估值便宜
-            s += 0.5
-        elif pe_ratio <= 1.0: # PE 在行业合理区间内
-            pass
-        elif pe_ratio <= 2.0: # PE 偏高但可接受
-            s -= 0.3
-        else:                 # PE 远超行业阈值，估值泡沫
-            s -= 0.8
-    elif pe < 0:              # PE 为负（亏损），扣更多分
-        s -= 1.5
-    if ny < -50: s -= 1.0
-    elif ny < 0: s -= 0.5
-    return max(1, min(5, round(s)))
-
-
-async def hot_score(p, kl, sector_ranking=None, capital_flow=None):
-    """基于实际资金流向的热点评分"""
-    s, sec, c = 3.0, p["s"], p["c"]
-    flow = capital_flow.get(c, 0) if capital_flow else 0
-
-    # ① 板块资金排名
-    if sector_ranking:
-        for rank, (name, data) in enumerate(sector_ranking):
-            if name == sec:
-                total = data["total_flow"]
-                if rank == 0 and total > 0:
-                    s += 1.2
-                elif rank < 3 and total > 0:
-                    s += 0.8
-                elif rank < 5:
-                    s += 0.3 if total > 0 else -0.3
-                else:
-                    s -= 0.6
-                break
-
-    # ② 个股资金流向
-    if flow > 5e8:
-        s += 0.8
-    elif flow > 2e8:
-        s += 0.6
-    elif flow > 1e8:
-        s += 0.4
-    elif flow > 5e7:
-        s += 0.2
-    elif flow > 1e7:
-        s += 0.1
-    elif flow < -5e7:
-        s -= 0.5
-    elif flow < -1e7:
-        s -= 0.25
-
-    # ③ 板块内资金龙头判定
-    if sector_ranking:
-        for name, data in sector_ranking:
-            if name == sec:
-                ranked = sorted(data["stocks"], key=lambda x: x["flow"], reverse=True)
-                for rank, st in enumerate(ranked):
-                    if st["code"] == c:
-                        if rank == 0 and flow > 0:
-                            s += 0.5
-                        elif rank < 3 and flow > 0:
-                            s += 0.25
-                        break
-                break
-
-    # ④ 资金流向兜底：用成交量替代
-    if abs(flow) < 1e4 and kl and len(kl) >= 21:
-        vols = [k.get("volume", 0) for k in kl[-21:]]
-        if vols and vols[-1] > 0:
-            avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
-            vol_ratio = vols[-1] / max(avg_vol, 1)
-            if vol_ratio > 2.0:
-                s += 0.6
-            elif vol_ratio > 1.5:
-                s += 0.4
-            elif vol_ratio < 0.5:
-                s -= 0.3
-            pc = (kl[-1]["close"] - kl[-21]["close"]) / kl[-21]["close"] * 100
-            if pc > 10 and vol_ratio > 1.2:
-                s += 0.3
-            elif pc < -5 and vol_ratio > 1.2:
-                s -= 0.3
-
-    # ⑤ 20日动量
-    if kl and len(kl) >= 20:
-        pc = (kl[-1]["close"] - kl[-20]["close"]) / kl[-20]["close"] * 100
-        if pc > 15: s += 0.5
-        elif pc > 8: s += 0.25
-        elif pc < -10: s -= 0.5
-        elif pc < -5: s -= 0.25
-
-    return max(1, min(5, round(s)))
-
-
-async def chan_score(p, kl):
-    if not kl or len(kl) < 60:
-        return 3, {}
-    s, d = 3.0, {}
+    # 周K（仅腾讯，用于缠论大势判断）
+    kl_week = None
     try:
-        ma = calc_ma(kl, [5, 20, 60])
-        md = calc_macd(kl)
-        cv = chan_risk_assessment(kl)
-        close = kl[-1]["close"]
+        kl_week = await hk_kline_tencent_async(c, "week", 120)
+        if kl_week and len(kl_week) < 10:
+            kl_week = None
+    except Exception:
+        kl_week = None
 
-        if ma and len(ma) > 0:
-            last_ma = ma[-1]
-            m5 = last_ma.get("ma5")
-            m20 = last_ma.get("ma20")
-            m60 = last_ma.get("ma60")
-            if m5 and m20 and m60:
-                d["ma5"] = round(m5, 2)
-                d["ma20"] = round(m20, 2)
-                d["ma60"] = round(m60, 2)
-                d["pv5"] = round((close - m5) / m5 * 100, 1)
-                d["pv20"] = round((close - m20) / m20 * 100, 1)
-                d["pv60"] = round((close - m60) / m60 * 100, 1)
-                if m5 > m20 > m60:
-                    d["ma_alignment"] = "多头排列↑"
-                    d["ma_trend"] = "强势"
-                    s += 1.2
-                    d["ma5_pos"] = "上方" if close > m5 else "下方"
-                elif m5 < m20 < m60:
-                    d["ma_alignment"] = "空头排列↓"
-                    d["ma_trend"] = "弱势"
-                    s -= 1.2
-                else:
-                    if close > m60:
-                        s += 0.3
-                        d["ma_trend"] = "偏多"
-                    else:
-                        s -= 0.3
-                        d["ma_trend"] = "偏空"
-                    if m5 > m20:
-                        d["ma_alignment"] = "短期金叉"
-                        s += 0.3
-                    else:
-                        d["ma_alignment"] = "短期死叉"
-                        s -= 0.3
-                above_count = sum([close > m5, close > m20, close > m60])
-                d["ma_above_count"] = above_count
-                d["ma_pos_summary"] = {3: "三线之上", 2: "两线之上", 1: "一线之上"}.get(above_count, "三线之下")
+    return c, kl or [], kl_week or []
 
-            if m5 and m20 and len(ma) >= 2:
-                prev_m5 = ma[-2].get("ma5")
-                prev_m20 = ma[-2].get("ma20")
-                if prev_m5 and prev_m20:
-                    if prev_m5 <= prev_m20 and m5 > m20:
-                        d["ma_cross_short"] = "MA5金叉MA20↑"
-                        s += 0.5
-                    elif prev_m5 >= prev_m20 and m5 < m20:
-                        d["ma_cross_short"] = "MA5死叉MA20↓"
-                        s -= 0.5
 
-            if m20 and m60 and len(ma) >= 2:
-                prev_m20 = ma[-2].get("ma20")
-                prev_m60 = ma[-2].get("ma60")
-                if prev_m20 and prev_m60:
-                    if prev_m20 <= prev_m60 and m20 > m60:
-                        d["ma_cross_medium"] = "MA20金叉MA60↑"
-                        s += 0.8
-                    elif prev_m20 >= prev_m60 and m20 < m60:
-                        d["ma_cross_medium"] = "MA20死叉MA60↓"
-                        s -= 0.8
+async def score_all_passed(
+    passed: List[Dict[str, Any]],
+    sector_ranking: Optional[List[Tuple[str, Any]]] = None,
+    capital_flow: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, Any]]:
+    """对全部候选股先并行获取K线，再用共享评分引擎（百分位排名）。"""
+    # Step 1: 并行获取 K 线（日K + 周K）
+    kline_tasks = [asyncio.create_task(_fetch_klines(p["c"])) for p in passed]
+    kline_results = await asyncio.gather(*kline_tasks)
+    kl_map = {c: kl for c, kl, _ in kline_results}
+    kl_week_map = {c: klw for c, _, klw in kline_results}
 
-        if md and len(md) > 0:
-            m = md[-1]
-            hi = m.get("macd_hist", (m["dif"] - m["dea"]) * 2)
-            d["mh"] = round(hi, 4)
-            if len(md) >= 2:
-                pm = md[-2]
-                ph = pm.get("macd_hist", (pm["dif"] - pm["dea"]) * 2)
-                if ph < 0 < hi: d["mc"] = "金叉↑"; s += 1
-                elif ph > 0 > hi: d["mc"] = "死叉↓"; s -= 1
-            elif hi > 0: s += 0.5
-            else: s -= 0.5
-            d["mc"] = d.get("mc", "无交叉")
-        d["v"] = str(cv.get("verdict", "")) if isinstance(cv, dict) else ""
-        sig = cv.get("signal", "") if isinstance(cv, dict) else ""
-        if "买" in sig or "buy" in sig.lower(): s += 1
-        elif "卖" in sig or "sell" in sig.lower(): s -= 1
-    except Exception as e:
-        d["e"] = str(e)
-    return max(1, min(5, round(s))), d
+    # Step 2: 计算原始分（调用 recommender 共享函数）
+    raw_scores = [
+        _raw_score_one(p, kl_map.get(p["c"], []), SECTOR_PE_THRESHOLD,
+                       sector_ranking=sector_ranking, capital_flow=capital_flow, market="hk")
+        for p in passed
+    ]
+
+    # Step 3: 池内百分位排名
+    scored = percentile_score_all(raw_scores)
+
+    # 补充 cd/kl/q/ind 字段（build_selection_data 需要）
+    kl_map = {r["c"]: r["kl"] for r in raw_scores}
+    cd_map = {r["c"]: r["cd"] for r in raw_scores}
+    passed_map = {p["c"]: p for p in passed}
+
+    # 计算周线缠论数据（大势判断）
+    from scripts.quantrisk.indicators import calc_ma as _calc_ma, chan_risk_assessment as _chan_risk
+
+    def _fmt_chan_week(cd: dict, kl_week: list) -> dict:
+        """计算周线缠论并合并到 cd 字典。"""
+        if not kl_week or len(kl_week) < 10:
+            return cd
+        try:
+            wk_ma = _calc_ma(kl_week, [60])
+            if wk_ma:
+                cd["week_ma60"] = round(wk_ma[-1].get("ma60", 0), 2)
+            wk_cv = _chan_risk(kl_week)
+            cd["week_chan_verdict"] = wk_cv.get("chan_verdict", "")
+        except Exception:
+            pass
+        return cd
+
+    for s in scored:
+        s["cd"] = cd_map.get(s["c"], {})
+        s["kl"] = kl_map.get(s["c"], [])
+        p = passed_map.get(s["c"], {})
+        s["q"] = p.get("q", {})
+        s["ind"] = p.get("ind", {})
+        # 合并周线数据
+        kl_week = kl_week_map.get(s["c"], [])
+        s["cd"] = _fmt_chan_week(s["cd"], kl_week)
+
+    return scored
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -764,11 +671,11 @@ async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
 
     三步强制流程:
       ① 跨板块全市场扫描（8个板块，动态 300+ 只标的）
-      ② 中观硬约束过滤（市值≥50亿HKD，股价≥1 HKD，PE≤80，标记净利恶化）
+      ② 中观硬约束过滤（市值≥50亿HKD，股价≥1 HKD）+ 基本面一票否决（营收/净利崩盘者直接淘汰）
       ③ 微观三维评分排序（基本面×5 + 热点×3 + 缠论×2）→ TOP10
 
     Returns:
-        {date, sectors[], eliminated[], passed_count, top10[], details[], summary[]}
+        {date, sectors[], eliminated[], vetoed[], passed_count, top10[], details[], summary[]}
     """
     ds = datetime.now().strftime("%Y-%m-%d")
 
@@ -793,11 +700,20 @@ async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
         up = sum(1 for ch in chs if ch > 0)
         ss[sec] = {"c": len(chs), "ap": round(ap, 2), "up": up, "dn": len(chs) - up}
 
-    # ── Step 2: 中观过滤 ──
-    passed, elim = meso_filter(st, sectors, code2sector)
+    # ── Step 2a: 中观硬约束过滤（市值≥50亿，股价≥1HKD） ──
+    passed, elim = shared_meso_filter(st, SECTOR_PE_THRESHOLD, code2sector,
+                                      field_map={"q": "q", "ind": "ind"})
+
+    # ── Step 2b: 基本面一票否决（营收/净利崩盘者直接淘汰） ──
+    # 贯彻"基本面为主"理念：技术面和热点再强，基本面崩塌的股票也不进评分池
+    passed, vetoed = fundamental_veto(passed)
 
     # ── Step 3: 并行评分 ──
     capital_flow = await batch_hk_capital_flow_async([p["c"] for p in passed])
+    # 20 日累计资金流向（合并到 capital_flow 字典，key 为 code_20d）
+    capital_flow_20d = await batch_hk_capital_flow_20d_async([p["c"] for p in passed])
+    for code, stats in capital_flow_20d.items():
+        capital_flow[f"{code}_20d"] = stats
     sector_flow = {}
     for p in passed:
         sec, flow = p["s"], capital_flow.get(p["c"], 0)
@@ -807,12 +723,11 @@ async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
         sector_flow[sec]["stocks"].append({"code": p["c"], "name": p["n"], "flow": flow})
     sector_ranking = sorted(sector_flow.items(), key=lambda x: x[1]["total_flow"], reverse=True)
 
-    scored = await asyncio.gather(*[score_one(p, sector_ranking=sector_ranking, capital_flow=capital_flow) for p in passed])
-    scored = [s for s in scored if s]
-    scored.sort(key=lambda x: x["total"], reverse=True)
+    scored = await score_all_passed(passed, sector_ranking=sector_ranking, capital_flow=capital_flow)
 
     # ── 构建裸数据 ──
-    raw_data = build_selection_data(ds, ss, elim, scored, len(passed), capital_flow, sector_ranking)
+    raw_data = build_selection_data(ds, ss, elim, scored, len(passed), capital_flow, sector_ranking,
+                                    vetoed=vetoed)
     return raw_data
 
 

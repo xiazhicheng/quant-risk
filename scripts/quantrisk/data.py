@@ -1004,6 +1004,119 @@ async def key_statistics_async(symbol:str) -> dict:
             "total_revenue":_v(fd,"totalRevenue"),"total_cash":_v(fd,"totalCash"),
             "total_debt":_v(fd,"totalDebt")}
 
+async def cross_validate_hk_quote(code: str) -> dict:
+    """港股关键数据多源交叉验证。
+
+    从腾讯（主源）和东财/Yahoo（副源，通过 hk_fundamentals_async 四级fallback）获取数据对比。
+    遵循 ai-berkshire financial-data.md 规范：
+      - ≤1%: ✅ 一致
+      - 1%~5%: ⚠️ 存在差异
+      - >5%: ❌ 重大差异
+
+    Args:
+        code: 港股代码，如 "03690"
+
+    Returns:
+        {"code": str, "fields": [{"name": str, "primary": val, "secondary": val,
+                                   "deviation_pct": float, "status": str}, ...],
+         "summary": ...}
+    """
+    # 1️⃣ 主源：腾讯78字段
+    primary = await hk_stock_quote_tencent_async(code)
+    if not primary or not primary.get("pe"):
+        return {"code": code, "fields": [], "summary": {"total": 0, "ok": 0, "warn": 0, "error": 0, "error_msg": "腾讯数据获取失败"}}
+
+    # 2️⃣ 副源：东财/Yahoo（通过 hk_fundamentals_async 四级fallback）
+    secondary_raw = {}
+    try:
+        sec_data = await hk_fundamentals_async(code)
+        if sec_data and sec_data.get("latest"):
+            secondary_raw = sec_data["latest"]
+    except Exception:
+        pass
+
+    if not secondary_raw:
+        return {"code": code, "fields": [], "summary": {"total": 0, "ok": 0, "warn": 0, "error": 0, "error_msg": "副源(Yahoo/东财)数据获取失败"}}
+
+    # 3️⃣ 定义字段映射（只包含单位一致的字段：PE, PB, ROE, 股息率）
+    # 毛利率和负债率在腾讯和东财间的单位不一致，跳过
+    field_map = [
+        ("PE", "pe", None),
+        ("PB", "pb", None),
+        ("股息率", "dividend_yield", None),
+        ("ROE", "roe", None),
+    ]
+
+    def _safe_float(v):
+        if v is None: return None
+        try: return float(v)
+        except (ValueError, TypeError): return None
+        except: return None
+
+    # 尝试从副源数据中匹配字段（多种命名规则）
+    def _match_secondary(name):
+        """尝试多种命名方式匹配副源字段"""
+        key_map = {
+            "PE": ["PE", "pe", "forward_pe", "trailing_pe", "PE_TTM"],
+            "PB": ["PB", "pb", "price_to_book"],
+            "ROE": ["ROE", "roe", "return_on_equity"],
+            "股息率": ["DIVIDEND_YIELD", "dividend_yield", "dividendYield", "DPS_HKD"],
+            "毛利率": ["GROSS_PROFIT_RATIO", "gross_profit_margin", "gross_margin"],
+            "负债率": ["DEBT_ASSET_RATIO", "debt_ratio", "debt_to_equity"],
+        }
+        candidates = key_map.get(name, [])
+        for c in candidates:
+            v = secondary_raw.get(c)
+            if v is not None:
+                return _safe_float(v)
+        return None
+
+    fields = []
+    for name, pk, _ in field_map:
+        pv = _safe_float(primary.get(pk))
+        sv = _match_secondary(name)
+        if pv is None or sv is None or pv == 0:
+            continue
+
+        deviation = abs(pv - sv) / abs(pv) * 100
+        if deviation <= 1.0:
+            status = "✅"
+        elif deviation <= 5.0:
+            status = "⚠️"
+        else:
+            status = "❌"
+
+        fields.append({
+            "name": name,
+            "primary": pv,
+            "secondary": sv,
+            "deviation_pct": round(deviation, 2),
+            "status": status,
+        })
+
+    ok_count = sum(1 for f in fields if f["status"] == "✅")
+    warn_count = sum(1 for f in fields if f["status"] == "⚠️")
+    error_count = sum(1 for f in fields if f["status"] == "❌")
+
+    return {
+        "code": code,
+        "fields": fields,
+        "summary": {
+            "total": len(fields),
+            "ok": ok_count,
+            "warn": warn_count,
+            "error": error_count,
+            "error_msg": "",
+        },
+    }
+
+
+async def batch_cross_validate_hk(codes: list) -> list:
+    """批量交叉验证"""
+    tasks = [asyncio.create_task(cross_validate_hk_quote(c)) for c in codes]
+    return await asyncio.gather(*tasks)
+
+
 async def analyst_estimates_async(symbol:str) -> dict:
     data = await yahoo_quote_summary(symbol, ["earningsTrend","recommendationTrend","upgradeDowngradeHistory"])
     return {"eps_trend":[{"period":t.get("period"),"eps_estimate":t.get("earningsEstimate",{}).get("avg",{}).get("raw"),

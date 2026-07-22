@@ -111,6 +111,20 @@ class FbDetail(BaseModel):
     dim4_confidence: str = Field(default="", description="最大风险信心度")
     dim5_confidence: str = Field(default="", description="文明趋势信心度")
     dim6_confidence: str = Field(default="", description="估值信心度")
+    # 大师视角（各维度归属大师的核心观点）
+    dim1_master_view: str = Field(default="", description="生意质量大师视角")
+    dim2_master_view: str = Field(default="", description="护城河大师视角")
+    dim3_master_view: str = Field(default="", description="管理层大师视角")
+    dim4_master_view: str = Field(default="", description="最大风险大师视角")
+    dim5_master_view: str = Field(default="", description="文明趋势大师视角")
+    dim6_master_view: str = Field(default="", description="估值大师视角")
+    # 其他大师质疑（非归属大师对该维度的质疑）
+    dim1_other_masters: str = Field(default="", description="生意质量其他大师质疑")
+    dim2_other_masters: str = Field(default="", description="护城河其他大师质疑")
+    dim3_other_masters: str = Field(default="", description="管理层其他大师质疑")
+    dim4_other_masters: str = Field(default="", description="最大风险其他大师质疑")
+    dim5_other_masters: str = Field(default="", description="文明趋势其他大师质疑")
+    dim6_other_masters: str = Field(default="", description="估值其他大师质疑")
     # 芒格式逆向检验
     reverse_test: str = Field(default="", description="芒格式逆向检验文本")
     # 质量筛选问题
@@ -766,14 +780,17 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     ]
 
     dim_rows = []
-    dim_header = "| 维度 | 评分 | 信心度 |\n|:----|:---:|:------:|"
+    dim_header = "| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |\n|:----|:---:|:------:|:--------|:----------:|:--------|"
     for label, idx in dim_configs:
         score = getattr(fb, f"dim{idx}_score", "?")
         confidence = getattr(fb, f"dim{idx}_confidence", "")
+        master_view = getattr(fb, f"dim{idx}_master_view", "")
+        other_masters = getattr(fb, f"dim{idx}_other_masters", "")
+        conclusion = getattr(fb, f"dim{idx}_conclusion", "")
         if score != "?":
-            dim_rows.append(f"| {label} | {score}/10 | {confidence} |")
+            dim_rows.append(f"| {label} | {score}/10 | {confidence} | {master_view} | {other_masters} | {conclusion} |")
         else:
-            dim_rows.append(f"| {label} | 数据不足 | — |")
+            dim_rows.append(f"| {label} | 数据不足 | — | — | — | — |")
     dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"
 
     # ── 关键指标摘要 ──

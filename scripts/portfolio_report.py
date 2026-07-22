@@ -141,7 +141,192 @@ def funnel_check(pe, roe, debt_ratio, gross_margin, rev_yoy, net_yoy):
     status = "✅ 通过" if passed >= 4 else "⚠️ 边缘" if passed >= 3 else "❌ 不通过"
     return checks, status, passed, total
 
-# ── 六维评分（替代原四大师，2026-07-22 重构） ──
+# ── 六维评分（2026-07-22 重构） ──
+
+# 大师视角定义：每个维度的归属大师 + 核心追问 + 非归属大师列表
+MASTER_PERSPECTIVES = {
+    "生意质量（段永平）": {"owner": "段永平", "question": "这是对的生意吗？", "others": ["巴菲特", "芒格", "李录"]},
+    "护城河（巴菲特）": {"owner": "巴菲特", "question": "够便宜吗？有安全边际吗？", "others": ["段永平", "芒格", "李录"]},
+    "管理层（段永平+巴菲特）": {"owner": "段永平+巴菲特", "question": "管理层值得信任吗？", "others": ["芒格", "李录"]},
+    "最大风险（芒格）": {"owner": "芒格", "question": "怎么会死？有什么风险？", "others": ["段永平", "巴菲特", "李录"]},
+    "文明趋势（李录）": {"owner": "李录", "question": "10年后还在吗？", "others": ["段永平", "巴菲特", "芒格"]},
+    "估值（巴菲特+段永平）": {"owner": "巴菲特+段永平", "question": "价格有安全边际吗？", "others": ["芒格", "李录"]},
+}
+
+
+def _pe_text(pe):
+    """PE 定性文本"""
+    if pe is None: return "无数据"
+    try:
+        pv = float(pe)
+        if pv > 0:
+            if pv < 10: return f"PE{pv}，估值偏低，安全边际充足"
+            elif pv < 20: return f"PE{pv}，估值合理"
+            elif pv < 30: return f"PE{pv}，估值合理"
+            else: return f"PE{pv}，估值偏高"
+        else:
+            return f"PE{pv}，亏损"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _gm_text(gm):
+    """毛利率定性文本"""
+    if gm is None: return "无数据"
+    try:
+        g = float(gm)
+        if g > 60: return f"毛利率{g}%远超60%，生意质量好"
+        elif g > 40: return f"毛利率{g}%高于40%，有一定定价权"
+        elif g <= 20: return f"毛利率仅{g}%，定价权存疑"
+        else: return f"毛利率{g}%"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _dr_text(dr):
+    """负债率定性文本"""
+    if dr is None: return "无数据"
+    try:
+        d = float(dr)
+        if d > 70: return f"负债率{d}%过高，财务风险大"
+        elif d > 50: return f"负债率{d}%超50%，杠杆偏高"
+        else: return f"负债率{d}%，风险可控"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _rev_text(rev):
+    """营收增速定性文本"""
+    if rev is None: return "无数据"
+    try:
+        r = float(rev)
+        if r > 20: return f"营收增长{r:+.1f}%，主业快速扩张"
+        elif r > 0: return f"营收增长{r:+.1f}%，主业稳健"
+        elif r > -10: return f"营收下滑{r:.1f}%，增长动力不足"
+        else: return f"营收暴跌{r:.1f}%，最危险信号"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _roe_text(roe):
+    """ROE 定性文本"""
+    if roe is None: return "无数据"
+    try:
+        rv = float(roe)
+        if rv > 30: return f"ROE{rv}%超30%，资本回报极高"
+        elif rv > 20: return f"ROE{rv}%超20%，护城河深厚"
+        elif rv > 15: return f"ROE{rv}%在15%以上，回报良好"
+        elif rv > 0: return f"ROE{rv}%，回报一般"
+        else: return f"ROE{rv}%为负，资本在毁灭价值"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _net_text(ny):
+    """净利增速定性文本"""
+    if ny is None: return "无数据"
+    try:
+        n = float(ny)
+        if n > 20: return f"净利增长{n:+.1f}%，盈利强劲"
+        elif n > 0: return f"净利增长{n:+.1f}%"
+        elif n > -10: return f"净利下滑{n:.1f}%"
+        else: return f"净利暴跌{n:.1f}%，盈利恶化"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _np_text(np_margin):
+    """净利率定性文本"""
+    if np_margin is None: return "无数据"
+    try:
+        n = float(np_margin)
+        if n > 30: return f"净利率{n}%超过30%，盈利质量优秀"
+        elif n > 20: return f"净利率{n}%超过20%，盈利良好"
+        elif n > 10: return f"净利率{n}%超过10%"
+        elif n > 0: return f"净利率{n}%，盈利微薄"
+        else: return f"净利率{n}%为负"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _gen_master_view(owner, dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成大师视角：核心追问 + 大师基于数据的观点"""
+    if dim_key not in MASTER_PERSPECTIVES:
+        return f"核心追问：{MASTER_PERSPECTIVES[dim_key]['question'] if dim_key in MASTER_PERSPECTIVES else '?'}"
+
+    question = MASTER_PERSPECTIVES[dim_key]["question"]
+    parts = [f"**核心追问**：{question}"]
+
+    # 根据维度归属，选取关键指标构建大师观点
+    if "生意质量" in dim_key:
+        # 段永平：关注毛利率、ROE、净利率
+        parts.append(f"毛利率{gm}%，{_gm_text(gm)}")
+        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
+        parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
+    elif "护城河" in dim_key:
+        # 巴菲特：关注ROE、毛利率、股息率、负债率
+        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
+        parts.append(f"毛利率{gm}%，{_gm_text(gm)}")
+        parts.append(f"负债率{dr}%，{_dr_text(dr)}")
+    elif "管理层" in dim_key:
+        # 段永平+巴菲特：关注ROE、净利率、营收增速、负债率
+        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
+        parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
+        parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
+    elif "最大风险" in dim_key:
+        # 芒格：关注负债率、营收增速、净利增速
+        parts.append(f"负债率{dr}%，{_dr_text(dr)}")
+        parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
+        parts.append(f"净利增速{net_yoy}%，{_net_text(net_yoy)}")
+    elif "文明趋势" in dim_key:
+        # 李录：关注营收增速、净利率、负债率、ROE
+        parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
+        parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
+        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
+    elif "估值" in dim_key:
+        # 巴菲特+段永平：关注PE、股息率
+        parts.append(f"PE{pe}，{_pe_text(pe)}")
+
+    return "；".join(parts)
+
+
+def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成其他大师对当前维度的质疑"""
+    if dim_key not in MASTER_PERSPECTIVES:
+        return ""
+
+    others = MASTER_PERSPECTIVES[dim_key]["others"]
+    challenges = []
+
+    for master in others:
+        if master == "段永平":
+            parts = []
+            parts.append(_gm_text(gm))
+            parts.append(_roe_text(roe))
+            parts.append(_np_text(np_margin))
+            challenges.append(f"段永平：{'；'.join(parts)}")
+        elif master == "巴菲特":
+            parts = []
+            parts.append(_pe_text(pe))
+            parts.append(_roe_text(roe))
+            parts.append(_dr_text(dr))
+            challenges.append(f"巴菲特：{'；'.join(parts)}")
+        elif master == "芒格":
+            parts = []
+            parts.append(_dr_text(dr))
+            parts.append(_rev_text(rev_yoy))
+            parts.append(_net_text(net_yoy))
+            challenges.append(f"芒格：{'；'.join(parts)}")
+        elif master == "李录":
+            parts = []
+            parts.append(_rev_text(rev_yoy))
+            parts.append(_np_text(np_margin))
+            parts.append(_dr_text(dr))
+            challenges.append(f"李录：{'；'.join(parts)}")
+
+    return "<br/>".join(challenges)
+
+
 def _clamp10(v):
     return max(1.0, min(10.0, round(v, 1)))
 
@@ -354,9 +539,28 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy, pb=0, secto
     # 总分
     total_score = round(sum(d[1] for d in dims), 1)
 
+    # 为每个维度生成大师视角 + 其他大师质疑
+    dim_data = []
+    for i, (label, score, conclusion, confidence, dim_log) in enumerate(dims):
+        dim_key = label
+        master_perspective = _gen_master_view(
+            MASTER_PERSPECTIVES.get(dim_key, {}).get("owner", ""),
+            dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr
+        )
+        other_masters = _gen_other_masters_challenge(
+            dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr
+        )
+        dim_data.append({
+            "label": label,
+            "score": score,
+            "conclusion": conclusion,
+            "confidence": confidence,
+            "master_perspective": master_perspective,
+            "other_masters_challenge": other_masters,
+        })
+
     return {
-        "dims": [(d[0], d[1], d[2], d[3]) for d in dims],  # (label, score, conclusion, confidence)
-        "dim_logs": {f"dim{i+1}_log": d[4] for i, d in enumerate(dims)},
+        "dims": dim_data,  # list of dicts with all fields
         "total_score": total_score,
     }
 
@@ -435,7 +639,11 @@ def mirror_test(code, dims, pe, roe, rev_yoy, net_yoy, chan_info, price_info):
     """基于六维评分判断「能说清楚几句」，具体5句话由LLM+web_search生成。
     判分逻辑：维度评分>=5.0算1句有说服力。"""
     dim_dict = {}
-    for label, score, conclusion, conf in dims:
+    for dim in dims:
+        label = dim["label"]
+        score = dim["score"]
+        conclusion = dim["conclusion"]
+        conf = dim["confidence"]
         for key in ["生意质量", "护城河", "管理层", "最大风险", "文明趋势", "估值"]:
             if key in label:
                 dim_dict[key] = (score, conclusion, conf)
@@ -726,10 +934,16 @@ async def generate_report():
             print(f"> **竞品对标**: {chain['vs_leader']}")
             print()
         # ── 六维评分表（2026-07-22 六维框架） ──
-        print("| 维度 | 评分 | 信心度 |")
-        print("|:----|:---:|:------:|")
-        for label, score, conclusion, confidence in dims:
-            print(f"| {label} | {score}/10 | {confidence} |")
+        print("| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |")
+        print("|:----|:---:|:------:|:--------|:----------:|:--------|")
+        for dim in dims:
+            label = dim["label"]
+            score = dim["score"]
+            confidence = dim["confidence"]
+            master_pv = dim["master_perspective"]
+            other_ch = dim["other_masters_challenge"]
+            conclusion = dim["conclusion"]
+            print(f"| {label} | {score}/10 | {confidence} | {master_pv} | {other_ch} | {conclusion} |")
 
         print(f"\n> **六维总分**: {m['total_score']}/60")
         

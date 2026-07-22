@@ -39,18 +39,14 @@ SECTOR_PE_THRESHOLD = {
 from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tencent_async,
                                      stock_kline_yahoo_async, kline_tickflow_async,
                                      parallel_map, key_indicators_eastmoney_async,
-                                     hk_kline_minute_async,
                                      close_async_session, close_tickflow)
 
 # 共享评分引擎（三市场统一使用百分位排名）
 from scripts.quantrisk.recommender import (
-    _raw_score_one, percentile_score_all,
+    _raw_score_one, percentile_score_all, quality_screen,
     meso_filter as shared_meso_filter,
     fundamental_veto,
 )
-
-# 双策略信号检测
-from scripts.quantrisk.strategy import check_strategy_1, check_strategy_2
 
 # ── 格式化引擎（Pydantic 校验 + 渲染） ──────────────────────
 from scripts.formatter import format_output, FormatValidationError
@@ -419,7 +415,6 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             "hot_w": s.get("hot_w", round(s["hot"] * 4, 1)),
             "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
             "total": t,
-            "strategy": s.get("strategy", ""),
             "advice": advice,
         })
 
@@ -496,6 +491,51 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
                 "roe": _fmt_num(ind.get("ROE") or ind.get("JQROE")),
                 "gross_margin": _fmt_num(ind.get("GROSS_PROFIT_RATIO")),
                 "debt_ratio": _fmt_num(ind.get("DEBT_ASSET_RATIO")),
+                # 六维评分（2026-07-22 重构）
+                "dim1_score": _fmt_num(s.get("dim1")),
+                "dim2_score": _fmt_num(s.get("dim2")),
+                "dim3_score": _fmt_num(s.get("dim3")),
+                "dim4_score": _fmt_num(s.get("dim4")),
+                "dim5_score": _fmt_num(s.get("dim5")),
+                "dim6_score": _fmt_num(s.get("dim6")),
+                "dim1_debug": s.get("dim1_debug", ""),
+                "dim2_debug": s.get("dim2_debug", ""),
+                "dim3_debug": s.get("dim3_debug", ""),
+                "dim4_debug": s.get("dim4_debug", ""),
+                "dim5_debug": s.get("dim5_debug", ""),
+                "dim6_debug": s.get("dim6_debug", ""),
+                "dim1_conclusion": s.get("dim1_conclusion", ""),
+                "dim2_conclusion": s.get("dim2_conclusion", ""),
+                "dim3_conclusion": s.get("dim3_conclusion", ""),
+                "dim4_conclusion": s.get("dim4_conclusion", ""),
+                "dim5_conclusion": s.get("dim5_conclusion", ""),
+                "dim6_conclusion": s.get("dim6_conclusion", ""),
+                "dim1_confidence": s.get("dim1_confidence", ""),
+                "dim2_confidence": s.get("dim2_confidence", ""),
+                "dim3_confidence": s.get("dim3_confidence", ""),
+                "dim4_confidence": s.get("dim4_confidence", ""),
+                "dim5_confidence": s.get("dim5_confidence", ""),
+                "dim6_confidence": s.get("dim6_confidence", ""),
+                # 大师视角 + 其他大师质疑（2026-07-22 新增）
+                "dim1_master_view": s.get("dim1_master_view", ""),
+                "dim2_master_view": s.get("dim2_master_view", ""),
+                "dim3_master_view": s.get("dim3_master_view", ""),
+                "dim4_master_view": s.get("dim4_master_view", ""),
+                "dim5_master_view": s.get("dim5_master_view", ""),
+                "dim6_master_view": s.get("dim6_master_view", ""),
+                "dim1_other_masters": s.get("dim1_other_masters", ""),
+                "dim2_other_masters": s.get("dim2_other_masters", ""),
+                "dim3_other_masters": s.get("dim3_other_masters", ""),
+                "dim4_other_masters": s.get("dim4_other_masters", ""),
+                "dim5_other_masters": s.get("dim5_other_masters", ""),
+                "dim6_other_masters": s.get("dim6_other_masters", ""),
+                # 芒格式逆向检验
+                "reverse_test": s.get("reverse_test", ""),
+                # 质量筛选问题
+                "quality_issues": s.get("quality_issues", []),
+                # 信息丰富度评级
+                "info_richness": s.get("info_richness", "?"),
+                "info_richness_detail": s.get("info_richness_detail", ""),
             },
             "hot": {
                 "score": s["hot"],
@@ -530,11 +570,6 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             },
             "vol_5d_ratio": round(vol_5d_ratio, 2),
             "pct_5d": round(pct_5d, 2),
-            # 策略信号
-            "strategy": s.get("strategy", ""),
-            "strategy_detail": s.get("strategy_detail", ""),
-            "strategy_stop_loss": s.get("stop_loss", 0.0),
-            "strategy_exit": s.get("exit_trigger", ""),
         })
 
     # ── summary ──
@@ -652,6 +687,9 @@ async def score_all_passed(
     # Step 3: 池内百分位排名
     scored = percentile_score_all(raw_scores)
 
+    # Step 3b: 质量筛选（基于5条硬指标降档标记）
+    scored = quality_screen(scored)
+
     # 补充 cd/kl/q/ind 字段（build_selection_data 需要）
     kl_map = {r["c"]: r["kl"] for r in raw_scores}
     cd_map = {r["c"]: r["cd"] for r in raw_scores}
@@ -684,54 +722,15 @@ async def score_all_passed(
         kl_week = kl_week_map.get(s["c"], [])
         s["cd"] = _fmt_chan_week(s["cd"], kl_week)
 
-    # ── Step 4: 对 TOP10 候选标的运行双策略检查 ──
-    top10_codes = [s["c"] for s in scored[:10]]
-    if top10_codes:
-        # 并行获取 60min/30min 数据
-        async def _fetch_minute_data(code: str) -> tuple:
-            """并行获取单只标的的 60min 和 30min K线"""
-            k60 = await hk_kline_minute_async(code, interval="60m", min_bars=10)
-            k30 = await hk_kline_minute_async(code, interval="30m", min_bars=10)
-            return code, k60, k30
-
-        min_tasks = [asyncio.create_task(_fetch_minute_data(c)) for c in top10_codes]
-        min_results = await asyncio.gather(*min_tasks)
-        minute_data = {c: (k60, k30) for c, k60, k30 in min_results}
-
-        # 对每个 TOP10 标的运行策略检查
-        for s in scored[:10]:
-            code = s["c"]
-            kl = s.get("kl", [])
-            kl_week = kl_week_map.get(code, [])
-            k60, k30 = minute_data.get(code, ([], []))
-
-            # 策略1: 回调一买
-            sig1 = check_strategy_1(kl, klines_60min=k60)
-            # 策略2: 突破三买
-            sig2 = check_strategy_2(kl, weekly_klines=kl_week, klines_30min=k30)
-
-            # 合并策略标签
-            strategy_name = "暂无策略信号"
-            if sig1.matched and sig2.matched:
-                strategy_name = "双策略共振"
-            elif sig1.matched:
-                strategy_name = "回调一买"
-            elif sig2.matched:
-                strategy_name = "突破三买"
-
-            s["strategy"] = strategy_name
-            s["strategy_detail"] = sig1.summary if sig1.matched else sig2.summary if sig2.matched else ""
-            s["stop_loss"] = sig1.stop_loss if sig1.matched else sig2.stop_loss if sig2.matched else 0.0
-            s["exit_trigger"] = sig1.exit_trigger if sig1.matched else sig2.exit_trigger if sig2.matched else ""
-
-    return scored
+        # ── 返回评分结果 ──
+        return scored
 
 
 # ═══════════════════════════════════════════════════════════════
 # 港股推荐 Pipeline（可被 recommend.py 统一调用）
 # ═══════════════════════════════════════════════════════════════
 
-async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
+async def hk_recommend_pipeline(min_stocks: int = 300, industry: str = "") -> dict:
     """港股推荐完整流程，返回 raw_data dict（与 cn_recommend_pipeline 格式一致）。
 
     三步强制流程:
@@ -739,10 +738,15 @@ async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
       ② 中观硬约束过滤（市值≥50亿HKD，股价≥1 HKD）+ 基本面一票否决（营收/净利崩盘者直接淘汰）
       ③ 微观三维评分排序（基本面×5 + 热点×3 + 缠论×2）→ TOP10
 
+    Args:
+        min_stocks: 最小候选池规模
+        industry: 行业名称，指定时只对该行业做漏斗筛选（如"能源/资源/矿业"）
+
     Returns:
-        {date, sectors[], eliminated[], vetoed[], passed_count, top10[], details[], summary[]}
+        {date, sectors[], eliminated[], vetoed[], passed_count, top10[], details[], summary[], funnel?}
     """
     ds = datetime.now().strftime("%Y-%m-%d")
+    funnel = {"industry": industry, "scan_count": 0, "after_filter": 0, "after_veto": 0}
 
     # ── 动态候选池 ──
     dynamic_pool = await fetch_dynamic_pool(min_stocks=min_stocks)
@@ -753,6 +757,20 @@ async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
     sectors = build_sectors_from_pool(dynamic_pool)
     all_codes = sum(sectors.values(), [])
     code2sector = {c: s for s, codes in sectors.items() for c in codes}
+
+    # ── 行业漏斗过滤 ──
+    if industry:
+        target_codes = [c for c in all_codes if code2sector.get(c) == industry]
+        if not target_codes:
+            print(f"⚠️ 行业 '{industry}' 未找到对应标的，使用全市场")
+        else:
+            all_codes = target_codes
+            funnel["scan_count"] = len(all_codes)
+            # 只保留该板块的sectors
+            sectors = {industry: [c for c in sectors.get(industry, []) if c in all_codes]} if industry in sectors else {}
+            print(f"📋 行业漏斗筛选: {industry}（{len(all_codes)} 只）")
+    else:
+        funnel["scan_count"] = len(all_codes)
 
     # ── Step 1: 全市场扫描 ──
     st = await fetch_all(all_codes)
@@ -768,17 +786,34 @@ async def hk_recommend_pipeline(min_stocks: int = 300) -> dict:
     # ── Step 2a: 中观硬约束过滤（市值≥50亿，股价≥1HKD） ──
     passed, elim = shared_meso_filter(st, SECTOR_PE_THRESHOLD, code2sector,
                                       field_map={"q": "q", "ind": "ind"})
+    funnel["after_filter"] = len(passed)
 
     # ── Step 2b: 基本面一票否决（营收/净利崩盘者直接淘汰） ──
     # 贯彻"基本面为主"理念：技术面和热点再强，基本面崩塌的股票也不进评分池
     passed, vetoed = fundamental_veto(passed)
+    funnel["after_veto"] = len(passed)
 
     # ── Step 3: 并行评分（K线→板块排名→评分→百分位排名→策略检查）
     scored = await score_all_passed(passed)
 
+    # ── Step 3b: 关键数据多源交叉验证（TOP5 标的，腾讯 vs Yahoo）
+    cross_validate_results = []
+    try:
+        from scripts.quantrisk.data import batch_cross_validate_hk
+        top5_codes = [s["c"] for s in scored[:5]]
+        cross_validate_results = await batch_cross_validate_hk(top5_codes)
+    except Exception:
+        cross_validate_results = []
+
     # ── 构建裸数据 ──
     raw_data = build_selection_data(ds, ss, elim, scored, len(passed),
                                     vetoed=vetoed)
+    # 追加行业漏斗数据
+    if industry:
+        raw_data["funnel"] = funnel
+    # 追加交叉验证结果
+    if cross_validate_results:
+        raw_data["cross_validation"] = cross_validate_results
     return raw_data
 
 

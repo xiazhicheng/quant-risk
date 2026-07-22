@@ -17,6 +17,183 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 # ═══════════════════════════════════════════════════════════════
+# 四大师独立裁决 + 追问引擎（2026-07-22 新增）
+# ═══════════════════════════════════════════════════════════════
+
+def _verdict_from_score(score: float) -> str:
+    """将百分位评分(1-5)映射为独立裁决"""
+    if score >= 4.0: return "✅ 通过"
+    elif score >= 3.0: return "⚠️ 有条件通过"
+    elif score >= 2.0: return "❓ 灰色地带"
+    else: return "❌ 不通过"
+
+
+def _dyp_question(p: Dict[str, Any]) -> str:
+    """🏢 段永平追问：这是对的生意吗？"""
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    roe = _v("ROE") or _v("JQROE") or 0
+    gr = _v("GROSS_PROFIT_RATIO") or 0
+    pm = q.get("profit_margin", 0) or 0
+    parts = []
+    if gr > 60:
+        parts.append(f"毛利率{gr:.1f}%远超60%，有极强的定价权，这是好生意的标志")
+    elif gr > 40:
+        parts.append(f"毛利率{gr:.1f}%高于40%，有一定定价权")
+    elif gr > 20:
+        parts.append(f"毛利率{gr:.1f}%在20%以上，行业平均水平")
+    elif gr > 0:
+        parts.append(f"毛利率仅{gr:.1f}%，定价权存疑，必须确认这是否是模式性问题")
+    if roe > 30:
+        parts.append(f"ROE{roe:.1f}%超过30%，资本回报效率极高，这是对的生意")
+    elif roe > 15:
+        parts.append(f"ROE{roe:.1f}%在15%以上，资本回报效率良好")
+    elif roe < 0:
+        parts.append(f"ROE为负，资本在毁灭价值")
+    if pm > 30:
+        parts.append(f"净利率{pm:.1f}%超过30%，盈利质量优秀")
+    elif pm > 20:
+        parts.append(f"净利率{pm:.1f}%超过20%，盈利质量良好")
+    elif pm < 0:
+        parts.append(f"净利率为负，公司不赚钱")
+    return "，".join(parts) if parts else "数据不足，难以判断生意质量"
+
+
+def _buffett_question(p: Dict[str, Any], sector: str, pe_limit: int) -> str:
+    """🛡️ 巴菲特追问：够便宜吗？有安全边际吗？"""
+    q = p.get("q", {}) or {}
+    ind = p.get("ind", {}) or {}
+    pe = p.get("pe", 0)
+    pb = q.get("pb", 0)
+    dy = q.get("dividend_yield", 0) or 0
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    roe = _v("ROE") or _v("JQROE") or 0
+    parts = []
+    if pe > 0:
+        pe_ratio = pe / max(pe_limit, 1)
+        if pe_ratio <= 0.5:
+            parts.append(f"PE/行业阈值={pe:.0f}/{pe_limit}={pe_ratio:.2f}，估值处于行业低位，有足够安全边际")
+        elif pe_ratio <= 1.0:
+            parts.append(f"PE/行业阈值={pe:.0f}/{pe_limit}={pe_ratio:.2f}，估值合理，安全边际一般")
+        else:
+            parts.append(f"PE/行业阈值={pe:.0f}/{pe_limit}={pe_ratio:.2f}，估值高于行业均值，安全边际不足")
+    if pb > 0 and pb < 1:
+        parts.append(f"PB<1，资产价格低于重置成本，安全边际充足")
+    if dy > 3:
+        parts.append(f"股息率{dy:.1f}%，股东回报可观，符合巴菲特对稳定现金流的偏好")
+    if roe > 20:
+        parts.append(f"ROE{roe:.1f}%超过20%，护城河深厚")
+    return "，".join(parts) if parts else "数据不足，难以判断估值安全边际"
+
+
+def _munger_question(p: Dict[str, Any]) -> str:
+    """⚠️ 芒格追问：怎么会死？有什么风险？"""
+    ind = p.get("ind", {}) or {}
+    rev = p.get("rev", 0)
+    ny = p.get("ny", 0)
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    dr = _v("DEBT_ASSET_RATIO") or 0
+    parts = []
+    if dr > 70:
+        parts.append(f"负债率{dr:.1f}%超过70%，财务风险较高——芒格会问：这家公司怎么死？")
+    elif dr > 50:
+        parts.append(f"负债率{dr:.1f}%超过50%，杠杆偏高，需关注偿债能力")
+    elif dr < 30:
+        parts.append(f"负债率{dr:.1f}%低于30%，财务结构稳健")
+    if rev < -30:
+        parts.append(f"营收下滑{rev:.1f}%，这是最危险的信号之一——芒格会问：公司在被谁替代？")
+    elif rev < -10:
+        parts.append(f"营收下滑{rev:.1f}%，需警惕趋势是否持续")
+    elif rev > 30 and dr < 30:
+        parts.append(f"高增长({rev:.1f}%)+低负债({dr:.1f}%)，风险可控，但芒格会问：增长可持续吗？")
+    if ny < -50:
+        parts.append(f"净利暴跌{ny:.1f}%，盈利能力严重恶化")
+    if dr <= 30 and rev > 0 and ny > 0:
+        parts.append("营收/净利正增长+低负债，逆向风险较低")
+    return "，".join(parts) if parts else "数据不足，难以评估风险"
+
+
+def _lilu_question(p: Dict[str, Any]) -> str:
+    """🔭 李录追问：10年后还在吗？"""
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+    rev = p.get("rev", 0)
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    roe = _v("ROE") or _v("JQROE") or 0
+    dr = _v("DEBT_ASSET_RATIO") or 0
+    pm = q.get("profit_margin", 0) or 0
+    dy = q.get("dividend_yield", 0) or 0
+    parts = []
+    if rev > 20 and dr < 30:
+        parts.append(f"高增长(营收{rev:.1f}%)+低负债(负债率{dr:.1f}%)，10年后大概率还在——符合李录长期确定性标准")
+    elif rev > 0 and dr < 30:
+        parts.append(f"营收稳健+低负债，长期确定性较好")
+    if roe > 15:
+        parts.append(f"ROE{roe:.1f}%持续高水平，说明有持续竞争力")
+    elif roe < 0:
+        parts.append("ROE为负，长期能否存活存疑")
+    if pm > 15:
+        parts.append(f"净利率{pm:.1f}%，赚钱能力强，可持续")
+    if dy > 3:
+        parts.append(f"持续分红(股息率{dy:.1f}%)，说明公司有持续赚钱能力")
+    if rev < 0:
+        parts.append("营收下滑，10年后的确定性存疑")
+    return "，".join(parts) if parts else "数据不足，难以判断长期确定性"
+
+
+def _munger_reverse_test(p: Dict[str, Any]) -> str:
+    """⚠️ 芒格式逆向检验：这家公司可能怎么死？
+
+    基于指标列出失败路径，不是预测，而是反向思考。
+    """
+    ind = p.get("ind", {}) or {}
+    rev = p.get("rev", 0)
+    ny = p.get("ny", 0)
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    dr = _v("DEBT_ASSET_RATIO") or 0
+    roe = _v("ROE") or _v("JQROE") or 0
+    gr = _v("GROSS_PROFIT_RATIO") or 0
+    q = p.get("q", {}) or {}
+    pe = p.get("pe", 0)
+
+    risks = []
+    if dr > 70:
+        risks.append(f"🔥 高负债(负债率{dr:.1f}%)：如果利率上升或收入下滑，可能触发债务违约")
+    elif dr > 50:
+        risks.append(f"⚠️ 负债率{dr:.1f}%偏高，杠杆成本上升时会侵蚀利润")
+
+    if rev < -30:
+        risks.append(f"🔥 营收严重萎缩(营收{rev:.1f}%)：市场份额被蚕食，可能是被替代的早期信号")
+    elif rev < -10:
+        risks.append(f"⚠️ 营收下滑(营收{rev:.1f}%)：需警惕趋势是否持续，公司在被谁替代？")
+    elif rev < 0:
+        risks.append(f"⚠️ 营收微降(营收{rev:.1f}%)：虽然幅度不大，但负增长本身就是警讯")
+
+    if ny < -100:
+        risks.append(f"🔥 盈利能力崩塌(净利{ny:.1f}%)：净利暴跌，可能是非经常性损失或结构性恶化")
+    elif ny < -50:
+        risks.append(f"⚠️ 净利大幅下滑(净利{ny:.1f}%)：需确认是周期性还是结构性问题")
+
+    if roe < 0:
+        risks.append(f"🔥 持续亏损(ROE{roe:.1f}%)：公司正在毁灭股东价值")
+    elif roe < 5:
+        risks.append(f"⚠️ ROE仅{roe:.1f}%，资本回报率低，竞争优势存疑")
+
+    if 0 < gr < 10 and rev < 0:
+        risks.append(f"⚠️ 毛利率低(毛利率{gr:.1f}%)且营收下滑：无定价权+市场萎缩，双重打击")
+
+    if pe < 0:
+        risks.append(f"🔥 PE为负，公司处于亏损状态，无法用市盈率估值")
+
+    if not risks:
+        return "✅ 财务结构健康，暂时无明显死亡路径。芒格会问：如果行业周期向下，这家公司能撑住吗？——从现有数据看，可以。"
+
+    risks.append("芒格会问：以上风险中，哪个最可能成真？如果成真，损失有多大？")
+    return "\n".join(risks)
+
+
+# ═══════════════════════════════════════════════════════════════
 # 共享过滤/评分逻辑
 # ═══════════════════════════════════════════════════════════════
 
@@ -94,9 +271,19 @@ def fundamental_veto(
     min_ny_yoy: float = -30.0,
     max_pe_neg: float = -10.0,
 ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str, str]]]:
-    """基本面一票否决 — 严重基本面恶化的标的直接淘汰。
+    """基本面一票否决（扩展版）— 严重基本面恶化的标的直接淘汰。
 
     贯彻"基本面为主"理念：技术面和热点再强，基本面崩塌的股票也不进评分池。
+
+    否决条件（8条，整合自 ai-berkshire 快速否决清单）：
+      1. 营收同比下滑 > 30% → 业务萎缩
+      2. 净利同比下滑 > 30% → 盈利能力崩塌
+      3. PE 严重负值（< -10）→ 巨亏无法估值
+      4. 负债率 > 90% → 资不抵债风险
+      5. ROE < 0（亏损）→ 持续无法创造股东回报
+      6. 毛利率 < 10% 且营收增速 < 0 → 无定价权+萎缩
+      7. PB < 0（净资产为负）→ 资不抵债
+      8. 营收 < 净利（靠非经常性损益）→ 主业不赚钱
 
     Args:
         passed: meso_filter 通过后的标的列表
@@ -116,20 +303,51 @@ def fundamental_veto(
         ny = p.get("ny", 0)
         rev = p.get("rev", 0)
         pe = p.get("pe", 0)
+        q = p.get("q", {}) or {}
+        ind = p.get("ind", {}) or {}
+
+        def _v(k):
+            return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+
+        roe = _v("ROE") or _v("JQROE") or 0
+        gr = _v("GROSS_PROFIT_RATIO") or 0
+        dr = _v("DEBT_ASSET_RATIO") or 0
+        pb = q.get("pb", 0) or 0
+        pm = q.get("profit_margin", 0) or 0
 
         reasons = []
 
-        # 营收同比严重下滑 → 业务在萎缩
+        # ① 营收同比严重下滑
         if rev < min_rev_yoy:
             reasons.append(f"营收同比{rev:.1f}%（<-{abs(min_rev_yoy)}%）")
 
-        # 净利同比严重下滑 → 盈利能力崩塌
+        # ② 净利同比严重下滑
         if ny < min_ny_yoy:
             reasons.append(f"净利同比{ny:.1f}%（<-{abs(min_ny_yoy)}%）")
 
-        # PE 严重负值 → 巨亏，无法估值
+        # ③ PE 严重负值
         if pe < max_pe_neg:
             reasons.append(f"PE{pe:.1f}（严重亏损）")
+
+        # ④ 负债率 > 90%
+        if dr > 90:
+            reasons.append(f"负债率{dr:.1f}%（>90%资不抵债风险）")
+
+        # ⑤ ROE < 0（亏损）
+        if roe < 0:
+            reasons.append(f"ROE{roe:.1f}%（亏损，无法创造股东回报）")
+
+        # ⑥ 毛利率 < 10% 且 营收增速 < 0
+        if rev < 0 and 0 < gr < 10:
+            reasons.append(f"毛利率{gr:.1f}%（<10%）且营收下滑{rev:.1f}%（无定价权+萎缩）")
+
+        # ⑦ PB < 0（净资产为负）
+        if pb < 0:
+            reasons.append(f"PB{pb:.2f}（净资产为负）")
+
+        # ⑧ 营收 < 净利（靠非经常性损益）
+        if rev < 0 and ny > 0 and abs(ny) > abs(rev):
+            reasons.append(f"营收{rev:.1f}% < 净利{ny:.1f}%（可能靠非经常性损益）")
 
         if reasons:
             vetoed.append((c, n, "; ".join(reasons)))
@@ -137,6 +355,61 @@ def fundamental_veto(
             passed_out.append(p)
 
     return passed_out, vetoed
+
+
+def quality_screen(scored: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """质量筛选：基于5条硬指标对已评分标的做质量标记。
+
+    借鉴 ai-berkshire quality-screen.md 的7条去劣逻辑，
+    适配 quant-risk 的可用数据（只有最新一期财务指标，无多年历史）。
+
+    不直接淘汰（让评分说话），但在标的的 advice 降档标记。
+
+    5条指标（可用数据范围内）：
+      1. ROE < 8% → 资本效率低下
+      2. 毛利率 < 15% → 无定价权
+      3. 净利率 < 5% → 抗风险能力弱
+      4. 负债率 > 70% → 过高负债风险
+      5. 营收增速 < -10% 且 净利增速 < -10% → 双降风险
+    """
+    for r in scored:
+        ind = r.get("ind", {}) or {}
+        q = r.get("q", {}) or {}
+
+        def _v(k):
+            return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+
+        roe = _v("ROE") or _v("JQROE") or 0
+        gr = _v("GROSS_PROFIT_RATIO") or 0
+        pm = q.get("profit_margin", 0) or 0
+        dr = _v("DEBT_ASSET_RATIO") or 0
+        rev = r.get("rev", 0)
+        ny = r.get("ny", 0)
+
+        issues = []
+        if 0 < roe < 8:
+            issues.append(f"ROE{roe:.1f}%<8%（资本效率低下）")
+        if 0 < gr < 15:
+            issues.append(f"毛利率{gr:.1f}%<15%（无定价权）")
+        if 0 < pm < 5:
+            issues.append(f"净利率{pm:.1f}%<5%（抗风险能力弱）")
+        if dr > 70:
+            issues.append(f"负债率{dr:.1f}%>70%（过高负债风险）")
+        if rev < -10 and ny < -10:
+            issues.append(f"营收{rev:.1f}%+净利{ny:.1f}%双降（趋势恶化）")
+
+        r["quality_issues"] = issues
+
+        # 有质量问题的，建议降一档
+        if issues:
+            t = r.get("total", 0)
+            current_advice = r.get("advice", "")
+            if current_advice == "强烈关注":
+                r["advice"] = "可关注"
+            elif current_advice == "可关注":
+                r["advice"] = "观察"
+
+    return scored
 
 
 # ── 辅助 ──────────────────────────────────────────────────────
@@ -155,6 +428,415 @@ def _percentile(values: List[float], v: float) -> float:
     # 比 v 小的比例
     smaller = sum(1 for x in ranked if x < v)
     return smaller / n
+
+
+# ═══════════════════════════════════════════════════════════════
+# 四大师视角评分（2026-07-22 新增，借鉴 ai-berkshire 框架）
+# 段永平(商业模式)30% + 巴菲特(护城河/估值)30% + 芒格(逆向风险)20% + 李录(长期确定性)20%
+# ═══════════════════════════════════════════════════════════════
+
+def info_richness_rating(p: Dict[str, Any]) -> Tuple[str, str]:
+    """信息丰富度评级（A/B/C 三级）。
+
+    基于 9 个基本面字段的完整性：
+      - A级：7-9个字段有值
+      - B级：4-6个字段有值
+      - C级：<4个字段有值
+
+    Returns:
+        (rating, detail)
+    """
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+    rev = p.get("rev", 0)
+    ny = p.get("ny", 0)
+
+    def _v(k):
+        return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+
+    fields = {
+        "营收增速": rev,
+        "净利同比": ny,
+        "ROE": _v("ROE") or _v("JQROE"),
+        "毛利率": _v("GROSS_PROFIT_RATIO"),
+        "负债率": _v("DEBT_ASSET_RATIO"),
+        "PE": p.get("pe", 0),
+        "PB": q.get("pb", 0),
+        "股息率": q.get("dividend_yield", 0),
+        "净利率": q.get("profit_margin", 0),
+    }
+    has_value = sum(1 for v in fields.values() if v and v != "?" and v != 0)
+    missing = [k for k, v in fields.items() if not v or v == "?" or v == 0]
+
+    if has_value >= 7:
+        rating = "A级"
+        detail = "数据充足"
+    elif has_value >= 4:
+        rating = "B级"
+        detail = f"部分数据缺失（缺失{len(missing)}个字段：{'/'.join(missing[:3])}）"
+    else:
+        rating = "C级"
+        detail = f"数据严重不足（仅{has_value}个字段有值）"
+
+    return rating, detail
+
+
+# ═══════════════════════════════════════════════════════════════
+# 六维评分（2026-07-22 重构：替代原有的四大师评分）
+# ═══════════════════════════════════════════════════════════════
+# 基本面总分 60 分 = 6 个维度 × 10 分满分
+# 每个维度返回 (score, debug, conclusion, confidence)
+#    score: 1-10
+#    debug: 计算明细文本
+#    conclusion: 自动生成的定性结论描述
+#    confidence: ★★★★★ 风格
+
+def _dim_conclusion(score: float, high_label: str, mid_label: str, low_label: str) -> str:
+    """根据分数生成定性标签"""
+    if score >= 9.0: return "极佳"
+    elif score >= 7.5: return "优秀"
+    elif score >= 6.0: return "良好"
+    elif score >= 4.5: return "一般"
+    elif score >= 3.0: return "较差"
+    else: return "极差"
+
+def _dim_confidence(score: float) -> str:
+    """根据分数生成信心度（★）"""
+    if score >= 9.0: return "★★★★★"
+    elif score >= 7.5: return "★★★★☆"
+    elif score >= 6.0: return "★★★☆☆"
+    elif score >= 4.5: return "★★☆☆☆"
+    else: return "★☆☆☆☆"
+
+def _clamp10(v: float) -> float:
+    """限幅到 1.0-10.0"""
+    return max(1.0, min(10.0, round(v, 1)))
+
+
+def dim_business_quality(p: Dict[str, Any]) -> Tuple[float, str, str, str]:
+    """维度1：生意质量（段永平）— 满分10分
+
+    核心指标：毛利率、净利率、ROE
+    判断"这是对的生意吗？"
+    """
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    roe = _v("ROE") or _v("JQROE") or 0
+    gr = _v("GROSS_PROFIT_RATIO") or 0
+    pm = q.get("profit_margin", 0) or 0
+
+    s = 4.0
+    parts = [f"基础{s:.1f}"]
+
+    # ── 毛利率（定价权） ──
+    if gr > 80: s += 2.0; parts.append(f"毛利率{gr:.1f}%(>80%→+2.0)")
+    elif gr > 60: s += 1.5; parts.append(f"毛利率{gr:.1f}%(>60%→+1.5)")
+    elif gr > 40: s += 1.0; parts.append(f"毛利率{gr:.1f}%(>40%→+1.0)")
+    elif gr > 20: s += 0.5; parts.append(f"毛利率{gr:.1f}%(>20%→+0.5)")
+    elif 0 < gr < 10: s -= 1.0; parts.append(f"毛利率{gr:.1f}%(<10%→-1.0)")
+    else: parts.append("毛利率?(无数据→0)")
+
+    # ── 净利率（盈利质量） ──
+    if pm > 30: s += 2.0; parts.append(f"净利率{pm:.1f}%(>30%→+2.0)")
+    elif pm > 20: s += 1.5; parts.append(f"净利率{pm:.1f}%(>20%→+1.5)")
+    elif pm > 10: s += 0.5; parts.append(f"净利率{pm:.1f}%(>10%→+0.5)")
+    elif pm < 0: s -= 1.0; parts.append(f"净利率{pm:.1f}%(<0→-1.0)")
+    else: parts.append(f"净利率?(无数据→0)")
+
+    # ── ROE（资本回报效率） ──
+    if roe > 30: s += 2.0; parts.append(f"ROE{roe:.1f}%(>30%→+2.0)")
+    elif roe > 20: s += 1.0; parts.append(f"ROE{roe:.1f}%(>20%→+1.0)")
+    elif roe > 15: s += 0.5; parts.append(f"ROE{roe:.1f}%(>15%→+0.5)")
+    elif roe < 0: s -= 1.5; parts.append(f"ROE{roe:.1f}%(<0→-1.5)")
+    else: parts.append(f"ROE?(无数据→0)")
+
+    score = _clamp10(s)
+    debug = "+".join(parts)
+    tag = _dim_conclusion(score, "极佳", "优秀", "较差")
+    conf = _dim_confidence(score)
+    # 拼接结论文本 — 使用 _dyp_question 的详细追问回答
+    conclusion = _dyp_question(p)
+    return score, debug, conclusion, conf
+
+
+def dim_moat(p: Dict[str, Any]) -> Tuple[float, str, str, str]:
+    """维度2：护城河（巴菲特）— 满分10分
+
+    核心指标：ROE、毛利率、股息率、负债率
+    判断"护城河够宽吗？"
+    """
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    dr = _v("DEBT_ASSET_RATIO") or 0
+    roe = _v("ROE") or _v("JQROE") or 0
+    gr = _v("GROSS_PROFIT_RATIO") or 0
+    dy = q.get("dividend_yield", 0) or 0
+
+    s = 4.0
+    parts = [f"基础{s:.1f}"]
+
+    # ── ROE（护城河核心标志） ──
+    if roe > 30: s += 2.0; parts.append(f"ROE{roe:.1f}%(>30%→+2.0)")
+    elif roe > 20: s += 1.5; parts.append(f"ROE{roe:.1f}%(>20%→+1.5)")
+    elif roe > 15: s += 1.0; parts.append(f"ROE{roe:.1f}%(>15%→+1.0)")
+    elif roe < 0: s -= 1.5; parts.append(f"ROE{roe:.1f}%(<0→-1.5)")
+    else: parts.append(f"ROE?(无数据→0)")
+
+    # ── 毛利率（定价权护城河） ──
+    if gr > 60: s += 1.5; parts.append(f"毛利率{gr:.1f}%(>60%→+1.5)")
+    elif gr > 40: s += 1.0; parts.append(f"毛利率{gr:.1f}%(>40%→+1.0)")
+    elif gr > 20: s += 0.5; parts.append(f"毛利率{gr:.1f}%(>20%→+0.5)")
+    else: parts.append(f"毛利率{gr:.1f}%(≤20%→0)")
+
+    # ── 股息率（稳定现金流） ──
+    if dy > 5: s += 1.0; parts.append(f"股息率{dy:.1f}%(>5%→+1.0)")
+    elif dy > 3: s += 0.5; parts.append(f"股息率{dy:.1f}%(>3%→+0.5)")
+    elif dy > 1: s += 0.3; parts.append(f"股息率{dy:.1f}%(>1%→+0.3)")
+
+    # ── 负债率（财务稳健） ──
+    if dr > 0:
+        if dr < 30: s += 0.5; parts.append(f"负债率{dr:.1f}%(<30%→+0.5)")
+        elif dr > 70: s -= 1.0; parts.append(f"负债率{dr:.1f}%(>70%→-1.0)")
+        else: parts.append(f"负债率{dr:.1f}%(30-70%→0)")
+
+    score = _clamp10(s)
+    debug = "+".join(parts)
+    tag = _dim_conclusion(score, "宽阔", "较宽", "狭窄")
+    conf = _dim_confidence(score)
+    # 护城河追问回答
+    moat_parts = []
+    if roe > 20:
+        moat_parts.append(f"ROE{roe:.1f}%超过20%，护城河深厚")
+    elif roe > 15:
+        moat_parts.append(f"ROE{roe:.1f}%在15%以上，护城河一般")
+    elif roe < 0:
+        moat_parts.append(f"ROE为负，护城河在变窄")
+    if gr > 60:
+        moat_parts.append(f"毛利率{gr:.1f}%远超60%，有极强的定价权护城河")
+    elif gr > 40:
+        moat_parts.append(f"毛利率{gr:.1f}%高于40%，有一定定价权")
+    elif gr < 10:
+        moat_parts.append(f"毛利率仅{gr:.1f}%，定价权不足")
+    if dy > 3:
+        moat_parts.append(f"股息率{dy:.1f}%，股东回报稳定")
+    if dr > 0 and dr < 30:
+        moat_parts.append(f"负债率{dr:.1f}%低，财务稳健")
+    elif dr > 70:
+        moat_parts.append(f"负债率{dr:.1f}%过高，财务风险大")
+    conclusion = "，".join(moat_parts) if moat_parts else tag
+    return score, debug, conclusion, conf
+
+
+def dim_management(p: Dict[str, Any]) -> Tuple[float, str, str, str]:
+    """维度3：管理层（段永平+巴菲特）— 满分10分
+
+    核心指标：ROE(资本配置)、净利率、营收增速、负债率(财务纪律)
+    判断"管理层是否优秀？资本配置是否有效？"
+    """
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+    rev = p.get("rev", 0)
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    roe = _v("ROE") or _v("JQROE") or 0
+    pm = q.get("profit_margin", 0) or 0
+    dr = _v("DEBT_ASSET_RATIO") or 0
+
+    s = 4.0
+    parts = [f"基础{s:.1f}"]
+
+    # ── ROE（资本配置效率） ──
+    if roe > 30: s += 2.0; parts.append(f"ROE{roe:.1f}%(>30%→+2.0)")
+    elif roe > 20: s += 1.5; parts.append(f"ROE{roe:.1f}%(>20%→+1.5)")
+    elif roe > 15: s += 0.5; parts.append(f"ROE{roe:.1f}%(>15%→+0.5)")
+    elif roe < 0: s -= 1.5; parts.append(f"ROE{roe:.1f}%(<0→-1.5)")
+
+    # ── 净利率（管理效率） ──
+    if pm > 20: s += 1.5; parts.append(f"净利率{pm:.1f}%(>20%→+1.5)")
+    elif pm > 10: s += 0.5; parts.append(f"净利率{pm:.1f}%(>10%→+0.5)")
+    elif pm < 0: s -= 1.0; parts.append(f"净利率{pm:.1f}%(<0→-1.0)")
+
+    # ── 营收增速（执行能力） ──
+    if rev > 20: s += 1.5; parts.append(f"营收{rev:.1f}%(>20%→+1.5)")
+    elif rev > 10: s += 1.0; parts.append(f"营收{rev:.1f}%(>10%→+1.0)")
+    elif rev > 0: s += 0.5; parts.append(f"营收{rev:.1f}%(>0%→+0.5)")
+    elif rev < -20: s -= 1.5; parts.append(f"营收{rev:.1f}%(<-20%→-1.5)")
+    elif rev < 0: s -= 0.5; parts.append(f"营收{rev:.1f}%(<0→-0.5)")
+
+    # ── 负债率（财务纪律） ──
+    if dr > 0 and dr < 30: s += 0.5; parts.append(f"负债率{dr:.1f}%(<30%→+0.5)")
+
+    score = _clamp10(s)
+    debug = "+".join(parts)
+    tag = _dim_conclusion(score, "卓越", "优秀", "平庸")
+    conf = _dim_confidence(score)
+    # 管理层追问回答
+    mgmt_parts = []
+    if roe > 20:
+        mgmt_parts.append(f"ROE{roe:.1f}%超过20%，资本配置效率高")
+    elif roe < 0:
+        mgmt_parts.append(f"ROE为负，资本在毁灭价值")
+    if pm > 20:
+        mgmt_parts.append(f"净利率{pm:.1f}%超过20%，管理效率优秀")
+    elif pm < 0:
+        mgmt_parts.append(f"净利率为负，盈利能力差")
+    if rev > 10:
+        mgmt_parts.append(f"营收增长{rev:+.1f}%，执行能力良好")
+    elif rev < 0:
+        mgmt_parts.append(f"营收下滑{rev:.1f}%，需关注增长动力")
+    if dr > 0 and dr < 30:
+        mgmt_parts.append(f"负债率{dr:.1f}%低，财务纪律良好")
+    elif dr > 70:
+        mgmt_parts.append(f"负债率{dr:.1f}%过高，财务纪律存疑")
+    conclusion = "，".join(mgmt_parts) if mgmt_parts else tag
+    return score, debug, conclusion, conf
+
+
+def dim_risk(p: Dict[str, Any]) -> Tuple[float, str, str, str]:
+    """维度4：最大风险（芒格）— 满分10分（逆向打分，风险越低分越高）
+
+    核心指标：负债率、营收增速(负值重扣)、净利增速(负值重扣)、ROE
+    判断"这家公司可能怎么死？"
+    """
+    ind = p.get("ind", {}) or {}
+    rev = p.get("rev", 0)
+    ny = p.get("ny", 0)
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    dr = _v("DEBT_ASSET_RATIO") or 0
+    roe = _v("ROE") or _v("JQROE") or 0
+
+    s = 6.0  # 基础分偏高，只有在发现风险时才扣分
+    parts = [f"基础{s:.1f}"]
+
+    # ── 负债率过高扣分 ──
+    if dr > 0:
+        if dr > 70: s -= 3.0; parts.append(f"负债率{dr:.1f}%(>70%→-3.0)")
+        elif dr > 50: s -= 1.5; parts.append(f"负债率{dr:.1f}%(>50%→-1.5)")
+        elif dr > 30: s -= 0.5; parts.append(f"负债率{dr:.1f}%(>30%→-0.5)")
+        else: parts.append(f"负债率{dr:.1f}%(≤30%→0)")
+    else: parts.append("负债率?(无数据→0)")
+
+    # ── 营收下滑扣分 ──
+    if rev < -30: s -= 3.0; parts.append(f"营收{rev:.1f}%(<-30%→-3.0)")
+    elif rev < -10: s -= 1.5; parts.append(f"营收{rev:.1f}%(<-10%→-1.5)")
+    elif rev < 0: s -= 0.5; parts.append(f"营收{rev:.1f}%(<0%→-0.5)")
+    elif rev > 10: s += 1.0; parts.append(f"营收{rev:.1f}%(>10%→+1.0)")
+    else: parts.append(f"营收{rev:.1f}%(0-10%→0)")
+
+    # ── 净利暴跌扣分 ──
+    if ny < -30: s -= 3.0; parts.append(f"净利{ny:.1f}%(<-30%→-3.0)")
+    elif ny < -10: s -= 1.5; parts.append(f"净利{ny:.1f}%(<-10%→-1.5)")
+    elif ny < 0: s -= 0.5; parts.append(f"净利{ny:.1f}%(<0%→-0.5)")
+    elif ny > 20: s += 1.0; parts.append(f"净利{ny:.1f}%(>20%→+1.0)")
+    else: parts.append(f"净利{ny:.1f}%(0-20%→0)")
+
+    # ── ROE为负（亏损风险） ──
+    if roe < 0: s -= 1.5; parts.append(f"ROE{roe:.1f}%(<0→-1.5)")
+
+    score = _clamp10(s)
+    debug = "+".join(parts)
+    tag = "低风险" if score >= 7.5 else "可控" if score >= 5.0 else "高风险"
+    conf = _dim_confidence(score)
+    # 使用 _munger_question 的详细追问回答
+    conclusion = _munger_question(p)
+    return score, debug, conclusion, conf
+
+
+def dim_trend(p: Dict[str, Any]) -> Tuple[float, str, str, str]:
+    """维度5：文明趋势（李录）— 满分10分
+
+    核心指标：营收增速(行业景气)、净利率、负债率、ROE
+    判断"顺应文明趋势吗？10年后还在吗？"
+    """
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+    rev = p.get("rev", 0)
+    def _v(k): return ind.get(k) or ind.get(k.replace("_yoy", ""), 0)
+    roe = _v("ROE") or _v("JQROE") or 0
+    pm = q.get("profit_margin", 0) or 0
+    dr = _v("DEBT_ASSET_RATIO") or 0
+
+    s = 4.0
+    parts = [f"基础{s:.1f}"]
+
+    # ── 营收增速（行业趋势代理） ──
+    if rev > 30: s += 2.5; parts.append(f"营收{rev:.1f}%(>30%→+2.5)")
+    elif rev > 20: s += 2.0; parts.append(f"营收{rev:.1f}%(>20%→+2.0)")
+    elif rev > 10: s += 1.0; parts.append(f"营收{rev:.1f}%(>10%→+1.0)")
+    elif rev > 0: s += 0.5; parts.append(f"营收{rev:.1f}%(>0%→+0.5)")
+    elif rev < -20: s -= 2.0; parts.append(f"营收{rev:.1f}%(<-20%→-2.0)")
+    elif rev < 0: s -= 0.5; parts.append(f"营收{rev:.1f}%(<0→-0.5)")
+
+    # ── 净利率（赚钱能力） ──
+    if pm > 30: s += 1.5; parts.append(f"净利率{pm:.1f}%(>30%→+1.5)")
+    elif pm > 15: s += 1.0; parts.append(f"净利率{pm:.1f}%(>15%→+1.0)")
+    elif pm < 0: s -= 1.0; parts.append(f"净利率{pm:.1f}%(<0→-1.0)")
+
+    # ── 负债率（低负债才能适应变化） ──
+    if dr > 0:
+        if dr < 30: s += 1.0; parts.append(f"负债率{dr:.1f}%(<30%→+1.0)")
+        elif dr > 70: s -= 1.0; parts.append(f"负债率{dr:.1f}%(>70%→-1.0)")
+
+    # ── ROE（持续竞争力） ──
+    if roe > 20: s += 1.0; parts.append(f"ROE{roe:.1f}%(>20%→+1.0)")
+    elif roe > 15: s += 0.5; parts.append(f"ROE{roe:.1f}%(>15%→+0.5)")
+    elif roe < 0: s -= 1.0; parts.append(f"ROE{roe:.1f}%(<0→-1.0)")
+
+    score = _clamp10(s)
+    debug = "+".join(parts)
+    tag = _dim_conclusion(score, "顺应趋势", "良好", "逆势")
+    conf = _dim_confidence(score)
+    # 使用 _lilu_question 的详细追问回答
+    conclusion = _lilu_question(p)
+    return score, debug, conclusion, conf
+
+
+def dim_valuation(p: Dict[str, Any], sector: str, pe_limit: int) -> Tuple[float, str, str, str]:
+    """维度6：估值（巴菲特+段永平）— 满分10分
+
+    核心指标：PE相对估值、股息率
+    判断"价格合理吗？有安全边际吗？"
+    """
+    q = p.get("q", {}) or {}
+    pe = p.get("pe", 0)
+    dy = q.get("dividend_yield", 0) or 0
+    pb = q.get("pb", 0)
+
+    s = 4.0
+    parts = [f"基础{s:.1f}"]
+
+    # ── PE 相对估值（安全边际） ──
+    if pe > 0:
+        pe_ratio = pe / max(pe_limit, 1)
+        if pe_ratio <= 0.3: s += 3.0; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}≤0.3→+3.0"
+        elif pe_ratio <= 0.5: s += 2.5; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}≤0.5→+2.5"
+        elif pe_ratio <= 0.8: s += 1.5; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}≤0.8→+1.5"
+        elif pe_ratio <= 1.0: s += 0.5; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}≤1.0→+0.5"
+        elif pe_ratio <= 1.5: s -= 0.5; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}>1.0→-0.5"
+        elif pe_ratio <= 2.0: s -= 1.5; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}>1.5→-1.5"
+        else: s -= 2.5; prt = f"PE/阈值 {pe:.0f}/{pe_limit}={pe_ratio:.2f}>2.0→-2.5"
+        parts.append(prt)
+    elif pe < 0: s -= 3.0; parts.append("PE<0→-3.0")
+    else: parts.append("PE?(无数据→0)")
+
+    # ── 股息率（股东回报） ──
+    if dy > 5: s += 1.5; parts.append(f"股息率{dy:.1f}%(>5%→+1.5)")
+    elif dy > 3: s += 1.0; parts.append(f"股息率{dy:.1f}%(>3%→+1.0)")
+    elif dy > 1: s += 0.5; parts.append(f"股息率{dy:.1f}%(>1%→+0.5)")
+
+    # ── PB 市净率（资产安全垫） ──
+    if pb > 0 and pb < 1: s += 0.5; parts.append(f"PB{pb:.2f}(<1→+0.5)")
+
+    score = _clamp10(s)
+    debug = "+".join(parts)
+    tag = "低估" if score >= 7.5 else "合理" if score >= 5.0 else "偏贵"
+    conf = _dim_confidence(score)
+    # 使用 _buffett_question 的详细追问回答
+    conclusion = _buffett_question(p, sector, pe_limit)
+    return score, debug, conclusion, conf
 
 
 def fb_score(
@@ -579,6 +1261,144 @@ def chan_score(
     return s, d  # 未clamp，百分位排名会处理归一化
 
 
+# ── 大师视角 + 其他大师质疑 生成（2026-07-22 新增） ──
+MASTER_PERSPECTIVES = {
+    "生意质量（段永平）": {"owner": "段永平", "question": "这是对的生意吗？", "others": ["巴菲特", "芒格", "李录"]},
+    "护城河（巴菲特）": {"owner": "巴菲特", "question": "够便宜吗？有安全边际吗？", "others": ["段永平", "芒格", "李录"]},
+    "管理层（段永平+巴菲特）": {"owner": "段永平+巴菲特", "question": "管理层值得信任吗？", "others": ["芒格", "李录"]},
+    "最大风险（芒格）": {"owner": "芒格", "question": "怎么会死？有什么风险？", "others": ["段永平", "巴菲特", "李录"]},
+    "文明趋势（李录）": {"owner": "李录", "question": "10年后还在吗？", "others": ["段永平", "巴菲特", "芒格"]},
+    "估值（巴菲特+段永平）": {"owner": "巴菲特+段永平", "question": "价格有安全边际吗？", "others": ["芒格", "李录"]},
+}
+
+
+def _pe_text(pe):
+    if pe is None: return "无数据"
+    try:
+        pv = float(pe)
+        if pv > 0:
+            if pv < 10: return f"PE{pv}，估值偏低，安全边际充足"
+            elif pv < 20: return f"PE{pv}，估值合理"
+            elif pv < 30: return f"PE{pv}，估值合理"
+            else: return f"PE{pv}，估值偏高"
+        else:
+            return f"PE{pv}，亏损"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _gm_text(gm):
+    if gm is None: return "无数据"
+    try:
+        g = float(gm)
+        if g > 60: return f"毛利率{g}%远超60%，生意质量好"
+        elif g > 40: return f"毛利率{g}%高于40%，有一定定价权"
+        elif g <= 20: return f"毛利率仅{g}%，定价权存疑"
+        else: return f"毛利率{g}%"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _dr_text(dr):
+    if dr is None: return "无数据"
+    try:
+        d = float(dr)
+        if d > 70: return f"负债率{d}%过高，财务风险大"
+        elif d > 50: return f"负债率{d}%超50%，杠杆偏高"
+        else: return f"负债率{d}%，风险可控"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _rev_text(rev):
+    if rev is None: return "无数据"
+    try:
+        r = float(rev)
+        if r > 20: return f"营收增长{r:+.1f}%，主业快速扩张"
+        elif r > 0: return f"营收增长{r:+.1f}%，主业稳健"
+        elif r > -10: return f"营收下滑{r:.1f}%，增长动力不足"
+        else: return f"营收暴跌{r:.1f}%，最危险信号"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _roe_text(roe):
+    if roe is None: return "无数据"
+    try:
+        rv = float(roe)
+        if rv > 30: return f"ROE{rv}%超30%，资本回报极高"
+        elif rv > 20: return f"ROE{rv}%超20%，护城河深厚"
+        elif rv > 15: return f"ROE{rv}%在15%以上，回报良好"
+        elif rv > 0: return f"ROE{rv}%，回报一般"
+        else: return f"ROE{rv}%为负，资本在毁灭价值"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _net_text(ny):
+    if ny is None: return "无数据"
+    try:
+        n = float(ny)
+        if n > 20: return f"净利增长{n:+.1f}%，盈利强劲"
+        elif n > 0: return f"净利增长{n:+.1f}%"
+        elif n > -10: return f"净利下滑{n:.1f}%"
+        else: return f"净利暴跌{n:.1f}%，盈利恶化"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _np_text(np_margin):
+    if np_margin is None: return "无数据"
+    try:
+        n = float(np_margin)
+        if n > 30: return f"净利率{n}%超过30%，盈利质量优秀"
+        elif n > 20: return f"净利率{n}%超过20%，盈利良好"
+        elif n > 10: return f"净利率{n}%超过10%"
+        elif n > 0: return f"净利率{n}%，盈利微薄"
+        else: return f"净利率{n}%为负"
+    except (ValueError, TypeError):
+        return "无数据"
+
+
+def _gen_master_view(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成大师视角：核心追问 + 大师基于数据的观点"""
+    if dim_key not in MASTER_PERSPECTIVES:
+        return ""
+    question = MASTER_PERSPECTIVES[dim_key]["question"]
+    parts = [f"**核心追问**：{question}"]
+    if "生意质量" in dim_key:
+        parts.extend([f"毛利率{gm}%，{_gm_text(gm)}", f"ROE{roe}%，{_roe_text(roe)}", f"净利率{np_margin}%，{_np_text(np_margin)}"])
+    elif "护城河" in dim_key:
+        parts.extend([f"ROE{roe}%，{_roe_text(roe)}", f"毛利率{gm}%，{_gm_text(gm)}", f"负债率{dr}%，{_dr_text(dr)}"])
+    elif "管理层" in dim_key:
+        parts.extend([f"ROE{roe}%，{_roe_text(roe)}", f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}", f"净利率{np_margin}%，{_np_text(np_margin)}"])
+    elif "最大风险" in dim_key:
+        parts.extend([f"负债率{dr}%，{_dr_text(dr)}", f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}", f"净利增速{net_yoy}%，{_net_text(net_yoy)}"])
+    elif "文明趋势" in dim_key:
+        parts.extend([f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}", f"净利率{np_margin}%，{_np_text(np_margin)}", f"ROE{roe}%，{_roe_text(roe)}"])
+    elif "估值" in dim_key:
+        parts.extend([f"PE{pe}，{_pe_text(pe)}"])
+    return "；".join(parts)
+
+
+def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成其他大师对当前维度的质疑"""
+    if dim_key not in MASTER_PERSPECTIVES:
+        return ""
+    others = MASTER_PERSPECTIVES[dim_key]["others"]
+    challenges = []
+    for master in others:
+        if master == "段永平":
+            challenges.append(f"段永平：{_gm_text(gm)}；{_roe_text(roe)}；{_np_text(np_margin)}")
+        elif master == "巴菲特":
+            challenges.append(f"巴菲特：{_pe_text(pe)}；{_roe_text(roe)}；{_dr_text(dr)}")
+        elif master == "芒格":
+            challenges.append(f"芒格：{_dr_text(dr)}；{_rev_text(rev_yoy)}；{_net_text(net_yoy)}")
+        elif master == "李录":
+            challenges.append(f"李录：{_rev_text(rev_yoy)}；{_np_text(np_margin)}；{_dr_text(dr)}")
+    return "<br/>".join(challenges)
+
+
 def _raw_score_one(
     p: Dict[str, Any],
     kl: List[Dict],
@@ -586,18 +1406,81 @@ def _raw_score_one(
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
     market: str = "hk",
 ) -> Dict[str, Any]:
-    """计算单只股票的原始分（fb/hot/ch，未做百分位排名）。"""
+    """计算单只股票的原始分（fb/hot/ch，未做百分位排名）。
+
+    基本面评分采用六维评分（2026-07-22 重构）：
+      - 生意质量(段永平) × 等权
+      - 护城河(巴菲特) × 等权
+      - 管理层(段永平+巴菲特) × 等权
+      - 最大风险(芒格) × 等权
+      - 文明趋势(李录) × 等权
+      - 估值(巴菲特+段永平) × 等权
+      六维等权合成 → 满分60分
+    """
     c = p["c"]
     pe_limit = industry_thresholds.get(p.get("s", "其他"), 60)
 
-    fb, fb_debug = fb_score(p, p.get("s", "其他"), pe_limit)
+    # 六维评分
+    dim1_s, dim1_d, dim1_c, dim1_conf = dim_business_quality(p)
+    dim2_s, dim2_d, dim2_c, dim2_conf = dim_moat(p)
+    dim3_s, dim3_d, dim3_c, dim3_conf = dim_management(p)
+    dim4_s, dim4_d, dim4_c, dim4_conf = dim_risk(p)
+    dim5_s, dim5_d, dim5_c, dim5_conf = dim_trend(p)
+    dim6_s, dim6_d, dim6_c, dim6_conf = dim_valuation(p, p.get("s", "其他"), pe_limit)
+
+    # 合成基本面原始分（六维等权，用于百分位排名）
+    fb_raw = (dim1_s + dim2_s + dim3_s + dim4_s + dim5_s + dim6_s) / 6
+
+    # 芒格式逆向检验
+    reverse_test = _munger_reverse_test(p)
+
+    # 信息丰富度评级
+    ir_rating, ir_detail = info_richness_rating(p)
+
+    # 大师视角 + 其他大师质疑（2026-07-22 新增）
+    ind = p.get("ind", {}) or {}
+    q = p.get("q", {}) or {}
+    pe_val = p.get("pe", None)
+    roe_val = ind.get("ROE") or ind.get("JQROE") or None
+    gm_val = ind.get("GROSS_PROFIT_RATIO") or None
+    np_val = q.get("profit_margin", None) or None
+    rev_val = p.get("rev", None)
+    ny_val = p.get("ny", None)
+    dr_val = ind.get("DEBT_ASSET_RATIO") or None
+
+    dim_keys = [
+        "生意质量（段永平）", "护城河（巴菲特）", "管理层（段永平+巴菲特）",
+        "最大风险（芒格）", "文明趋势（李录）", "估值（巴菲特+段永平）",
+    ]
+    master_views = {}
+    other_masters = {}
+    for i, dk in enumerate(dim_keys):
+        master_views[f"dim{i+1}_master_view"] = _gen_master_view(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
+        other_masters[f"dim{i+1}_other_masters"] = _gen_other_masters_challenge(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
+
     hot = hot_score(p, kl, sector_ranking, market)
     ch, cd = chan_score(p, kl)
 
     return {
         "c": c, "n": p["n"], "s": p["s"], "p": p["p"], "mc": p["mc"], "pe": p["pe"],
-        "fb_raw": fb, "hot_raw": hot, "ch_raw": ch,
-        "fb_debug": fb_debug,
+        "fb_raw": fb_raw, "hot_raw": hot, "ch_raw": ch,
+        "fb_debug": f"生意质量:{dim1_d} | 护城河:{dim2_d} | 管理层:{dim3_d} | 风险:{dim4_d} | 趋势:{dim5_d} | 估值:{dim6_d}",
+        # 六维原始分（用于百分位排名）
+        "dim1_raw": dim1_s, "dim2_raw": dim2_s, "dim3_raw": dim3_s,
+        "dim4_raw": dim4_s, "dim5_raw": dim5_s, "dim6_raw": dim6_s,
+        "dim1_debug": dim1_d, "dim2_debug": dim2_d, "dim3_debug": dim3_d,
+        "dim4_debug": dim4_d, "dim5_debug": dim5_d, "dim6_debug": dim6_d,
+        # 六维结论 + 信心度
+        "dim1_conclusion": dim1_c, "dim2_conclusion": dim2_c, "dim3_conclusion": dim3_c,
+        "dim4_conclusion": dim4_c, "dim5_conclusion": dim5_c, "dim6_conclusion": dim6_c,
+        "dim1_confidence": dim1_conf, "dim2_confidence": dim2_conf, "dim3_confidence": dim3_conf,
+        "dim4_confidence": dim4_conf, "dim5_confidence": dim5_conf, "dim6_confidence": dim6_conf,
+        # 大师视角 + 其他大师质疑（2026-07-22 新增）
+        **master_views,
+        **other_masters,
+        "reverse_test": reverse_test,
+        "info_richness": ir_rating,
+        "info_richness_detail": ir_detail,
         "pw": p.get("pw", ""), "ny": p.get("ny"), "rev": p.get("rev"),
         "q": p.get("q", {}), "ind": p.get("ind", {}), "kl": kl, "cd": cd,
     }
@@ -606,10 +1489,13 @@ def _raw_score_one(
 def percentile_score_all(
     raw_scores: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """对所有已算好原始分的候选股做池内百分位排名，归一化到 1-5。
+    """对所有已算好原始分的候选股做池内百分位排名，归一化到 1-10。
+
+    基本面评分采用六维等权合成（2026-07-22 重构）：
+      六维各自百分位排名 → 等权求和 → 映射到 1~5 → × 12 = 60分
 
     Args:
-        raw_scores: _raw_score_one 的返回结果列表，每项含 fb_raw/hot_raw/ch_raw。
+        raw_scores: _raw_score_one 的返回结果列表，每项含 dim1_raw~dim6_raw/hot_raw/ch_raw。
 
     返回:
         按总分降序排列的 scored 列表，每项含 fb/hot/ch/total/advice。
@@ -617,29 +1503,67 @@ def percentile_score_all(
     if not raw_scores:
         return []
 
-    fb_raws = [r["fb_raw"] for r in raw_scores]
+    # 各维度的原始分列表
     hot_raws = [r["hot_raw"] for r in raw_scores]
     ch_raws = [r["ch_raw"] for r in raw_scores]
 
+    # 六维原始分
+    dim_raws = {}
+    for i in range(1, 7):
+        dim_raws[i] = [r.get(f"dim{i}_raw", 4.0) for r in raw_scores]
+
     for r in raw_scores:
-        fb_pct = _percentile(fb_raws, r["fb_raw"])
+        # 六维百分位排名（各自在池内的百分位 0~1）
+        dim_pcts = {}
+        for i in range(1, 7):
+            dim_pcts[i] = _percentile(dim_raws[i], r.get(f"dim{i}_raw", 4.0))
+
+        # 等权合成基本面百分位（0~1）
+        fb_pct = sum(dim_pcts.values()) / 6
+        # 映射到 1~5
+        fb_exact = 1 + fb_pct * 4
+        r["fb"] = round(fb_exact, 1)
+        r["fb_w"] = round(fb_exact * 12, 1)
+
+        # 六维百分位展示（1~10）
+        for i in range(1, 7):
+            r[f"dim{i}"] = round(1 + dim_pcts[i] * 9, 1)  # 1~10 映射
+            r[f"dim{i}_pct"] = round(dim_pcts[i], 3)
+
+        # 技术面百分位
         hot_pct = _percentile(hot_raws, r["hot_raw"])
         ch_pct = _percentile(ch_raws, r["ch_raw"])
-        # 百分位 0~1 映射到 1~5
-        r["fb"] = round(1 + fb_pct * 4, 1)
-        r["hot"] = round(1 + hot_pct * 4, 1)
-        r["ch"] = round(1 + ch_pct * 4, 1)
+        hot_exact = 1 + hot_pct * 4
+        ch_exact = 1 + ch_pct * 4
+        r["hot"] = round(hot_exact, 1)
+        r["ch"] = round(ch_exact, 1)
+
         # 加权得分：基本面60分(×12) + 技术面40分(hot×4 + ch×4) = 100分
-        r["fb_w"] = round(r["fb"] * 12, 1)
-        r["hot_w"] = round(r["hot"] * 4, 1)
-        r["ch_w"] = round(r["ch"] * 4, 1)
-        r["total"] = round(r["fb_w"] + r["hot_w"] + r["ch_w"], 1)
-        # 建议（按100分制）
+        fb_w_exact = fb_exact * 12
+        hot_w_exact = hot_exact * 4
+        ch_w_exact = ch_exact * 4
+        r["fb_w"] = round(fb_w_exact, 1)
+        r["hot_w"] = round(hot_w_exact, 1)
+        r["ch_w"] = round(ch_w_exact, 1)
+        r["total"] = round(fb_w_exact + hot_w_exact + ch_w_exact, 1)
+
+        # 建议（按100分制，考虑信息丰富度）
         t = r["total"]
-        if t >= 70: r["advice"] = "强烈关注"
-        elif t >= 56: r["advice"] = "可关注"
-        elif t >= 44: r["advice"] = "观察"
-        else: r["advice"] = "回避"
+        ir = r.get("info_richness", "?")
+        if t >= 70:
+            if ir == "C级":
+                r["advice"] = "可关注"
+            else:
+                r["advice"] = "强烈关注"
+        elif t >= 56:
+            if ir == "C级":
+                r["advice"] = "观察"
+            else:
+                r["advice"] = "可关注"
+        elif t >= 44:
+            r["advice"] = "观察"
+        else:
+            r["advice"] = "回避"
 
     return sorted(raw_scores, key=lambda r: r["total"], reverse=True)
 
@@ -804,6 +1728,36 @@ def build_selection_data(
                 "roe": ind.get("ROE") or ind.get("JQROE") or "?",
                 "gross_margin": ind.get("GROSS_PROFIT_RATIO") or "?",
                 "debt_ratio": ind.get("DEBT_ASSET_RATIO") or "?",
+                # 六维评分（2026-07-22 重构）
+                "dim1_score": s.get("dim1", "?"),
+                "dim2_score": s.get("dim2", "?"),
+                "dim3_score": s.get("dim3", "?"),
+                "dim4_score": s.get("dim4", "?"),
+                "dim5_score": s.get("dim5", "?"),
+                "dim6_score": s.get("dim6", "?"),
+                "dim1_debug": s.get("dim1_debug", ""),
+                "dim2_debug": s.get("dim2_debug", ""),
+                "dim3_debug": s.get("dim3_debug", ""),
+                "dim4_debug": s.get("dim4_debug", ""),
+                "dim5_debug": s.get("dim5_debug", ""),
+                "dim6_debug": s.get("dim6_debug", ""),
+                "dim1_conclusion": s.get("dim1_conclusion", ""),
+                "dim2_conclusion": s.get("dim2_conclusion", ""),
+                "dim3_conclusion": s.get("dim3_conclusion", ""),
+                "dim4_conclusion": s.get("dim4_conclusion", ""),
+                "dim5_conclusion": s.get("dim5_conclusion", ""),
+                "dim6_conclusion": s.get("dim6_conclusion", ""),
+                "dim1_confidence": s.get("dim1_confidence", ""),
+                "dim2_confidence": s.get("dim2_confidence", ""),
+                "dim3_confidence": s.get("dim3_confidence", ""),
+                "dim4_confidence": s.get("dim4_confidence", ""),
+                "dim5_confidence": s.get("dim5_confidence", ""),
+                "dim6_confidence": s.get("dim6_confidence", ""),
+                # 芒格式逆向检验
+                "reverse_test": s.get("reverse_test", ""),
+                # 信息丰富度评级
+                "info_richness": s.get("info_richness", "?"),
+                "info_richness_detail": s.get("info_richness_detail", ""),
             },
             "hot": {
                 "score": s["hot"],

@@ -69,16 +69,17 @@ class Top10Item(BaseModel):
     fb: float = Field(..., ge=1, le=5, description="基本面评分 1-5")
     hot: float = Field(..., ge=1, le=5, description="热点评分 1-5")
     ch: float = Field(..., ge=1, le=5, description="缠论评分 1-5")
-    fb_w: float = Field(..., ge=0, le=50, description="基本面加权得分 0-50")
-    hot_w: float = Field(..., ge=0, le=25, description="热点加权得分(技术面子分)")
-    ch_w: float = Field(..., ge=0, le=25, description="缠论加权得分(技术面子分)")
+    fb_w: float = Field(..., ge=0, le=60, description="基本面加权得分 0-60")
+    hot_w: float = Field(..., ge=0, le=20, description="热点加权得分(技术面子分)")
+    ch_w: float = Field(..., ge=0, le=20, description="缠论加权得分(技术面子分)")
     total: float = Field(..., ge=0, le=100, description="总分 0-100")
+    strategy: str = Field(default="", description="策略匹配: 回调一买/突破三买/双策略共振")
     advice: str = Field(..., description="建议")
 
 
 class FbDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=50, description="基本面加权得分 0-50")
+    score_w: float = Field(..., ge=0, le=60, description="基本面加权得分 0-60")
     debug: str = Field(default="", description="基本面计算明细")
     pe: Any = Field(default="?", description="PE")
     revenue_yoy: Any = Field(default="?", description="营收增速")
@@ -90,13 +91,13 @@ class FbDetail(BaseModel):
 
 class HotDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=25, description="热点加权得分(技术面子分)")
+    score_w: float = Field(..., ge=0, le=20, description="热点加权得分(技术面子分)")
     desc: str = Field(..., description="热点描述")
 
 
 class ChanDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=25, description="缠论加权得分(技术面子分)")
+    score_w: float = Field(..., ge=0, le=20, description="缠论加权得分(技术面子分)")
     ma60: Any = Field(default="?", description="MA60")
     price: Any = Field(default="?", description="现价")
     macd_hist: Any = Field(default="?", description="MACD柱")
@@ -131,11 +132,16 @@ class DetailItem(BaseModel):
     stop_loss: Any
     take_profit: Any = Field(default="?", description="目标价")
     total: Any = Field(default="?", description="总分")
-    capital_flow: float = Field(default=0.0, description="主力资金净流入")
-    vol_ratio: Optional[float] = Field(default=None, description="成交量比（替代资金流数据时使用）")
+    vol_5d_ratio: Optional[float] = Field(default=None, description="近5日成交额比（后5日/前5日）")
+    pct_5d: Optional[float] = Field(default=None, description="近5日涨跌幅（%）")
     fb: FbDetail
     hot: HotDetail
     ch: ChanDetail
+    # 策略信号（2026-07-21 新增）
+    strategy: str = Field(default="", description="策略匹配")
+    strategy_detail: str = Field(default="", description="策略匹配详情")
+    strategy_stop_loss: float = Field(default=0.0, description="策略止损价")
+    strategy_exit: str = Field(default="", description="策略离场条件")
 
 
 class SummaryItem(BaseModel):
@@ -253,21 +259,21 @@ MARKET_CONFIG = {
         "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
         "passed_label": "通过过滤",
         "score_label": "三维评分 TOP10",
-        "score_header": "| 排名 | 标的 | 板块 | 基本面(50分) | 技术面(50分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:-----:|------|",
-        "detail_label": "各股详细分析",
-        "summary_label": "综合建议",
-        "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
-        "price_unit": "港元",
-    },
-    "cn": {
-        "title": "A股选股推荐",
-        "scan_label": "全市场扫描（行业板块）",
-        "scan_header": "| 板块 | 扫描只数 | 今日表现 |\n|------|:-------:|---------|",
-        "elim_label": "中观过滤（剔除明细）",
-        "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
-        "passed_label": "通过过滤",
-        "score_label": "二维评分 TOP10",
-        "score_header": "| 排名 | 标的 | 板块 | 基本面(50分) | 技术面(50分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:-----:|------|",
+"score_header": "| 排名 | 标的 | 板块 | 基本面(60分) | 技术面(40分) | 总分(100分) | 策略 | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:-----:|:---:|------|",
+	        "detail_label": "各股详细分析",
+	        "summary_label": "综合建议",
+	        "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
+	        "price_unit": "港元",
+	    },
+	    "cn": {
+	        "title": "A股选股推荐",
+	        "scan_label": "全市场扫描（行业板块）",
+	        "scan_header": "| 板块 | 扫描只数 | 今日表现 |\n|------|:-------:|---------|",
+	        "elim_label": "中观过滤（剔除明细）",
+	        "elim_header": "| 剔除标的 | 原因 |\n|---------|------|",
+	        "passed_label": "通过过滤",
+	        "score_label": "二维评分 TOP10",
+	        "score_header": "| 排名 | 标的 | 板块 | 基本面(60分) | 技术面(40分) | 总分(100分) | 策略 | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:-----:|:---:|------|",
         "detail_label": "各股详细分析",
         "summary_label": "综合建议",
         "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
@@ -281,7 +287,7 @@ MARKET_CONFIG = {
         "elim_header": "| Eliminated | Reason |\n|------------|--------|",
         "passed_label": "passed filter",
         "score_label": "3D Scoring TOP10",
-        "score_header": "| Rank | Stock | Sector | Fundamental(50pt) | Technical(50pt) | Total(100pt) | Advice |\n|:----:|------|:----:|:---------------:|:--------------:|:-----:|------|",
+        "score_header": "| Rank | Stock | Sector | Fundamental(60pt) | Technical(40pt) | Total(100pt) | Strategy | Advice |\n|:----:|------|:----:|:---------------:|:--------------:|:-----:|:------:|------|",
         "detail_label": "Detailed Analysis",
         "summary_label": "Summary",
         "summary_header": "| Stock | Advice | Entry | Stop Loss | Target |\n|:-----|:------:|:------:|:---------:|:------:|",
@@ -414,7 +420,7 @@ def _render_vetoed_section(vetoed: list[VetoedItem]) -> str:
 def _render_top10_rows(top10: list[Top10Item]) -> str:
     return "\n".join(
         f"| ⭐{t.rank} | **{t.code} {t.name}** | {t.sector} | {t.fb_w:.1f} | {t.hot_w + t.ch_w:.1f} | "
-        f"**{t.total:.1f}** | {t.advice} |"
+        f"**{t.total:.1f}** | {t.strategy or '—'} | {t.advice} |"
         for t in top10
     )
 
@@ -424,6 +430,22 @@ def _calc_pct_change(price, stop_loss):
     if isinstance(price, (int, float)) and isinstance(stop_loss, (int, float)) and price:
         return (stop_loss - price) / price * 100
     return 0.0
+
+
+def _render_strategy_tag(d: DetailItem) -> str:
+    """渲染策略标签段落（有信号时简洁展示，无信号时跳过）"""
+    if not d.strategy or d.strategy == "暂无策略信号":
+        return ""
+    lines = ["\n\n**策略匹配**: " + d.strategy + " ✅"]
+    if d.strategy_detail:
+        parts = d.strategy_detail.split("|")
+        for p in parts[:3]:
+            p = p.strip()
+            if p:
+                lines.append(f"  - {p}")
+    if d.strategy_stop_loss:
+        lines.append(f"  - 止损: {d.strategy_stop_loss} | 离场: {d.strategy_exit}")
+    return "\n".join(lines)
 
 
 def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
@@ -495,15 +517,15 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     return f"""\
 #### {d.rank}. {d.name}（{d.code}）— {d.advice} ✅ | 总分 {d.total}/100
 
-**结论**：{fb_desc}（{fb.score_w}/50） + 技术面 {hot.score_w + ch.score_w}/50 → **{timing_verdict}**
+**结论**：{fb_desc}（{fb.score_w}/60） + 技术面 {round(hot.score_w + ch.score_w, 1)}/40 → **{timing_verdict}**
 
 **论据**：
-- 📊 **基本面 {fb.score_w}/50**：{fb_summary}
+- 📊 **基本面 {fb.score_w}/60**：{fb_summary}
 - 🔥 **热点(子分)** {hot.score}/5 ({hot.score_w}分)：{hot.desc}
 - 🔧 **缠论(子分)** {ch.score}/5 ({ch.score_w}分)：{ch_summary}{ch_deep_block}
 
-**定价**：入场 {d.price} → 止损 {d.stop_loss}（{sl_pct:.1f}%）→ 目标 {d.take_profit}
-"""
+**定价**：入场 {d.price} → 止损 {d.stop_loss}（{sl_pct:.1f}%）→ 目标 {d.take_profit}{_render_strategy_tag(d)}
+	"""
 
 
 def _render_detail_rows(details: list[DetailItem], price_unit: str = "港元") -> str:
@@ -619,12 +641,10 @@ def _render_timing_block(d: DetailItem, price_unit: str = "港元") -> str:
     if chan_deep_parts:
         parts.append("缠论：" + " | ".join(chan_deep_parts))
 
-    # 资金流向 — 优先用主力资金流，无数据则用成交量替代（标注"替代"）
-    cf = d.capital_flow
-    if cf and abs(cf) > 1e4:
-        parts.append(f"资金流向：主力净 {cf/1e8:+.2f} 亿")
-    elif d.vol_ratio is not None:
-        vr = d.vol_ratio
+    # 近5日成交额变化+收盘价变化（替代资金流向）
+    vr = d.vol_5d_ratio
+    p5 = d.pct_5d
+    if vr is not None:
         if vr > 2.0:
             vd = f"放巨量({vr:.1f}x)"
         elif vr > 1.5:
@@ -633,12 +653,41 @@ def _render_timing_block(d: DetailItem, price_unit: str = "港元") -> str:
             vd = f"缩量({vr:.1f}x)"
         else:
             vd = f"量平({vr:.1f}x)"
-        parts.append(f"⚡{vd} [替代]（资金流数据缺失）")
+        vol_part = f"5日成交额{vd}"
     else:
-        parts.append("资金流向：无明显主力资金流入")
+        vol_part = "5日成交额:无数据"
+
+    if p5 is not None:
+        pct_part = f"5日涨幅{p5:+.2f}%"
+    else:
+        pct_part = "5日涨幅:无数据"
+
+    # 量价共振判断
+    if vr is not None and p5 is not None:
+        if p5 > 3 and vr > 1.2:
+            resonance = "量价齐升✅"
+        elif p5 < -3 and vr > 1.2:
+            resonance = "放量下跌⚠️"
+        else:
+            resonance = ""
+        if resonance:
+            parts.append(f"{vol_part} | {pct_part} | {resonance}")
+        else:
+            parts.append(f"{vol_part} | {pct_part}")
+    else:
+        parts.append(f"{vol_part} | {pct_part}")
 
     if parts:
         lines.append("论据：" + " | ".join(parts))
+
+    # 策略标签（仅在有信号时显示）
+    if d.strategy and d.strategy != "暂无策略信号":
+        sd = d.strategy_detail
+        if sd:
+            dir_line = sd.split("|")[0].strip() if "|" in sd else sd[:60]
+            lines.append(f"策略：{d.strategy} | {dir_line}")
+        else:
+            lines.append(f"策略：{d.strategy}")
 
     return "\n".join(lines)
 

@@ -250,14 +250,7 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     passed, vetoed = fundamental_veto(passed)
     passed_cnt = len(passed)
 
-    # Step 4: 资金流向（并行获取）
-    capital_flow = {}
-    try:
-        capital_flow = await fetch_cn_capital_flow([p["c"] for p in passed])
-    except Exception:
-        pass
-
-    # Step 5: 并行获取K线 → 共享原始分 → 百分位排名
+    # Step 4: 并行获取K线 → 共享原始分 → 百分位排名
     from scripts.quantrisk.recommender import _raw_score_one, percentile_score_all
 
     # 并行获取所有 K 线
@@ -270,10 +263,30 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
         else:
             kl_map[p["c"]] = []
 
+    # 从K线数据计算板块排名（基于近5日平均涨跌幅）
+    from collections import defaultdict
+    sector_5d_pcts = defaultdict(list)
+    for p in passed:
+        c, sec = p["c"], p["s"]
+        kl = kl_map.get(c, [])
+        if kl and len(kl) >= 6:
+            c5 = kl[-6].get("close", 0) or 0
+            c0 = kl[-1].get("close", 0) or 0
+            if c5 > 0:
+                pct_5d = (c0 - c5) / c5 * 100
+                sector_5d_pcts[sec].append(pct_5d)
+    sector_ranking = []
+    for sec, pcts in sector_5d_pcts.items():
+        avg_5d = sum(pcts) / len(pcts) if pcts else 0
+        sector_ranking.append((sec, {"avg_5d_pct": avg_5d, "stock_count": len(pcts)}))
+    sector_ranking = sorted(sector_ranking, key=lambda x: x[1]["avg_5d_pct"], reverse=True)
+    for i, item in enumerate(sector_ranking):
+        item[1]["rank"] = i
+
     # 计算原始分
     raw_scores = [
         _raw_score_one(p, kl_map.get(p["c"], []), CN_SECTOR_PE_THRESHOLD,
-                       capital_flow=capital_flow, market="cn")
+                       sector_ranking=sector_ranking, market="cn")
         for p in passed
     ]
 
@@ -284,7 +297,7 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     for s in scored:
         s["kl"] = kl_map.get(s["c"], [])
 
-    # Step 6: 格式化
+    # Step 5: 格式化
     from scripts.quantrisk.recommender import build_selection_data
-    raw_data = build_selection_data(ds, ss, elim, scored, passed_cnt, capital_flow, vetoed=vetoed)
+    raw_data = build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=sector_ranking, vetoed=vetoed)
     return raw_data

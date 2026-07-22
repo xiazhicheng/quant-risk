@@ -285,104 +285,119 @@ def hot_score(
     p: Dict[str, Any],
     kl: List[Dict],
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
-    capital_flow: Optional[Dict[str, float]] = None,
     market: str = "hk",
 ) -> int:
-    """热点评分 — 基于资金流向/成交量/动量（已细化多 tier 版本）。
+    """热点评分 — 基于近5日成交额变化+股价收盘价变化（替代资金流向）。
+
+    港股资金流向数据长期缺失，改用K线数据计算：
+      ① 板块整体表现（板块平均5日涨跌幅排名）
+      ② 近5日成交额变化（后5日/前5日成交额比）
+      ③ 近5日收盘价变化
+      ④ 量价共振（涨且量放大加分，跌且量放大减分）
+      ⑤ 板块内相对强弱（个股vs板块平均）
 
     Args:
-        market: 'hk' | 'cn' | 'us'
+        p: 股票信息
+        kl: 日K线数据
+        sector_ranking: [(sector_name, {"avg_5d_pct": ..., "stock_count": ..., "rank": ...})]
+        market: 市场标识
     """
     s, sec, c = 2.0, p.get("s", "其他"), p.get("c", "")
-    flow = capital_flow.get(c, 0) if capital_flow else 0
-    flow_all_zero = all(abs(v) < 1e4 for k, v in (capital_flow or {}).items()
-                        if not k.endswith("_20d")) if capital_flow else True
 
-    # ① 板块资金排名
+    # ① 板块整体表现 — 用板块平均5日涨跌幅排名代替资金流向排名
     if sector_ranking:
         for name, data in sector_ranking:
             if name == sec:
-                total = data.get("total_flow", 0)
-                rank = data.get("rank", 0)
-                if rank == 0 and total > 0:
+                rank = data.get("rank", 999)
+                total_sectors = max(len(sector_ranking), 1)
+                # 前1/3 加分，中间不动，后1/3 减分
+                if rank == 0:
                     s += 1.5
-                elif rank < 2 and total > 0:
+                elif rank == 1:
                     s += 1.0
-                elif rank < 3 and total > 0:
+                elif rank == 2:
                     s += 0.5
-                elif rank < 5:
-                    s += 0.2 if total > 0 else -0.2
-                else:
+                elif rank >= total_sectors * 0.7:
                     s -= 0.5
                 break
 
-    # ② 个股资金流向
-    if abs(flow) > 1e4:
-        if flow > 1e9: s += 1.5
-        elif flow > 5e8: s += 1.0
-        elif flow > 2e8: s += 0.5
-        elif flow > 1e8: s += 0.3
-        elif flow > 5e7: s += 0.2
-        elif flow > 1e7: s += 0.1
-        elif flow < -5e8: s -= 1.5
-        elif flow < -2e8: s -= 1.0
-        elif flow < -5e7: s -= 0.5
-        elif flow < -1e7: s -= 0.25
+    # ② 近5日成交额变化
+    vol_5d_ratio = 1.0
+    if kl and len(kl) >= 10:
+        recent_5_vol = sum(k.get("volume", 0) or 0 for k in kl[-5:])
+        prev_5_vol = sum(k.get("volume", 0) or 0 for k in kl[-10:-5])
+        if prev_5_vol > 0 and recent_5_vol > 0:
+            vol_5d_ratio = recent_5_vol / prev_5_vol
+            if vol_5d_ratio > 2.0:
+                s += 1.5
+            elif vol_5d_ratio > 1.5:
+                s += 1.0
+            elif vol_5d_ratio > 1.2:
+                s += 0.5
+            elif vol_5d_ratio < 0.4:
+                s -= 1.0
+            elif vol_5d_ratio < 0.6:
+                s -= 0.5
+            elif vol_5d_ratio < 0.8:
+                s -= 0.2
 
-    # ③ 板块内龙头
-    if sector_ranking:
+    # ③ 近5日收盘价变化
+    pct_5d = 0.0
+    if kl and len(kl) >= 6:
+        close_5d_ago = kl[-6].get("close", 0) or 0
+        close_now = kl[-1].get("close", 0) or 0
+        if close_5d_ago > 0:
+            pct_5d = (close_now - close_5d_ago) / close_5d_ago * 100
+            if pct_5d > 15:
+                s += 1.5
+            elif pct_5d > 10:
+                s += 1.0
+            elif pct_5d > 5:
+                s += 0.5
+            elif pct_5d > 0:
+                s += 0.2
+            elif pct_5d < -15:
+                s -= 1.5
+            elif pct_5d < -10:
+                s -= 1.0
+            elif pct_5d < -5:
+                s -= 0.5
+            elif pct_5d < -2:
+                s -= 0.2
+
+    # ④ 量价共振
+    if kl and len(kl) >= 10:
+        recent_5_vol = sum(k.get("volume", 0) or 0 for k in kl[-5:])
+        prev_5_vol = sum(k.get("volume", 0) or 0 for k in kl[-10:-5])
+        close_5d_ago = kl[-6].get("close", 0) or 0
+        close_now = kl[-1].get("close", 0) or 0
+        if prev_5_vol > 0 and close_5d_ago > 0:
+            v_ratio = recent_5_vol / prev_5_vol
+            p_ratio = (close_now - close_5d_ago) / close_5d_ago * 100
+            if p_ratio > 3 and v_ratio > 1.2:
+                s += 0.5  # 量价齐升
+            elif p_ratio < -3 and v_ratio > 1.2:
+                s -= 0.5  # 放量下跌
+
+    # ⑤ 板块内相对强弱（个股vs板块平均）
+    if sector_ranking and kl and len(kl) >= 6:
         for name, data in sector_ranking:
             if name == sec:
-                ranked = sorted(data.get("stocks", []), key=lambda x: x.get("flow", 0), reverse=True)
-                for rank, st in enumerate(ranked):
-                    if st.get("code") == c:
-                        if rank == 0:
-                            s += 0.8 if flow > 0 else -0.3
-                        elif rank == 1:
-                            s += 0.4 if flow > 0 else -0.2
-                        elif rank < 3:
-                            s += 0.2 if flow > 0 else -0.1
-                        break
+                sector_avg_5d = data.get("avg_5d_pct", 0)
+                close_5d_ago = kl[-6].get("close", 0) or 0
+                close_now = kl[-1].get("close", 0) or 0
+                if close_5d_ago > 0:
+                    stock_5d = (close_now - close_5d_ago) / close_5d_ago * 100
+                    relative = stock_5d - sector_avg_5d
+                    if relative > 5:
+                        s += 0.5
+                    elif relative > 2:
+                        s += 0.2
+                    elif relative < -5:
+                        s -= 0.5
+                    elif relative < -2:
+                        s -= 0.2
                 break
-
-    # ④ 成交量替代（无资金流向数据时使用）
-    if flow_all_zero and kl and len(kl) >= 21:
-        vols = [k.get("volume", 0) for k in kl[-21:]]
-        if vols and vols[-1] > 0:
-            avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
-            vol_ratio = vols[-1] / max(avg_vol, 1)
-            if vol_ratio > 3.0: s += 1.0
-            elif vol_ratio > 2.0: s += 0.6
-            elif vol_ratio > 1.5: s += 0.3
-            elif vol_ratio < 0.3: s -= 1.0
-            elif vol_ratio < 0.5: s -= 0.5
-            pc = (kl[-1]["close"] - kl[-21]["close"]) / kl[-21]["close"] * 100
-            if pc > 10 and vol_ratio > 1.2: s += 0.3
-            elif pc < -5 and vol_ratio > 1.2: s -= 0.3
-
-    # ⑤ 20日动量
-    if kl and len(kl) >= 20:
-        pc = (kl[-1]["close"] - kl[-20]["close"]) / kl[-20]["close"] * 100
-        if pc > 25: s += 1.0
-        elif pc > 15: s += 0.5
-        elif pc > 8: s += 0.25
-        elif pc < -25: s -= 1.5
-        elif pc < -15: s -= 1.0
-        elif pc < -10: s -= 0.5
-        elif pc < -5: s -= 0.25
-
-    # ⑥ 20日累计资金流向（20日正流入天数占比）
-    if capital_flow and not flow_all_zero:
-        flow_20d = capital_flow.get(f"{c}_20d", {})
-        if flow_20d:
-            cum = flow_20d.get("cumulative", 0)
-            pos_days = flow_20d.get("positive_days", 0)
-            total_days = flow_20d.get("total_days", 20)
-            pos_ratio = pos_days / max(total_days, 1)
-            if pos_ratio > 0.7 and cum > 0: s += 1.0
-            elif pos_ratio > 0.5 and cum > 0: s += 0.5
-            elif pos_ratio < 0.3 and cum < 0: s -= 0.5
-            elif pos_ratio < 0.2 and cum < 0: s -= 1.0
 
     return s  # 未clamp，百分位排名会处理归一化
 
@@ -569,7 +584,6 @@ def _raw_score_one(
     kl: List[Dict],
     industry_thresholds: Dict[str, int],
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
-    capital_flow: Optional[Dict[str, float]] = None,
     market: str = "hk",
 ) -> Dict[str, Any]:
     """计算单只股票的原始分（fb/hot/ch，未做百分位排名）。"""
@@ -577,7 +591,7 @@ def _raw_score_one(
     pe_limit = industry_thresholds.get(p.get("s", "其他"), 60)
 
     fb, fb_debug = fb_score(p, p.get("s", "其他"), pe_limit)
-    hot = hot_score(p, kl, sector_ranking, capital_flow, market)
+    hot = hot_score(p, kl, sector_ranking, market)
     ch, cd = chan_score(p, kl)
 
     return {
@@ -615,10 +629,10 @@ def percentile_score_all(
         r["fb"] = round(1 + fb_pct * 4, 1)
         r["hot"] = round(1 + hot_pct * 4, 1)
         r["ch"] = round(1 + ch_pct * 4, 1)
-        # 加权得分：基本面50分(×10) + 技术面50分(hot×5 + ch×5) = 100分
-        r["fb_w"] = round(r["fb"] * 10, 1)
-        r["hot_w"] = round(r["hot"] * 5, 1)
-        r["ch_w"] = round(r["ch"] * 5, 1)
+        # 加权得分：基本面60分(×12) + 技术面40分(hot×4 + ch×4) = 100分
+        r["fb_w"] = round(r["fb"] * 12, 1)
+        r["hot_w"] = round(r["hot"] * 4, 1)
+        r["ch_w"] = round(r["ch"] * 4, 1)
         r["total"] = round(r["fb_w"] + r["hot_w"] + r["ch_w"], 1)
         # 建议（按100分制）
         t = r["total"]
@@ -634,7 +648,6 @@ def score_one(
     p: Dict[str, Any],
     kl: List[Dict],
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
-    capital_flow: Optional[Dict[str, float]] = None,
     industry_thresholds: Dict[str, int] = None,
     market: str = "hk",
 ) -> Dict[str, Any]:
@@ -644,11 +657,11 @@ def score_one(
 
     fb, _ = fb_score(p, p.get("s", "其他"), pe_limit)
     fb = _clamp(fb)
-    hot = _clamp(hot_score(p, kl, sector_ranking, capital_flow, market))
+    hot = _clamp(hot_score(p, kl, sector_ranking, market))
     ch, cd = _clamp(chan_score(p, kl)[0]), chan_score(p, kl)[1]
-    fb_w = round(fb * 10, 1)
-    hot_w = round(hot * 5, 1)
-    ch_w = round(ch * 5, 1)
+    fb_w = round(fb * 12, 1)
+    hot_w = round(hot * 4, 1)
+    ch_w = round(ch * 4, 1)
     total = round(fb_w + hot_w + ch_w, 1)
 
     return {
@@ -671,7 +684,6 @@ def build_selection_data(
     elim: List[Tuple[str, str, str]],
     scored: List[Dict[str, Any]],
     passed_cnt: int,
-    capital_flow: Optional[Dict[str, float]] = None,
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
     vetoed: Optional[List[Tuple[str, str, str]]] = None,
 ) -> dict:
@@ -683,8 +695,6 @@ def build_selection_data(
     from scripts.quantrisk.indicators import calc_stop_loss_take_profit
 
     top10 = scored[:10]
-    flow_all_zero = all(abs(v) < 1e4 for k, v in (capital_flow or {}).items()
-                        if not k.endswith("_20d")) if capital_flow else True
 
     # sectors
     sectors_data = []
@@ -713,9 +723,9 @@ def build_selection_data(
             "fb": s["fb"],
             "hot": s["hot"],
             "ch": s["ch"],
-            "fb_w": s.get("fb_w", round(s["fb"] * 10, 1)),
-            "hot_w": s.get("hot_w", round(s["hot"] * 5, 1)),
-            "ch_w": s.get("ch_w", round(s["ch"] * 5, 1)),
+            "fb_w": s.get("fb_w", round(s["fb"] * 12, 1)),
+            "hot_w": s.get("hot_w", round(s["hot"] * 4, 1)),
+            "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
             "total": t,
             "advice": advice,
         })
@@ -739,24 +749,33 @@ def build_selection_data(
                   "可适当关注，等待入场时机" if t >= 56 else
                   "纳入观察清单，等待催化剂" if t >= 44 else "暂时回避，等待改善")
 
-        # 热点描述
-        if flow_all_zero:
-            kl_s = s.get("kl", [])
-            vr = 1.0
-            if kl_s and len(kl_s) >= 21:
-                vols = [k.get("volume", 0) for k in kl_s[-21:]]
-                if vols and vols[-1] > 0:
-                    avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
-                    vr = vols[-1] / max(avg_vol, 1)
-            if vr > 2.0: vol_desc = f"放巨量({vr:.1f}x)"
-            elif vr > 1.5: vol_desc = f"放量({vr:.1f}x)"
-            elif vr < 0.5: vol_desc = f"缩量({vr:.1f}x)"
-            else: vol_desc = f"量平({vr:.1f}x)"
-            hot_desc = f"{s['s']}板块 {vol_desc} {'+' if chg >= 0 else ''}{chg:.2f}%"
+        # 热点描述 — 基于近5日成交额变化+收盘价变化
+        kl_s = s.get("kl", [])
+        vol_5d_ratio = 1.0
+        pct_5d = 0.0
+        if kl_s and len(kl_s) >= 10:
+            recent_5_vol = sum(k.get("volume", 0) or 0 for k in kl_s[-5:])
+            prev_5_vol = sum(k.get("volume", 0) or 0 for k in kl_s[-10:-5])
+            if prev_5_vol > 0 and recent_5_vol > 0:
+                vol_5d_ratio = recent_5_vol / prev_5_vol
+        if kl_s and len(kl_s) >= 6:
+            c5 = kl_s[-6].get("close", 0) or 0
+            c0 = kl_s[-1].get("close", 0) or 0
+            if c5 > 0:
+                pct_5d = (c0 - c5) / c5 * 100
+
+        # 量比描述
+        if vol_5d_ratio > 2.0:
+            vol_desc = f"放巨量({vol_5d_ratio:.1f}x)"
+        elif vol_5d_ratio > 1.5:
+            vol_desc = f"放量({vol_5d_ratio:.1f}x)"
+        elif vol_5d_ratio < 0.5:
+            vol_desc = f"缩量({vol_5d_ratio:.1f}x)"
         else:
-            flow = capital_flow.get(s["c"], 0)
-            flow_str = f"主力净{flow/1e8:+.2f}亿" if abs(flow) > 1e4 else "无明显资金流入"
-            hot_desc = f"{s['s']}板块 {flow_str}"
+            vol_desc = f"量平({vol_5d_ratio:.1f}x)"
+
+        pct_desc = f"{'%2B' if pct_5d >= 0 else ''}{pct_5d:.2f}%"
+        hot_desc = f"{s['s']}板块 5日量{vol_desc} | 5日涨幅{pct_desc}"
 
         # 缠论信号
         v_str = str(d.get("v", ""))
@@ -777,7 +796,7 @@ def build_selection_data(
             "total": s["total"],
             "fb": {
                 "score": s["fb"],
-                "score_w": s.get("fb_w", round(s["fb"] * 10, 1)),
+                "score_w": s.get("fb_w", round(s["fb"] * 12, 1)),
                 "debug": s.get("fb_debug", ""),
                 "pe": s.get("pe", "?"),
                 "revenue_yoy": s.get("rev", "?"),
@@ -788,12 +807,12 @@ def build_selection_data(
             },
             "hot": {
                 "score": s["hot"],
-                "score_w": s.get("hot_w", round(s["hot"] * 5, 1)),
+                "score_w": s.get("hot_w", round(s["hot"] * 4, 1)),
                 "desc": hot_desc,
             },
             "ch": {
                 "score": s["ch"],
-                "score_w": s.get("ch_w", round(s["ch"] * 5, 1)),
+                "score_w": s.get("ch_w", round(s["ch"] * 4, 1)),
                 "ma60": ma60,
                 "price": s.get("p"),
                 "macd_hist": macd_hist,
@@ -817,7 +836,8 @@ def build_selection_data(
                 "divergence_detail": d.get("divergence_detail", ""),
                 "chan_verdict": d.get("chan_verdict", ""),
             },
-            "capital_flow": capital_flow.get(s["c"], 0) if capital_flow else 0.0,
+            "vol_5d_ratio": round(vol_5d_ratio, 2),
+            "pct_5d": round(pct_5d, 2),
         })
 
     # summary

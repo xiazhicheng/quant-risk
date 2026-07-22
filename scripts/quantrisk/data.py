@@ -538,6 +538,151 @@ async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
     return kl if kl else []
 
 
+# ── 港股分钟级K线（60min/30min，三级 fallback 链） ──────────
+
+# 东财 push2 周期映射
+_EASTMONEY_KLTL_MAP = {"60m": "60", "30m": "30", "15m": "15", "5m": "5", "1m": "1"}
+
+async def hk_kline_eastmoney_async(code: str, interval: str = "60m", limit: int = 500) -> list[dict]:
+    """港股分钟K线（东财 push2）。
+    code: 5位数字，interval: 60m/30m/15m，limit: 最大返回条数。
+    secid 前缀 116=港股，klt=60 表示60分钟，fqt=1 前复权。"""
+    klt = _EASTMONEY_KLTL_MAP.get(interval, "60")
+    try:
+        d = await _get_json(
+            "https://push2.eastmoney.com/api/qt/stock/kline/get",
+            params={
+                "secid": f"116.{code}",
+                "fields1": "f1,f2,f3",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57",
+                "klt": klt,
+                "fqt": "1",
+                "end": "20500101",
+                "lmt": str(limit),
+            },
+            headers={"Referer": "https://quote.eastmoney.com/"},
+        )
+    except Exception:
+        return []
+    klines = (d.get("data") or {}).get("klines") or []
+    if not klines:
+        return []
+    result = []
+    for item in klines:
+        parts = item.split(",")
+        if len(parts) < 7:
+            continue
+        result.append({
+            "date": parts[0],
+            "open": float(parts[1]),
+            "close": float(parts[2]),
+            "high": float(parts[3]),
+            "low": float(parts[4]),
+            "volume": int(float(parts[5])),
+        })
+    return result
+
+
+async def hk_kline_sina_minute_async(code: str, minute_type: int = 60) -> list[dict]:
+    """港股分钟K线（新浪财经）。
+    code: 5位数字，minute_type: 60/30/15 对应分钟数。
+    API 返回最近约 100 根。"""
+    try:
+        s = await get_async_session()
+        url = (f"https://stock.finance.sina.com.cn/hkstock/api/"
+               f"jsonp.php/var%20_HK_MinKService_xxx/"
+               f"jsonp/HK_MinKService.getMinK")
+        params = {"symbol": f"hk{code}", "type": str(minute_type)}
+        async with s.get(url, params=params,
+                         headers={"Referer": "https://stock.finance.sina.com.cn/"}) as r:
+            text = await r.text()
+    except Exception:
+        return []
+    import re
+    m = re.search(r'\((\[.+\])\)', text)
+    if not m:
+        return []
+    try:
+        items = json.loads(m.group(1))
+    except Exception:
+        return []
+    return [{
+        "date": i.get("d", ""),
+        "open": float(i.get("o", 0)),
+        "high": float(i.get("h", 0)),
+        "low": float(i.get("l", 0)),
+        "close": float(i.get("c", 0)),
+        "volume": int(i.get("v", 0)),
+    } for i in items if i.get("c") is not None]
+
+
+async def hk_kline_minute_async(code: str, interval: str = "60m", min_bars: int = 30) -> list[dict]:
+    """港股分钟K线统一入口（三级 fallback 链）。
+    优先级: Yahoo → 东财 push2 → 新浪财经。
+    确保数据必须获取到，不容缺失。
+
+    code: 5位数字，interval: 60m/30m/15m
+    min_bars: 最少需要的K线根数（不足30根认为失败）
+
+    Returns: [{"date", "open", "high", "low", "close", "volume"}, ...]
+    """
+    _interval_to_yahoo_range = {"60m": "2mo", "30m": "1mo", "15m": "15d"}
+    _interval_to_sina_type = {"60m": 60, "30m": 30, "15m": 15}
+
+    # ① Yahoo
+    if interval in _interval_to_yahoo_range:
+        try:
+            kl = await stock_kline_yahoo_async(
+                f"{int(code)}.HK",
+                interval=interval,
+                range_=_interval_to_yahoo_range[interval],
+            )
+            if kl and len(kl) >= min_bars:
+                return kl
+        except Exception:
+            pass
+
+    # ② 东财 push2
+    try:
+        kl = await hk_kline_eastmoney_async(code, interval=interval)
+        if kl and len(kl) >= min_bars:
+            return kl
+    except Exception:
+        pass
+
+    # ③ 新浪财经
+    if interval in _interval_to_sina_type:
+        try:
+            kl = await hk_kline_sina_minute_async(code, minute_type=_interval_to_sina_type[interval])
+            if kl and len(kl) >= min_bars:
+                return kl
+        except Exception:
+            pass
+
+    # 降级：返回能拿到的任何数据（哪怕不足 min_bars）
+    # 再次尝试所有源，不要求 min_bars
+    try:
+        kl = await stock_kline_yahoo_async(f"{int(code)}.HK", interval=interval, range_=_interval_to_yahoo_range.get(interval, "1mo"))
+        if kl:
+            return kl
+    except Exception:
+        pass
+    try:
+        kl = await hk_kline_eastmoney_async(code, interval=interval)
+        if kl:
+            return kl
+    except Exception:
+        pass
+    try:
+        kl = await hk_kline_sina_minute_async(code, minute_type=_interval_to_sina_type.get(interval, 60))
+        if kl:
+            return kl
+    except Exception:
+        pass
+
+    return []
+
+
 # ═════════════════════════════════════════════════
 # TickFlow K线（免费免注册，A股+港股+美股，前复权）
 # ═════════════════════════════════════════════════

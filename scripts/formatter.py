@@ -362,12 +362,12 @@ TEMPLATE = """\
 
 ## 推荐结论
 
-### TOP10 推荐标的（六维评分）
+### TOP10 推荐标的（基本面分析）
 
 {score_header}
 {top10_rows}
 
-### 各股分析（六维评分）
+### 各股分析（基本面分析）
 
 {detail_rows}
 
@@ -380,7 +380,7 @@ TEMPLATE = """\
 {summary_header}
 {summary_rows}
 
-### 择时判断（六维评分 + 技术面择时）
+### 择时判断（基本面分析 + 技术面择时）
 
 {timing_rows}
 
@@ -469,7 +469,7 @@ def _render_funnel_section(funnel: dict) -> str:
         f"| 第一层 | 全市场扫描 | {scan_count} | — |\n"
         f"| 第二层 | 中观过滤（市值≥50亿，股价≥1元） | {after_filter} | -{elim_count} |\n"
         f"| 第三层 | 基本面一票否决 | {after_veto} | -{veto_count} |\n"
-        f"| 第四层 | 四大师评分排名 → 终选 | 3-10 | — |\n"
+        f"| 第四层 | 六维评分排名 → 终选 | 3-10 | — |\n"
         "\n"
     )
 
@@ -566,123 +566,6 @@ def _calc_pct_change(price, stop_loss):
     if isinstance(price, (int, float)) and isinstance(stop_loss, (int, float)) and price:
         return (stop_loss - price) / price * 100
     return 0.0
-
-
-def _render_conflict_analysis(
-    dyp_v: str, buffett_v: str, munger_v: str, lilu_v: str,
-    dyp_s: float, buffett_s: float, munger_s: float, lilu_s: float,
-) -> Tuple[str, str]:
-    """基于四大师独立裁决生成对抗分析 + 投票制合成结论。
-
-    Args:
-        dyp_v/buffett_v/munger_v/lilu_v: 裁决文本（✅ 通过/⚠️ 有条件通过/❓ 灰色地带/❌ 不通过）
-        dyp_s/buffett_s/munger_s/lilu_s: 评分（1-5）
-
-    Returns:
-        (conflict_text, synthesis_text)
-    """
-    # 映射裁决为计分
-    verdict_map = {
-        "✅ 通过": 2,
-        "⚠️ 有条件通过": 1,
-        "❓ 灰色地带": 0,
-        "❌ 不通过": -1,
-    }
-    names = [
-        ("🏢 段永平", dyp_v, dyp_s, "商业模式"),
-        ("🛡️ 巴菲特", buffett_v, buffett_s, "护城河/估值"),
-        ("⚠️ 芒格", munger_v, munger_s, "逆向风险"),
-        ("🔭 李录", lilu_v, lilu_s, "长期确定性"),
-    ]
-
-    # 统计投票
-    votes = []
-    for name, verdict, score, _ in names:
-        v = verdict_map.get(verdict, 0)
-        votes.append((name, verdict, v))
-
-    passed = sum(1 for _, _, v in votes if v >= 2)
-    cond_passed = sum(1 for _, _, v in votes if v == 1)
-    grey = sum(1 for _, _, v in votes if v == 0)
-    failed = sum(1 for _, _, v in votes if v < 0)
-
-    # 生成对抗文本
-    conflict_lines = []
-    dyp_name = names[0][0]
-    buffett_name = names[1][0]
-    munger_name = names[2][0]
-    lilu_name = names[3][0]
-
-    # 找出通过和不通过的
-    passed_names = [n for n, _, v in votes if v >= 2]
-    cond_names = [n for n, _, v in votes if v == 1]
-    failed_names = [n for n, _, v in votes if v < 0]
-    grey_names = [n for n, _, v in votes if v == 0]
-
-    if passed_names and failed_names:
-        conflict_lines.append(
-            f"{'、'.join(passed_names)}通过，但{'、'.join(failed_names)}不通过——存在根本性分歧"
-        )
-    if passed_names and cond_names:
-        conflict_lines.append(
-            f"{'、'.join(passed_names)}通过，{'、'.join(cond_names)}有条件通过"
-        )
-    if passed_names and not failed_names and not cond_names:
-        conflict_lines.append(f"{'、'.join(passed_names)}一致通过，无分歧")
-    if cond_names and not passed_names and not failed_names:
-        conflict_lines.append(f"全部为有条件通过，需逐个确认条件是否满足")
-
-    # 特定大师对抗模式
-    dyp_vote = verdict_map.get(dyp_v, 0)
-    buffett_vote = verdict_map.get(buffett_v, 0)
-    munger_vote = verdict_map.get(munger_v, 0)
-    lilu_vote = verdict_map.get(lilu_v, 0)
-
-    if dyp_vote >= 2 and buffett_vote < 0:
-        conflict_lines.append("段永平看好商业模式，但巴菲特认为估值偏贵——好生意≠好价格")
-    elif dyp_vote < 0 and buffett_vote >= 2:
-        conflict_lines.append("巴菲特认为估值便宜，但段永平对生意质量有保留——便宜≠好生意")
-
-    if dyp_vote >= 2 and munger_vote <= 0:
-        conflict_lines.append("段永平认可生意质量，但芒格认为风险不可忽视——增长vs风险的对抗")
-    elif dyp_vote <= 0 and munger_vote >= 2:
-        conflict_lines.append("芒格认为风险可控，但段永平对商业模式存疑")
-
-    if buffett_vote >= 2 and munger_vote <= 0:
-        conflict_lines.append("巴菲特认为估值有安全边际，但芒格提示风险")
-    elif buffett_vote < 0 and munger_vote >= 2:
-        conflict_lines.append("芒格判定风险低，但巴菲特认为估值缺乏安全边际")
-
-    if lilu_vote >= 2 and buffett_vote < 0:
-        conflict_lines.append("李录看好长期确定性，但巴菲特认为当前价格不具吸引力——长期vs短期的视角冲突")
-
-    conflict_text = "；".join(conflict_lines) if conflict_lines else "四大师视角存在一定分歧，需结合自身风险偏好判断"
-
-    # 生成合成结论
-    synthesis = _render_synthesis(passed, cond_passed, grey, failed)
-
-    return conflict_text, synthesis
-
-
-def _render_synthesis(passed: int, cond_passed: int, grey: int, failed: int) -> str:
-    """基于投票结果生成合成结论"""
-    # 加权计分：通过=2, 有条件通过=1, 灰色地带=0, 不通过=-1
-    total_score = passed * 2 + cond_passed * 1 + grey * 0 + failed * (-1)
-    max_score = 8  # 4×2
-
-    if total_score >= 6:
-        return f"✅ 强烈推荐（{passed}/4大师通过，大师共识度高）"
-    elif total_score >= 4:
-        return f"✅ 推荐（{passed}/4大师通过，偏向买入）"
-    elif total_score >= 2:
-        extra = ""
-        if cond_passed > 0:
-            extra = f"，{cond_passed}位有条件通过需确认"
-        return f"⚠️ 灰色地带（{passed}/4大师通过{extra}，分歧明显需谨慎）"
-    elif total_score >= 0:
-        return f"❌ 不推荐（{passed}/4大师通过，多数派反对）"
-    else:
-        return f"❌ 回避（{failed}/4大师不通过，无人认可）"
 
 
 def _render_mirror_test(d: DetailItem, price_unit: str = "港元") -> str:
@@ -851,6 +734,15 @@ def _render_checklist(fb, mirror_test_text: str, d, summary_only: bool = False) 
         f"**{verdict}**"
     )
 
+def _safe_float(v):
+    """安全地将值转为 float，失败返回 None"""
+    if v is None or v == "?" or v == "":
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
 
 def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     pct = d.pct
@@ -863,30 +755,26 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
 
     sl_pct = _calc_pct_change(d.price, d.stop_loss)
 
-    # ── 六维评分表 ──
-    dim_labels = [
-        ("生意质量", "段永平"),
-        ("护城河", "巴菲特"),
-        ("管理层", "段永平+巴菲特"),
-        ("最大风险", "芒格"),
-        ("文明趋势", "李录"),
-        ("估值", "巴菲特+段永平"),
+    # ── 六维评分表（2026-07-22 六维框架） ──
+    dim_configs = [
+        ("生意质量（段永平）", 1),
+        ("护城河（巴菲特）", 2),
+        ("管理层（段永平+巴菲特）", 3),
+        ("最大风险（芒格）", 4),
+        ("文明趋势（李录）", 5),
+        ("估值（巴菲特+段永平）", 6),
     ]
+
     dim_rows = []
-    for i, (label, master) in enumerate(dim_labels, 1):
-        score = getattr(fb, f"dim{i}_score", "?")
-        conclusion = getattr(fb, f"dim{i}_conclusion", "")
-        confidence = getattr(fb, f"dim{i}_confidence", "")
-        debug = getattr(fb, f"dim{i}_debug", "")
-        if score and score != "?":
-            dim_rows.append(
-                f"| {label}（{master}） | {conclusion} | {confidence} |"
-            )
+    dim_header = "| 维度 | 评分 | 信心度 |\n|:----|:---:|:------:|"
+    for label, idx in dim_configs:
+        score = getattr(fb, f"dim{idx}_score", "?")
+        confidence = getattr(fb, f"dim{idx}_confidence", "")
+        if score != "?":
+            dim_rows.append(f"| {label} | {score}/10 | {confidence} |")
         else:
-            dim_rows.append(
-                f"| {label}（{master}） | 数据不足 | — |"
-            )
-    dim_table = "\n".join(dim_rows) if dim_rows else "数据不足"
+            dim_rows.append(f"| {label} | 数据不足 | — |")
+    dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"
 
     # ── 关键指标摘要 ──
     fb_parts = []
@@ -978,13 +866,11 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
         disclaimer_text = f"\n⚠️ **留白声明**：该标的信息丰富度评级为C级（数据严重不足），置信度较低。\n"
 
     return f"""\
-#### {d.rank}. {d.name}（{d.code}）— {d.advice} ✅ | 总分 {d.total}/100 | 📊六维评分 {fb.score_w}/60
+#### {d.rank}. {d.name}（{d.code}）— {d.advice} ✅ | 总分 {d.total}/100 | 📊基本面分析 {fb.score_w}/60
 {ir_desc} 关键指标：{fb_summary}
 
-**📊 六维评分**
+**📊 基本面分析**
 
-| 维度 | 结论 | 信心度 |
-|:----|:----|:------:|
 {dim_table}
 {disclaimer_text}
 **🔧 技术面 {round(hot.score_w + ch.score_w, 1)}/40** → {timing_verdict}
@@ -1085,7 +971,7 @@ def _render_timing_block(d: DetailItem, price_unit: str = "港元") -> str:
         if score and score != "?":
             dim_parts.append(f"{label}{score}分")
     if dim_parts:
-        lines.append(f"📊 六维评分：{' | '.join(dim_parts)}（{fb.score_w}/60分）")
+        lines.append(f"📊 基本面分析：{' | '.join(dim_parts)}（{fb.score_w}/60分）")
 
     # 技术指标（论据在后）
     parts = []
@@ -1231,7 +1117,7 @@ def _render_portfolio_timing(portfolio: list[PortfolioTimingItem], price_unit: s
         if h.dividend_yield and h.dividend_yield != "?":
             fb_parts.append(f"股息率={h.dividend_yield}%")
         fb_summary = " / ".join(fb_parts) if fb_parts else "数据不足"
-        lines.append(f"🏢 四大师视角：{fb_summary}")
+        lines.append(f"📊 六维视角：{fb_summary}")
 
         # ── 缠论论据 ──
         chan_parts = []

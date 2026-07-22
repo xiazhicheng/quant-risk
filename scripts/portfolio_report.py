@@ -158,7 +158,7 @@ def _dim_conf(s):
     elif s >= 3.0: return "★★☆☆☆"
     else: return "★☆☆☆☆"
 
-def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
+def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy, pb=0, sector="未知"):
     """返回六维评分（每维1-10，总分60）"""
     dims = []
 
@@ -180,7 +180,20 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
     s1 = _clamp10(s1)
     t1 = _dim_tag(s1, "极佳", "优秀", "一般", "较差")
     c1 = _dim_conf(s1)
-    dims.append(("生意质量（段永平）", s1, f"{t1}：毛利率{gm}%，ROE{roe}%" if gm and roe else t1, c1, "，".join(log1)))
+    # 生意质量追问回答
+    dyp_parts = []
+    if gm and gm > 60: dyp_parts.append(f"毛利率{gm}%远超60%，有极强的定价权，这是好生意的标志")
+    elif gm and gm > 40: dyp_parts.append(f"毛利率{gm}%高于40%，有一定定价权")
+    elif gm and gm > 20: dyp_parts.append(f"毛利率{gm}%在20%以上，行业平均水平")
+    elif gm and gm > 0: dyp_parts.append(f"毛利率仅{gm}%，定价权存疑")
+    if roe and roe > 30: dyp_parts.append(f"ROE{roe}%超过30%，资本回报效率极高，这是对的生意")
+    elif roe and roe > 15: dyp_parts.append(f"ROE{roe}%在15%以上，资本回报效率良好")
+    elif roe and roe < 0: dyp_parts.append("ROE为负，资本在毁灭价值")
+    if np_margin and np_margin > 30: dyp_parts.append(f"净利率{np_margin}%超过30%，盈利质量优秀")
+    elif np_margin and np_margin > 20: dyp_parts.append(f"净利率{np_margin}%超过20%，盈利质量良好")
+    elif np_margin and np_margin < 0: dyp_parts.append("净利率为负，公司不赚钱")
+    conclusion1 = "，".join(dyp_parts) if dyp_parts else t1
+    dims.append(("生意质量（段永平）", s1, conclusion1, c1, "，".join(log1)))
 
     # 2. 护城河（巴菲特）
     s2 = 4.0; log2 = [f"基础{s2:.0f}"]
@@ -200,7 +213,19 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
     s2 = _clamp10(s2)
     t2 = _dim_tag(s2, "宽阔", "较宽", "一般", "狭窄")
     c2 = _dim_conf(s2)
-    dims.append(("护城河（巴菲特）", s2, f"{t2}：ROE{roe}%，毛利率{gm}%" if roe and gm else t2, c2, "，".join(log2)))
+    # 护城河追问回答
+    moat_parts = []
+    if roe and roe > 20: moat_parts.append(f"ROE{roe}%超过20%，护城河深厚")
+    elif roe and roe > 15: moat_parts.append(f"ROE{roe}%在15%以上，护城河一般")
+    elif roe and roe < 0: moat_parts.append("ROE为负，护城河在变窄")
+    if gm and gm > 60: moat_parts.append(f"毛利率{gm}%远超60%，有极强的定价权护城河")
+    elif gm and gm > 40: moat_parts.append(f"毛利率{gm}%高于40%，有一定定价权")
+    elif gm and gm < 10: moat_parts.append(f"毛利率仅{gm}%，定价权不足")
+    if dy and dy > 3: moat_parts.append(f"股息率{dy}%，股东回报稳定")
+    if dr and dr < 30: moat_parts.append(f"负债率{dr}%低，财务稳健")
+    elif dr and dr > 70: moat_parts.append(f"负债率{dr}%过高，财务风险大")
+    conclusion2 = "，".join(moat_parts) if moat_parts else t2
+    dims.append(("护城河（巴菲特）", s2, conclusion2, c2, "，".join(log2)))
 
     # 3. 管理层（段永平+巴菲特）
     s3 = 4.0; log3 = [f"基础{s3:.0f}"]
@@ -219,7 +244,18 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
     s3 = _clamp10(s3)
     t3 = _dim_tag(s3, "卓越", "优秀", "一般", "平庸")
     c3 = _dim_conf(s3)
-    dims.append(("管理层（段永平+巴菲特）", s3, f"{t3}：ROE{roe}%，营收{rev_yoy}%" if roe and rev_yoy else t3, c3, "，".join(log3)))
+    # 管理层追问回答
+    mgmt_parts = []
+    if roe and roe > 20: mgmt_parts.append(f"ROE{roe}%超过20%，资本配置效率高")
+    elif roe and roe < 0: mgmt_parts.append("ROE为负，资本在毁灭价值")
+    if np_margin and np_margin > 20: mgmt_parts.append(f"净利率{np_margin}%超过20%，管理效率优秀")
+    elif np_margin and np_margin < 0: mgmt_parts.append("净利率为负，盈利能力差")
+    if rev_yoy and rev_yoy > 10: mgmt_parts.append(f"营收增长{rev_yoy:+.1f}%，执行能力良好")
+    elif rev_yoy and rev_yoy < 0: mgmt_parts.append(f"营收下滑{rev_yoy:.1f}%，需关注增长动力")
+    if dr and dr < 30: mgmt_parts.append(f"负债率{dr}%低，财务纪律良好")
+    elif dr and dr > 70: mgmt_parts.append(f"负债率{dr}%过高，财务纪律存疑")
+    conclusion3 = "，".join(mgmt_parts) if mgmt_parts else t3
+    dims.append(("管理层（段永平+巴菲特）", s3, conclusion3, c3, "，".join(log3)))
 
     # 4. 最大风险（芒格）— 逆向打分
     s4 = 6.0; log4 = [f"基础{s4:.0f}"]
@@ -242,7 +278,19 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
     s4 = _clamp10(s4)
     t4 = "低风险" if s4 >= 7.5 else "可控" if s4 >= 5.0 else "高风险"
     c4 = _dim_conf(s4)
-    dims.append(("最大风险（芒格）", s4, f"{t4}：负债率{dr}%，营收{rev_yoy}%" if dr and rev_yoy else t4, c4, "，".join(log4)))
+    # 最大风险追问回答（芒格式逆向检验）
+    risk_parts = []
+    if dr and dr > 70: risk_parts.append(f"负债率{dr}%超过70%，财务风险较高——芒格会问：这家公司怎么死？")
+    elif dr and dr > 50: risk_parts.append(f"负债率{dr}%超过50%，杠杆较高")
+    elif dr and dr > 0: risk_parts.append(f"负债率{dr}%，财务风险可控")
+    if rev_yoy and rev_yoy < -30: risk_parts.append(f"营收暴跌{rev_yoy}%，这是最危险的信号——生意在消失")
+    elif rev_yoy and rev_yoy < -10: risk_parts.append(f"营收下滑{rev_yoy}%，增长动力不足")
+    elif rev_yoy and rev_yoy > 10: risk_parts.append(f"营收增长{rev_yoy:+.1f}%，主业稳健")
+    if net_yoy and net_yoy < -30: risk_parts.append(f"净利暴跌{net_yoy}%，盈利恶化")
+    elif net_yoy and net_yoy < 0: risk_parts.append(f"净利下滑{net_yoy}%，盈利承压")
+    if roe and roe < 0: risk_parts.append(f"ROE为负，公司亏损，持续失血")
+    conclusion4 = "，".join(risk_parts) if risk_parts else t4
+    dims.append(("最大风险（芒格）", s4, conclusion4, c4, "，".join(log4)))
 
     # 5. 文明趋势（李录）
     s5 = 4.0; log5 = [f"基础{s5:.0f}"]
@@ -261,7 +309,20 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
     s5 = _clamp10(s5)
     t5 = _dim_tag(s5, "顺应趋势", "良好", "一般", "逆势")
     c5 = _dim_conf(s5)
-    dims.append(("文明趋势（李录）", s5, f"{t5}：营收{rev_yoy}%，净利率{np_margin}%" if rev_yoy and np_margin else t5, c5, "，".join(log5)))
+    # 文明趋势追问回答（李录10年后还在吗？）
+    trend_parts = []
+    if rev_yoy and rev_yoy > 20: trend_parts.append(f"营收增长{rev_yoy:+.1f}%，主业快速扩张，10年后可能更大")
+    elif rev_yoy and rev_yoy > 10: trend_parts.append(f"营收增长{rev_yoy:+.1f}%，主业稳健增长")
+    elif rev_yoy and rev_yoy < 0: trend_parts.append(f"营收下滑{rev_yoy:.1f}%，10年后可能更小")
+    if np_margin and np_margin > 30: trend_parts.append(f"净利率{np_margin}%超过30%，盈利质量优秀，可持续性强")
+    elif np_margin and np_margin > 15: trend_parts.append(f"净利率{np_margin}%超过15%，盈利健康")
+    elif np_margin and np_margin < 0: trend_parts.append("净利率为负，长期存续存疑")
+    if dr and dr < 30: trend_parts.append(f"负债率{dr}%低，能在经济下行期存活")
+    elif dr and dr > 70: trend_parts.append(f"负债率{dr}%过高，经济下行期风险大")
+    if roe and roe > 20: trend_parts.append(f"ROE{roe}%超过20%，长期竞争力强")
+    elif roe and roe < 0: trend_parts.append("ROE为负，长期竞争力存疑")
+    conclusion5 = "，".join(trend_parts) if trend_parts else t5
+    dims.append(("文明趋势（李录）", s5, conclusion5, c5, "，".join(log5)))
 
     # 6. 估值（巴菲特+段永平）
     s6 = 4.0; log6 = [f"基础{s6:.0f}"]
@@ -277,7 +338,18 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy):
     s6 = _clamp10(s6)
     t6 = "低估" if s6 >= 7.5 else "合理" if s6 >= 5.0 else "偏贵"
     c6 = _dim_conf(s6)
-    dims.append(("估值（巴菲特+段永平）", s6, f"{t6}：PE{pe}x" if pe else t6, c6, "，".join(log6)))
+    # 估值追问回答
+    val_parts = []
+    if pe and pe > 0:
+        pe_limit = 60  # 默认行业PE阈值
+        pe_ratio = pe / pe_limit
+        if pe_ratio <= 0.5: val_parts.append(f"PE/行业阈值={pe}/{pe_limit}={pe_ratio:.2f}，估值处于行业低位，有足够安全边际")
+        elif pe_ratio <= 1.0: val_parts.append(f"PE/行业阈值={pe}/{pe_limit}={pe_ratio:.2f}，估值合理，安全边际一般")
+        else: val_parts.append(f"PE/行业阈值={pe}/{pe_limit}={pe_ratio:.2f}，估值高于行业均值，安全边际不足")
+    if dy and dy > 3: val_parts.append(f"股息率{dy}%，股东回报可观")
+    if pb and pb < 1: val_parts.append("PB<1，资产价格低于重置成本")
+    conclusion6 = "，".join(val_parts) if val_parts else t6
+    dims.append(("估值（巴菲特+段永平）", s6, conclusion6, c6, "，".join(log6)))
 
     # 总分
     total_score = round(sum(d[1] for d in dims), 1)
@@ -432,6 +504,7 @@ async def analyze_holding(h, result):
     net_yoy = ind.get("HOLDER_PROFIT_YOY") or 0
     dr = abs(ind.get("DEBT_ASSET_RATIO") or 0) or abs(quote.get("debt_ratio") or 0) or 0
     dy = quote.get("dividend_yield") or 0
+    pb = quote.get("pb") or ind.get("PB") or 0
     # 精度裁剪（东财原始精度常为10+位）
     pe, roe, gm = round(pe, 2), round(roe, 2), round(gm, 2)
     np_margin, rev_yoy, net_yoy, dr, dy = round(np_margin, 2), round(rev_yoy, 2), round(net_yoy, 2), round(dr, 2), round(dy, 2)
@@ -494,7 +567,7 @@ async def analyze_holding(h, result):
     }
     
     # 六维评分
-    masters = six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy)
+    masters = six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy, pb, sector)
     
     # 漏斗
     funnel_checks, funnel_status, f_passed, f_total = funnel_check(pe, roe, dr, gm, rev_yoy, net_yoy)
@@ -517,7 +590,7 @@ async def analyze_holding(h, result):
         "cost": cost, "price": price, "shares": shares,
         "market_value": price * shares, "cost_value": cost * shares,
         "pnl_pct": pnl_pct,
-        "pe": pe, "roe": roe,
+        "pe": pe, "roe": roe, "gm": gm, "rev_yoy": rev_yoy, "net_yoy": net_yoy, "dr": dr,
         "masters": masters,
         "funnel_checks": funnel_checks, "funnel_status": funnel_status,
         "funnel_passed": f_passed, "funnel_total": f_total,
@@ -634,11 +707,15 @@ async def generate_report():
         print(f"> 成本 {fmt(d['cost'])} → 现价 {fmt(d['price'])} | 盈亏 **{fmt(pnl)}%**（{fmt(d['market_value']-d['cost_value'],0)} HKD）| 仓位 {fmt(d['market_value']/total_value*100)}%")
         print()
         
-        # 产业链 Mermaid
+        # 基本面分析（产业链全景图 + 六维评分）
+        m = d["masters"]
+        dims = m.get("dims", [])
+        dim_logs = m.get("dim_logs", {})
         chain = INDUSTRY_CHAINS.get(code)
+        print("### 📊 基本面分析")
+        print()
+        # 产业链 Mermaid
         if chain:
-            print("### 🔧 产业链全景图")
-            print()
             print(f"**{chain['name']}**")
             print()
             print("```mermaid")
@@ -648,17 +725,12 @@ async def generate_report():
             print(f"> **卡脖子**: {chain['bottleneck']}")
             print(f"> **竞品对标**: {chain['vs_leader']}")
             print()
-        
-        # 六维评分（评分由脚本计算，定性结论由LLM+web_search补充）
-        m = d["masters"]
-        dims = m.get("dims", [])
-        dim_logs = m.get("dim_logs", {})
-        print("### 📊 六维评分")
-        print()
-        print("| 维度 | 结论 | 信心度 |")
-        print("|:----|:----|:------:|")
-        for i, (label, score, conclusion, confidence) in enumerate(dims):
-            print(f"| {label} | {conclusion} | {confidence} |")
+        # ── 六维评分表（2026-07-22 六维框架） ──
+        print("| 维度 | 评分 | 信心度 |")
+        print("|:----|:---:|:------:|")
+        for label, score, conclusion, confidence in dims:
+            print(f"| {label} | {score}/10 | {confidence} |")
+
         print(f"\n> **六维总分**: {m['total_score']}/60")
         
         # 行业漏斗

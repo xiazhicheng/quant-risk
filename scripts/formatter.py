@@ -111,6 +111,19 @@ class FbDetail(BaseModel):
     dim4_confidence: str = Field(default="", description="最大风险信心度")
     dim5_confidence: str = Field(default="", description="文明趋势信心度")
     dim6_confidence: str = Field(default="", description="估值信心度")
+    # 大师质疑扣分（2026-07-23 新增）
+    dim1_penalty: Any = Field(default=None, description="生意质量扣分")
+    dim2_penalty: Any = Field(default=None, description="护城河扣分")
+    dim3_penalty: Any = Field(default=None, description="管理层扣分")
+    dim4_penalty: Any = Field(default=None, description="最大风险扣分")
+    dim5_penalty: Any = Field(default=None, description="文明趋势扣分")
+    dim6_penalty: Any = Field(default=None, description="估值扣分")
+    dim1_penalty_reason: str = Field(default="", description="生意质量扣分原因")
+    dim2_penalty_reason: str = Field(default="", description="护城河扣分原因")
+    dim3_penalty_reason: str = Field(default="", description="管理层扣分原因")
+    dim4_penalty_reason: str = Field(default="", description="最大风险扣分原因")
+    dim5_penalty_reason: str = Field(default="", description="文明趋势扣分原因")
+    dim6_penalty_reason: str = Field(default="", description="估值扣分原因")
     # 其他大师质疑（非归属大师对该维度的质疑）
     dim1_other_masters: str = Field(default="", description="生意质量其他大师质疑")
     dim2_other_masters: str = Field(default="", description="护城河其他大师质疑")
@@ -787,8 +800,15 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
         conclusion = getattr(fb, f"dim{idx}_conclusion", "")
         other_masters = getattr(fb, f"dim{idx}_other_masters", "")
         master_answer = getattr(fb, f"dim{idx}_master_answer", "")
+        penalty = getattr(fb, f"dim{idx}_penalty", None)
+        penalty_reason = getattr(fb, f"dim{idx}_penalty_reason", "")
         if score != "?":
-            dim_rows.append(f"| {label} | {score}/10 | {confidence} | {conclusion} | {other_masters} | {master_answer} |")
+            score_display = f"{score}/10"
+            if penalty is not None and penalty > 0:
+                score_display += f" ↓-{penalty}"
+                if penalty_reason:
+                    conclusion = f"{conclusion} ⚠️ {penalty_reason}"
+            dim_rows.append(f"| {label} | {score_display} | {confidence} | {conclusion} | {other_masters} | {master_answer} |")
         else:
             dim_rows.append(f"| {label} | 数据不足 | — | 数据不足 | 数据不足 | 数据不足 |")
     dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"

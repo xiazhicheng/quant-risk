@@ -1461,7 +1461,13 @@ def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_y
 
 
 def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
-    """生成大师答疑：归属大师针对其他大师质疑的回答"""
+    """生成大师答疑：归属大师针对其他大师质疑的回答，并给出明确结论。
+
+    结论前缀：
+      ✅ 质疑成立 → 评分已扣减
+      ⚠️ 部分成立 → 评分已扣减
+      ❌ 质疑不成立 → 评分不受影响
+    """
     if dim_key not in MASTER_PERSPECTIVES:
         return ""
     # 格式化原始值，避免超长小数
@@ -1482,6 +1488,34 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
     owner = MASTER_PERSPECTIVES[dim_key]["owner"]
     others = MASTER_PERSPECTIVES[dim_key]["others"]
     answers = []
+
+    # ── 判断质疑是否成立（基于指标阈值） ──
+    challenge_valid = False
+    if "生意质量" in dim_key:
+        if roe is not None and roe < 15:
+            challenge_valid = True
+    elif "护城河" in dim_key:
+        if roe is not None and roe < 15:
+            challenge_valid = True
+    elif "管理层" in dim_key:
+        if (rev_yoy is not None and rev_yoy < 0) or (net_yoy is not None and net_yoy < 0):
+            challenge_valid = True
+    elif "最大风险" in dim_key:
+        if (dr is not None and dr > 70) or (rev_yoy is not None and rev_yoy < 0 and net_yoy is not None and net_yoy < 0):
+            challenge_valid = True
+    elif "文明趋势" in dim_key:
+        if (rev_yoy is not None and rev_yoy < 0) or (roe is not None and roe < 10):
+            challenge_valid = True
+    elif "估值" in dim_key:
+        if pe is not None and pe > 60:
+            challenge_valid = True
+
+    # ── 结论前缀 ──
+    if challenge_valid:
+        conclusion = "✅ 质疑成立，评分已扣减"
+    else:
+        conclusion = "❌ 质疑不成立，评分不受影响"
+
     for master in others:
         if master == "巴菲特":
             if "生意质量" in dim_key or "管理层" in dim_key:
@@ -1516,8 +1550,8 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
             elif "估值" in dim_key:
                 answers.append("长期确定性是参考，估值看的是当前价格是否合理")
 
-    answer_text = "；".join(answers) if answers else "无回应"
-    return f"**{owner}回应**：针对质疑——{answer_text}"
+    answer_text = "；".join(answers) if answers else "本维度独立判断，不依赖其他维度指标"
+    return f"{conclusion}。{owner}回应质疑：{answer_text}"
 
 
 def _apply_challenge_penalty(
@@ -1553,25 +1587,25 @@ def _apply_challenge_penalty(
     if "生意质量" in dim_key:
         if roe is not None and roe < 15:
             deductions += 0.5
-            reasons.append(f"ROE{roe}%<15%，资金效率存疑（巴菲特视角）")
+            reasons.append(f"ROE{round(roe, 1)}%<15%，资金效率存疑（巴菲特视角）")
 
     elif "护城河" in dim_key:
         if roe is not None and roe < 15:
             deductions += 0.5
-            reasons.append(f"ROE{roe}%<15%，护城河不深（段永平视角）")
+            reasons.append(f"ROE{round(roe, 1)}%<15%，护城河不深（段永平视角）")
 
     elif "管理层" in dim_key:
         if rev_yoy is not None and rev_yoy < 0:
             deductions += 0.5
-            reasons.append(f"营收{rev_yoy}%负增长，执行力存疑（芒格视角）")
+            reasons.append(f"营收{round(rev_yoy, 1)}%负增长，执行力存疑（芒格视角）")
         if net_yoy is not None and net_yoy < 0:
             deductions += 0.5
-            reasons.append(f"净利{net_yoy}%负增长，盈利能力恶化（李录视角）")
+            reasons.append(f"净利{round(net_yoy, 1)}%负增长，盈利能力恶化（李录视角）")
 
     elif "最大风险" in dim_key:
         if dr is not None and dr > 70:
             deductions += 0.5
-            reasons.append(f"负债率{dr}%>70%，财务风险高（段永平视角）")
+            reasons.append(f"负债率{round(dr, 1)}%>70%，财务风险高（段永平视角）")
         if rev_yoy is not None and rev_yoy < 0 and net_yoy is not None and net_yoy < 0:
             deductions += 0.5
             reasons.append("营收净利双负，经营恶化（巴菲特视角）")
@@ -1579,16 +1613,16 @@ def _apply_challenge_penalty(
     elif "文明趋势" in dim_key:
         if rev_yoy is not None and rev_yoy < 0:
             deductions += 0.5
-            reasons.append(f"营收{rev_yoy}%负增长，长期趋势存疑（段永平视角）")
+            reasons.append(f"营收{round(rev_yoy, 1)}%负增长，长期趋势存疑（段永平视角）")
         if roe is not None and roe < 10:
             deductions += 0.5
-            reasons.append(f"ROE{roe}%<10%，资本回报低（巴菲特视角）")
+            reasons.append(f"ROE{round(roe, 1)}%<10%，资本回报低（巴菲特视角）")
 
     elif "估值" in dim_key:
         limit = pe_limit if pe_limit else 30
         if pe is not None and pe > limit:
             deductions += 0.5
-            reasons.append(f"PE{pe}倍>阈值{limit}，安全边际不足（芒格视角）")
+            reasons.append(f"PE{round(pe, 1)}倍>阈值{limit}，安全边际不足（芒格视角）")
 
     adjusted = max(1.0, dim_s - deductions)
     return adjusted, deductions, reasons
@@ -1971,6 +2005,19 @@ def build_selection_data(
                 "dim4_confidence": s.get("dim4_confidence", ""),
                 "dim5_confidence": s.get("dim5_confidence", ""),
                 "dim6_confidence": s.get("dim6_confidence", ""),
+                # 大师质疑扣分（2026-07-23 新增）
+                "dim1_penalty": s.get("dim1_penalty"),
+                "dim2_penalty": s.get("dim2_penalty"),
+                "dim3_penalty": s.get("dim3_penalty"),
+                "dim4_penalty": s.get("dim4_penalty"),
+                "dim5_penalty": s.get("dim5_penalty"),
+                "dim6_penalty": s.get("dim6_penalty"),
+                "dim1_penalty_reason": s.get("dim1_penalty_reason", ""),
+                "dim2_penalty_reason": s.get("dim2_penalty_reason", ""),
+                "dim3_penalty_reason": s.get("dim3_penalty_reason", ""),
+                "dim4_penalty_reason": s.get("dim4_penalty_reason", ""),
+                "dim5_penalty_reason": s.get("dim5_penalty_reason", ""),
+                "dim6_penalty_reason": s.get("dim6_penalty_reason", ""),
                 # 芒格式逆向检验
                 "reverse_test": s.get("reverse_test", ""),
                 # 信息丰富度评级

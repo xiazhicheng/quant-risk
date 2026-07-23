@@ -1,0 +1,142 @@
+code: "00268"
+name: "金蝶国际"
+industry: "互联网/IT"
+data_source: "ai-berkshire industry-research SOP"
+data_date: "2026-07-23"
+
+# 第一步: 投资逻辑链
+logic_chain:
+  trend: "企业 SaaS 云转型 + 信创国产化替代 + AI 赋能 ERP"
+  chain:
+    - "传统 On-Premise ERP → 云化迁移（苍穹/星空）"
+    - "大型企业 SaaS 替代外资（Oracle/SAP）"
+    - "中小微云财务覆盖（金蝶精斗云）"
+    - "毛利率67%高，但研发+销售费用吞噬一切 → 净利率仅1.1%"
+  bottlenecks:
+    - text: "净利率仅1.1%，毛利→净利转化极差，资本回报ROE 1.1%"
+      severity: "high"
+    - text: "SaaS获客成本持续上升，用友/钉钉/金山等竞争激烈"
+      severity: "high"
+    - text: "PE 246倍，市场为未来盈利定价但当前不赚钱"
+      severity: "high"
+
+# 第二步: 产业链全景图
+chain:
+  - name: "上游_技术基础"
+    type: "upstream"
+    nodes:
+      - id: Cloud
+        label: "云计算基础设施"
+        note: "阿里云/腾讯云/华为云"
+      - id: DB
+        label: "数据库/中间件"
+        note: "国产替代（达梦/GaussDB）"
+      - id: AI
+        label: "AI大模型"
+        note: "GPT/国产大模型"
+
+  - name: "中游_SaaS平台"
+    type: "midstream"
+    nodes:
+      - id: KingdeeCloud
+        label: "金蝶云·苍穹"
+        note: "🔴大型企业PaaS | 云化迁移中"
+      - id: KingdeeStar
+        label: "金蝶云·星空"
+        note: "🟡中型企业 | 核心增长引擎"
+      - id: Jingdou
+        label: "精斗云"
+        note: "✅小微财务 | 订阅制"
+      - id: K3WISE
+        label: "K/3 WISE"
+        note: "🔴传统本地部署 | 存量萎缩"
+      - id: COSMIX
+        label: "Cosmic"
+        note: "🟢全球化ERP"
+
+  - name: "下游_客户场景"
+    type: "downstream"
+    nodes:
+      - id: Large
+        label: "大型企业"
+        note: "央企/国企 | 信创替代"
+      - id: Mid
+        label: "中型企业"
+        note: "🟢核心市场 | 云迁移加速"
+      - id: SME
+        label: "小微/初创"
+        note: "精斗云覆盖"
+
+  - name: "竞争格局"
+    type: "competition"
+    nodes:
+      - id: UFIDA
+        label: "用友网络"
+        note: "🔴龙头 | YonBIP"
+      - id: SAP
+        label: "SAP"
+        note: "🔴外资ERP霸主"
+      - id: Oracle
+        label: "Oracle"
+        note: "🔴外资数据库/ERP"
+
+edges:
+  - from: Cloud
+    to: KingdeeCloud KingdeeStar Jingdou
+    label: "基础设施"
+  - from: DB
+    to: KingdeeCloud
+    label: "国产替代"
+  - from: AI
+    to: KingdeeCloud KingdeeStar
+    label: "赋能ERP"
+  - from: KingdeeCloud
+    to: Large
+    label: "大企业PaaS"
+  - from: KingdeeStar
+    to: Mid
+    label: "中型SaaS"
+  - from: Jingdou
+    to: SME
+    label: "小微订阅"
+  - from: K3WISE
+    to: Mid
+    label: "存量本地部署"
+    style: dashed
+  - from: COSMIX
+    to: Large
+    label: "全球化"
+  - from: UFIDA
+    to: KingdeeCloud KingdeeStar
+    label: "竞争"
+    style: dashed
+  - from: SAP
+    to: KingdeeCloud
+    label: "外资替代"
+    style: dashed
+  - from: Oracle
+    to: KingdeeCloud
+    label: "数据库替代"
+    style: dashed
+
+# 第三步: 卡脖子环节 + 竞品对标
+bottleneck: "🔴 净利率仅1.1%，SaaS获客成本高企 | 🔴 营收增长放缓，云化迁移进度不及预期 | 🔴 PE 246倍估值泡沫"
+vs_leader: "vs 用友网络 — 营收-30pp | 净利率-5pp | 云订阅收入-40pp"
+
+# 第四步: 生意特征
+business_traits:
+  - segment: "中游_SaaS平台"
+    model: "订阅制（ARR）"
+    gross_margin: "67.15%"
+    moat_type: "客户粘性/转换成本"
+  - segment: "下游_客户场景"
+    model: "云化替代+信创"
+    gross_margin: "—"
+    moat_type: "政策壁垒"
+
+# 第六步: 文明趋势
+civilization:
+  trend: "企业ERP从本地部署→云化→AI原生，长期确定性强，但金蝶云化转型进度落后于用友"
+  disruptors:
+    - "SaaS获客成本持续上升，净利率极薄导致持续烧钱"
+    - "AI原生ERP（如AI Agent替代传统ERP）可能颠覆现有SaaS模式"

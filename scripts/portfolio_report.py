@@ -249,43 +249,88 @@ def _np_text(np_margin):
         return "无数据"
 
 
-def _gen_master_view(owner, dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
-    """生成大师视角：核心追问 + 大师基于数据的观点"""
+def _gen_master_view(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成大师视角：归属大师基于财务数据的具体观点"""
     if dim_key not in MASTER_PERSPECTIVES:
-        return f"核心追问：{MASTER_PERSPECTIVES[dim_key]['question'] if dim_key in MASTER_PERSPECTIVES else '?'}"
+        return ""
+    owner = MASTER_PERSPECTIVES[dim_key]["owner"]
+    parts = [f"**{owner}视角**：{MASTER_PERSPECTIVES[dim_key]['question']}"]
 
-    question = MASTER_PERSPECTIVES[dim_key]["question"]
-    parts = [f"**核心追问**：{question}"]
-
-    # 根据维度归属，选取关键指标构建大师观点
+    # 根据维度归属，选取关键指标构建大师的具体观点
     if "生意质量" in dim_key:
-        # 段永平：关注毛利率、ROE、净利率
         parts.append(f"毛利率{gm}%，{_gm_text(gm)}")
         parts.append(f"ROE{roe}%，{_roe_text(roe)}")
         parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
     elif "护城河" in dim_key:
-        # 巴菲特：关注ROE、毛利率、股息率、负债率
         parts.append(f"ROE{roe}%，{_roe_text(roe)}")
         parts.append(f"毛利率{gm}%，{_gm_text(gm)}")
         parts.append(f"负债率{dr}%，{_dr_text(dr)}")
     elif "管理层" in dim_key:
-        # 段永平+巴菲特：关注ROE、净利率、营收增速、负债率
         parts.append(f"ROE{roe}%，{_roe_text(roe)}")
         parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
         parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
     elif "最大风险" in dim_key:
-        # 芒格：关注负债率、营收增速、净利增速
         parts.append(f"负债率{dr}%，{_dr_text(dr)}")
         parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
         parts.append(f"净利增速{net_yoy}%，{_net_text(net_yoy)}")
     elif "文明趋势" in dim_key:
-        # 李录：关注营收增速、净利率、负债率、ROE
         parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
         parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
         parts.append(f"ROE{roe}%，{_roe_text(roe)}")
     elif "估值" in dim_key:
-        # 巴菲特+段永平：关注PE、股息率
         parts.append(f"PE{pe}，{_pe_text(pe)}")
+
+    return "；".join(parts)
+
+
+def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成大师答疑：归属大师针对其他大师质疑的回答"""
+    if dim_key not in MASTER_PERSPECTIVES:
+        return ""
+    owner = MASTER_PERSPECTIVES[dim_key]["owner"]
+    others = MASTER_PERSPECTIVES[dim_key]["others"]
+    parts = [f"**{owner}回应**："]
+
+    # 针对每个质疑大师，从owner视角回应
+    for master in others:
+        if master == "巴菲特":
+            # 巴菲特关注估值和ROE——owner回应
+            parts.append(f"巴菲特说{_pe_text(pe)}、{_roe_text(roe)}")
+            if "生意质量" in dim_key or "管理层" in dim_key:
+                parts.append(f"但毛利率{gm}%说明生意本质好，{_np_text(np_margin)}")
+            elif "文明趋势" in dim_key:
+                parts.append(f"但营收增速{rev_yoy}%说明长期趋势向上，{_dr_text(dr)}")
+            elif "最大风险" in dim_key:
+                parts.append("但本维度核心是风险，估值和ROE只是辅助判断")
+        elif master == "段永平":
+            # 段永平关注生意质量——owner回应
+            parts.append(f"段永平说{_gm_text(gm)}、{_roe_text(roe)}")
+            if "护城河" in dim_key:
+                parts.append(f"但护城河看的是综合竞争力，{_dr_text(dr)}")
+            elif "最大风险" in dim_key:
+                parts.append("但风险维度看的是下行保护，好生意也会面临风险")
+            elif "文明趋势" in dim_key or "估值" in dim_key:
+                parts.append(f"但本维度侧重不同——{_rev_text(rev_yoy)}")
+        elif master == "芒格":
+            # 芒格关注风险——owner回应
+            parts.append(f"芒格说{_dr_text(dr)}、{_rev_text(rev_yoy)}")
+            if "生意质量" in dim_key:
+                parts.append(f"但生意质量看的是商业模式本质，{_gm_text(gm)}")
+            elif "护城河" in dim_key:
+                parts.append(f"但护城河看的是长期竞争优势，{_roe_text(roe)}")
+            elif "文明趋势" in dim_key:
+                parts.append(f"但长期趋势看的是10年确定性，{_np_text(np_margin)}")
+            elif "估值" in dim_key:
+                parts.append("但估值维度看的是价格安全边际，风险已体现在负债率中")
+        elif master == "李录":
+            # 李录关注长期确定性——owner回应
+            parts.append(f"李录说{_rev_text(rev_yoy)}、{_dr_text(dr)}、{_np_text(np_margin)}")
+            if "生意质量" in dim_key:
+                parts.append(f"但生意质量更关注当期盈利能力，{_gm_text(gm)}")
+            elif "护城河" in dim_key or "最大风险" in dim_key:
+                parts.append(f"但本维度侧重不同——{_roe_text(roe)}")
+            elif "估值" in dim_key:
+                parts.append("但估值看的是当前价格是否合理，长期确定性是参考")
 
     return "；".join(parts)
 
@@ -543,20 +588,23 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy, pb=0, secto
     dim_data = []
     for i, (label, score, conclusion, confidence, dim_log) in enumerate(dims):
         dim_key = label
-        master_perspective = _gen_master_view(
-            MASTER_PERSPECTIVES.get(dim_key, {}).get("owner", ""),
+        # 大师视角 = 归属大师基于财务数据的具体观点
+        master_perspective = conclusion
+        # 其他大师质疑
+        other_masters = _gen_other_masters_challenge(
             dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr
         )
-        other_masters = _gen_other_masters_challenge(
+        # 大师答疑 = 归属大师针对其他大师质疑的回答
+        master_answer = _gen_master_answer(
             dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr
         )
         dim_data.append({
             "label": label,
             "score": score,
-            "conclusion": conclusion,
             "confidence": confidence,
             "master_perspective": master_perspective,
             "other_masters_challenge": other_masters,
+            "master_answer": master_answer,
         })
 
     return {
@@ -642,7 +690,7 @@ def mirror_test(code, dims, pe, roe, rev_yoy, net_yoy, chan_info, price_info):
     for dim in dims:
         label = dim["label"]
         score = dim["score"]
-        conclusion = dim["conclusion"]
+        conclusion = dim["master_perspective"]  # 大师视角 = 结论
         conf = dim["confidence"]
         for key in ["生意质量", "护城河", "管理层", "最大风险", "文明趋势", "估值"]:
             if key in label:
@@ -942,8 +990,8 @@ async def generate_report():
             confidence = dim["confidence"]
             master_pv = dim["master_perspective"]
             other_ch = dim["other_masters_challenge"]
-            conclusion = dim["conclusion"]
-            print(f"| {label} | {score}/10 | {confidence} | {master_pv} | {other_ch} | {conclusion} |")
+            master_answer = dim.get("master_answer", "")
+            print(f"| {label} | {score}/10 | {confidence} | {master_pv} | {other_ch} | {master_answer} |")
 
         print(f"\n> **六维总分**: {m['total_score']}/60")
         

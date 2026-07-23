@@ -1399,6 +1399,51 @@ def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_y
     return "<br/>".join(challenges)
 
 
+def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
+    """生成大师答疑：归属大师针对其他大师质疑的回答"""
+    if dim_key not in MASTER_PERSPECTIVES:
+        return ""
+    owner = MASTER_PERSPECTIVES[dim_key]["owner"]
+    others = MASTER_PERSPECTIVES[dim_key]["others"]
+    parts = [f"**{owner}回应**："]
+    for master in others:
+        if master == "巴菲特":
+            parts.append(f"巴菲特说{_pe_text(pe)}、{_roe_text(roe)}")
+            if "生意质量" in dim_key or "管理层" in dim_key:
+                parts.append(f"但毛利率{gm}%说明生意本质好，{_np_text(np_margin)}")
+            elif "文明趋势" in dim_key:
+                parts.append(f"但营收增速{rev_yoy}%说明长期趋势向上，{_dr_text(dr)}")
+            elif "最大风险" in dim_key:
+                parts.append("但本维度核心是风险，估值和ROE只是辅助判断")
+        elif master == "段永平":
+            parts.append(f"段永平说{_gm_text(gm)}、{_roe_text(roe)}")
+            if "护城河" in dim_key:
+                parts.append(f"但护城河看的是综合竞争力，{_dr_text(dr)}")
+            elif "最大风险" in dim_key:
+                parts.append("但风险维度看的是下行保护，好生意也会面临风险")
+            elif "文明趋势" in dim_key or "估值" in dim_key:
+                parts.append(f"但本维度侧重不同——{_rev_text(rev_yoy)}")
+        elif master == "芒格":
+            parts.append(f"芒格说{_dr_text(dr)}、{_rev_text(rev_yoy)}")
+            if "生意质量" in dim_key:
+                parts.append(f"但生意质量看的是商业模式本质，{_gm_text(gm)}")
+            elif "护城河" in dim_key:
+                parts.append(f"但护城河看的是长期竞争优势，{_roe_text(roe)}")
+            elif "文明趋势" in dim_key:
+                parts.append(f"但长期趋势看的是10年确定性，{_np_text(np_margin)}")
+            elif "估值" in dim_key:
+                parts.append("但估值维度看的是价格安全边际，风险已体现在负债率中")
+        elif master == "李录":
+            parts.append(f"李录说{_rev_text(rev_yoy)}、{_dr_text(dr)}、{_np_text(np_margin)}")
+            if "生意质量" in dim_key:
+                parts.append(f"但生意质量更关注当期盈利能力，{_gm_text(gm)}")
+            elif "护城河" in dim_key or "最大风险" in dim_key:
+                parts.append(f"但本维度侧重不同——{_roe_text(roe)}")
+            elif "估值" in dim_key:
+                parts.append("但估值看的是当前价格是否合理，长期确定性是参考")
+    return "；".join(parts)
+
+
 def _raw_score_one(
     p: Dict[str, Any],
     kl: List[Dict],
@@ -1452,11 +1497,14 @@ def _raw_score_one(
         "生意质量（段永平）", "护城河（巴菲特）", "管理层（段永平+巴菲特）",
         "最大风险（芒格）", "文明趋势（李录）", "估值（巴菲特+段永平）",
     ]
-    master_views = {}
+    # 六维结论 = 大师视角（归属大师的基于财务数据的具体观点）
+    dim_conclusions = [dim1_c, dim2_c, dim3_c, dim4_c, dim5_c, dim6_c]
+    # 其他大师质疑 + 大师答疑
     other_masters = {}
+    master_answers = {}
     for i, dk in enumerate(dim_keys):
-        master_views[f"dim{i+1}_master_view"] = _gen_master_view(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
         other_masters[f"dim{i+1}_other_masters"] = _gen_other_masters_challenge(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
+        master_answers[f"dim{i+1}_master_answer"] = _gen_master_answer(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
 
     hot = hot_score(p, kl, sector_ranking, market)
     ch, cd = chan_score(p, kl)
@@ -1470,14 +1518,14 @@ def _raw_score_one(
         "dim4_raw": dim4_s, "dim5_raw": dim5_s, "dim6_raw": dim6_s,
         "dim1_debug": dim1_d, "dim2_debug": dim2_d, "dim3_debug": dim3_d,
         "dim4_debug": dim4_d, "dim5_debug": dim5_d, "dim6_debug": dim6_d,
-        # 六维结论 + 信心度
+        # 六维结论 + 信心度（结论 = 大师视角，2026-07-23 更新）
         "dim1_conclusion": dim1_c, "dim2_conclusion": dim2_c, "dim3_conclusion": dim3_c,
         "dim4_conclusion": dim4_c, "dim5_conclusion": dim5_c, "dim6_conclusion": dim6_c,
         "dim1_confidence": dim1_conf, "dim2_confidence": dim2_conf, "dim3_confidence": dim3_conf,
         "dim4_confidence": dim4_conf, "dim5_confidence": dim5_conf, "dim6_confidence": dim6_conf,
-        # 大师视角 + 其他大师质疑（2026-07-22 新增）
-        **master_views,
+        # 其他大师质疑 + 大师答疑（2026-07-23 新增）
         **other_masters,
+        **master_answers,
         "reverse_test": reverse_test,
         "info_richness": ir_rating,
         "info_richness_detail": ir_detail,

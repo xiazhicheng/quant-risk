@@ -516,19 +516,20 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
                 "dim4_confidence": s.get("dim4_confidence", ""),
                 "dim5_confidence": s.get("dim5_confidence", ""),
                 "dim6_confidence": s.get("dim6_confidence", ""),
-                # 大师视角 + 其他大师质疑（2026-07-22 新增）
-                "dim1_master_view": s.get("dim1_master_view", ""),
-                "dim2_master_view": s.get("dim2_master_view", ""),
-                "dim3_master_view": s.get("dim3_master_view", ""),
-                "dim4_master_view": s.get("dim4_master_view", ""),
-                "dim5_master_view": s.get("dim5_master_view", ""),
-                "dim6_master_view": s.get("dim6_master_view", ""),
+                # 其他大师质疑（2026-07-22 新增）
                 "dim1_other_masters": s.get("dim1_other_masters", ""),
                 "dim2_other_masters": s.get("dim2_other_masters", ""),
                 "dim3_other_masters": s.get("dim3_other_masters", ""),
                 "dim4_other_masters": s.get("dim4_other_masters", ""),
                 "dim5_other_masters": s.get("dim5_other_masters", ""),
                 "dim6_other_masters": s.get("dim6_other_masters", ""),
+                # 大师答疑（归属大师针对其他大师质疑的回答）
+                "dim1_master_answer": s.get("dim1_master_answer", ""),
+                "dim2_master_answer": s.get("dim2_master_answer", ""),
+                "dim3_master_answer": s.get("dim3_master_answer", ""),
+                "dim4_master_answer": s.get("dim4_master_answer", ""),
+                "dim5_master_answer": s.get("dim5_master_answer", ""),
+                "dim6_master_answer": s.get("dim6_master_answer", ""),
                 # 芒格式逆向检验
                 "reverse_test": s.get("reverse_test", ""),
                 # 质量筛选问题

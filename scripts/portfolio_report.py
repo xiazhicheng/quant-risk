@@ -1098,32 +1098,68 @@ async def generate_report():
         print(f"\n> **漏斗结果**: {d['funnel_status']}（{d['funnel_passed']}/{d['funnel_total']}）")
         print()
         
-        # 芒格式逆向检验
+        # 芒格式逆向检验（表格输出）
         print("### ⚠️ 芒格式逆向检验")
         print()
+        print("| 失败路径 | 详情 |")
+        print("|:--------|:----|")
         for r in d["risks"]:
-            print(f"  {r}")
+            risk_text = r
+            # 提取 emoji 和标题
+            emoji = risk_text[:2] if risk_text.startswith("☠️") or risk_text.startswith("⚠️") or risk_text.startswith("🏭") else ""
+            colon_idx = risk_text.find("：") if "：" in risk_text else -1
+            if colon_idx > 0:
+                title = risk_text[len(emoji):colon_idx+1].strip() if emoji else risk_text[:colon_idx+1].strip()
+                detail = risk_text[colon_idx+1:].strip()
+            else:
+                title = risk_text
+                detail = ""
+            print(f"| {emoji} {title} | {detail} |")
         print()
         
-        # 缠论 & 技术面
+        # 缠论 & 技术面（表格输出）
         print("### 🔧 技术面分析")
         print()
-        print(f"**周线定势**: {d['weekly']}")
-        print()
-        print(f"**日线走势**: {d['chan']['summary']}")
+        print("| 维度 | 指标 | 数据 |")
+        print("|:----|:----|:----:|")
+        # 周线定势
+        weekly = d['weekly']
+        if weekly and "|" in str(weekly):
+            parts = str(weekly).split("|")
+            for p in parts:
+                p = p.strip()
+                if "MA60" in p:
+                    print(f"| 周线大势 | MA60 | {p} |")
+                elif "缠论" in p:
+                    print(f"| 周线大势 | 缠论判定 | {p} |")
+                elif "笔" in p:
+                    print(f"| 周线大势 | 缠论笔 | {p} |")
+        else:
+            print(f"| 周线大势 | 综合 | {weekly} |")
+        # 日线走势
+        chan_summary = d['chan']['summary']
+        print(f"| 日线走势 | 走势类型 | {chan_summary} |")
         for line in d["chan"]["detail"]:
-            print(f"  {line}")
-        print()
-        
-        # 技术面汇总表（类似 recommend.py 格式）
+            line = line.strip()
+            if "走势" in line and "oken" not in line:
+                continue  # 跳过已处理的走势类型
+            if "最近笔" in line:
+                print(f"| 日线走势 | 最近笔 | {line} |")
+            elif "中枢" in line and "ZG" in line:
+                print(f"| 日线走势 | 中枢区间 | {line} |")
+            elif "价格" in line and "中枢" in line:
+                print(f"| 日线走势 | 价格位置 | {line} |")
+            elif "突破" in line or "三买" in line:
+                print(f"| 日线走势 | 特殊信号 | {line} |")
+            elif "底背" in line or "顶背" in line or "背驰" in line:
+                print(f"| 日线走势 | 背驰信号 | {line} |")
+            elif "笔断裂" in line:
+                print(f"| 日线走势 | 笔断裂 | {line} |")
+            elif "笔" in line and "段" in line and "中枢" in line:
+                print(f"| 日线走势 | 结构 | {line} |")
+        # 技术指标
         ma = d['ma_detail']
         macd = d['macd_detail']
-        print("**技术指标**:")
-        print()
-        print("| 维度 | 信号 | 数值 |")
-        print("|:----|:----|:----:|")
-        # 从 ma_detail 解析 MA 排列
-        ma_line = ma.split("|") if "|" in str(ma) else [str(ma)]
         direction = "偏多" if "🔺" in str(ma) else "偏空" if "🔻" in str(ma) else "中性"
         print(f"| MA排列 | {direction} | {ma} |")
         # MACD

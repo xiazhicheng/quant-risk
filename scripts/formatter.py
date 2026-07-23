@@ -780,20 +780,16 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     ]
 
     dim_rows = []
-    dim_header = "| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |\n|:----|:---:|:------:|:--------|:----------:|:--------|"
+    dim_header = "| 维度 | 评分 | 信心度 | 关键指标 |\n|:----|:---:|:------:|:--------|"
     for label, idx in dim_configs:
         score = getattr(fb, f"dim{idx}_score", "?")
         confidence = getattr(fb, f"dim{idx}_confidence", "")
-        # 大师视角 = 结论（归属大师基于财务数据的具体观点）
-        master_view = getattr(fb, f"dim{idx}_conclusion", "")
-        # 其他大师质疑
-        other_masters = getattr(fb, f"dim{idx}_other_masters", "")
-        # 大师答疑 = 归属大师针对其他大师质疑的回答
-        master_answer = getattr(fb, f"dim{idx}_master_answer", "")
+        conclusion = getattr(fb, f"dim{idx}_conclusion", "")
         if score != "?":
-            dim_rows.append(f"| {label} | {score}/10 | {confidence} | {master_view} | {other_masters} | {master_answer} |")
+            key_indicator = conclusion[:60] + "..." if len(conclusion) > 60 else conclusion
+            dim_rows.append(f"| {label} | {score}/10 | {confidence} | {key_indicator} |")
         else:
-            dim_rows.append(f"| {label} | 数据不足 | — | — | — | — |")
+            dim_rows.append(f"| {label} | 数据不足 | — | 数据不足 |")
     dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"
 
     # ── 关键指标摘要 ──

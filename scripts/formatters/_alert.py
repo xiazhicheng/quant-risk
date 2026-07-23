@@ -108,7 +108,9 @@ def format_alert(data: dict[str, Any] | str) -> str:
 | 继续持有观察 | {ds.hold_observe.recommended} | {ds.hold_observe.reason} |
 | 反向加仓 | {ds.reverse_add.recommended} | {ds.reverse_add.reason} |
 
-**结论**: {m.verdict}
-
-**执行优先级**: {m.priority} — 建议 {m.execution_timing} 执行
-"""
+	**结论**: {m.verdict}
+	
+	**执行优先级**: {m.priority} — 建议 {m.execution_timing} 执行
+	
+	> 📡 **数据来源**: 行情数据来自腾讯/新浪，基本面数据来自东财/Yahoo。
+	"""

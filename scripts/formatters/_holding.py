@@ -149,7 +149,9 @@ def format_holding(data: dict[str, Any] | str) -> str:
 | 增持至 | {_format_num(a.increase_to)}%（如适用） |
 | 清仓离场 | {_format_num(a.clear_condition)} |
 
-**结论**: {m.verdict}
-
-**下一步观察点**: {m.next_observation}
-"""
+	**结论**: {m.verdict}
+	
+	**下一步观察点**: {m.next_observation}
+	
+	> 📡 **数据来源**: 行情数据来自腾讯/新浪，基本面数据来自东财/Yahoo。
+	"""

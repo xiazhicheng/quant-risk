@@ -3,22 +3,25 @@
 统一推荐脚本 — 跨市场选股推荐（港股 / A 股 / 美股）
 
 用法:
-    uv run scripts/recommend.py                     # 港股推荐（默认）
-    uv run scripts/recommend.py --market cn         # A 股推荐
-    uv run scripts/recommend.py --market us         # 美股推荐
-    uv run scripts/recommend.py --market hk --json  # JSON 输出
+    uv run scripts/recommend.py                                 # 港股推荐（默认）
+    uv run scripts/recommend.py --market cn                     # A 股推荐
+    uv run scripts/recommend.py --market us                     # 美股推荐
+    uv run scripts/recommend.py --market hk --json              # JSON 输出
+    uv run scripts/recommend.py --industry 能源/资源/矿业        # 行业漏斗筛选
+
+输出内容:
+    - TOP10 推荐标的（🏢四大师加权评分）
+      详情：四大师独立裁决 + 追问 + 投票制结论 + 芒格式逆向检验
+    - 📋 镜子测试（5句话说清楚为什么买）
+    - 📋 巴菲特买入前 Checklist（六关评分）
+    - 定价建议 + 择时判断
+    - 筛选过程 + ③ 关键数据多源交叉验证
+    - ① 行业漏斗筛选（--industry 模式）
 
 三步强制流程:
   ① 全市场扫描（板块扫描）
-  ② 中观硬约束过滤（市值/股价/PE）
-  ③ 微观三维评分（基本面×5 + 热点×3 + 缠论×2）→ TOP10
-
-依赖:
-  - formatter.py（统一格式化）
-  - quantrisk/recommender.py（共享过滤/评分逻辑）
-  - quantrisk/recommend_hk.py（港股数据源）
-  - quantrisk/recommend_cn.py（A 股数据源）
-  - quantrisk/recommend_us.py（美股数据源）
+  ② 中观硬约束过滤 + 基本面一票否决
+  ③ 微观评分（基本面60分 + 技术面40分 = 100分）→ TOP10
 """
 from __future__ import annotations
 
@@ -37,13 +40,13 @@ from scripts.quantrisk.data import close_async_session, close_tickflow
 # 市场适配器路由
 # ═══════════════════════════════════════════════════════════════
 
-async def run_hk_recommendation(min_stocks: int = 300) -> dict:
+async def run_hk_recommendation(min_stocks: int = 300, industry: str = "") -> dict:
     """港股推荐流程"""
     from scripts.quantrisk.recommend_hk import hk_recommend_pipeline
-    return await hk_recommend_pipeline(min_stocks=min_stocks)
+    return await hk_recommend_pipeline(min_stocks=min_stocks, industry=industry)
 
 
-async def run_cn_recommendation(min_stocks: int = 200) -> dict:
+async def run_cn_recommendation(min_stocks: int = 200, industry: str = "") -> dict:
     """A 股推荐流程"""
     from scripts.quantrisk.recommend_cn import (
         fetch_cn_candidate_pool, cn_recommend_pipeline,
@@ -55,7 +58,7 @@ async def run_cn_recommendation(min_stocks: int = 200) -> dict:
     return await cn_recommend_pipeline(candidates)
 
 
-async def run_us_recommendation() -> dict:
+async def run_us_recommendation(industry: str = "") -> dict:
     """美股推荐流程"""
     from scripts.quantrisk.recommend_us import (
         get_us_candidate_pool, us_recommend_pipeline,
@@ -73,6 +76,7 @@ def parse_args():
     market = "hk"
     json_mode = False
     min_stocks = 200
+    industry = ""
 
     args = sys.argv[1:]
     i = 0
@@ -87,6 +91,9 @@ def parse_args():
         elif arg == "--min-stocks" and i + 1 < len(args):
             min_stocks = int(args[i + 1])
             i += 2
+        elif arg == "--industry" and i + 1 < len(args):
+            industry = args[i + 1]
+            i += 2
         elif arg == "--help":
             print(__doc__)
             sys.exit(0)
@@ -97,16 +104,17 @@ def parse_args():
         print(f"❌ 未知市场: {market}（可选: hk, cn, us）")
         sys.exit(1)
 
-    return market, json_mode, min_stocks
+    return market, json_mode, min_stocks, industry
 
 
 async def main():
-    market, json_mode, min_stocks = parse_args()
+    market, json_mode, min_stocks, industry = parse_args()
 
     # 路由到对应市场
     if market == "hk":
-        print(f"🔍 港股推荐（候选池 {min_stocks}+ 只）...")
-        raw_data = await run_hk_recommendation(min_stocks)
+        label = f"港股{'(' + industry + ')' if industry else ''}"
+        print(f"🔍 {label}推荐（候选池 {min_stocks}+ 只）...")
+        raw_data = await run_hk_recommendation(min_stocks, industry)
 
     elif market == "cn":
         print(f"🔍 A 股推荐（候选池 {min_stocks}+ 只）...")

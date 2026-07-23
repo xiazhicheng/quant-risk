@@ -191,11 +191,13 @@ def format_pretrade(data: dict[str, Any] | str) -> str:
 | 持仓周期建议 | {m.holding_period} |
 | 最大容忍回撤 | {_format_num(m.max_drawdown)}% |
 
-### 审查结论
-
-| 维度 | 结论 |
-|------|------|
-| 风控结论 | **{m.verdict}** |
-| 核心理由 | {m.reason} |
-| 必须回避的条件 | {m.avoid_conditions} |
-"""
+	### 审查结论
+	
+	| 维度 | 结论 |
+	|------|------|
+	| 风控结论 | **{m.verdict}** |
+	| 核心理由 | {m.reason} |
+	| 必须回避的条件 | {m.avoid_conditions} |
+	
+	> 📡 **数据来源**: 行情数据来自腾讯/新浪，基本面数据来自东财/Yahoo，缠论数据基于腾讯K线计算。
+	"""

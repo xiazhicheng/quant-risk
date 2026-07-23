@@ -114,7 +114,9 @@ def format_disposal(data: dict[str, Any] | str) -> str:
 
 {_format_num(m.reallocation)}
 
-### 经验记录
-
-{_format_num(m.lesson)}
-"""
+	### 经验记录
+	
+	{_format_num(m.lesson)}
+	
+	> 📡 **数据来源**: 行情数据来自腾讯/新浪，基本面数据来自东财/Yahoo。
+	"""

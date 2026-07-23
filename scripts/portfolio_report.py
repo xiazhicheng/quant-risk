@@ -249,40 +249,6 @@ def _np_text(np_margin):
         return "无数据"
 
 
-def _gen_master_view(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
-    """生成大师视角：归属大师基于财务数据的具体观点"""
-    if dim_key not in MASTER_PERSPECTIVES:
-        return ""
-    owner = MASTER_PERSPECTIVES[dim_key]["owner"]
-    parts = [f"**{owner}视角**：{MASTER_PERSPECTIVES[dim_key]['question']}"]
-
-    # 根据维度归属，选取关键指标构建大师的具体观点
-    if "生意质量" in dim_key:
-        parts.append(f"毛利率{gm}%，{_gm_text(gm)}")
-        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
-        parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
-    elif "护城河" in dim_key:
-        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
-        parts.append(f"毛利率{gm}%，{_gm_text(gm)}")
-        parts.append(f"负债率{dr}%，{_dr_text(dr)}")
-    elif "管理层" in dim_key:
-        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
-        parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
-        parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
-    elif "最大风险" in dim_key:
-        parts.append(f"负债率{dr}%，{_dr_text(dr)}")
-        parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
-        parts.append(f"净利增速{net_yoy}%，{_net_text(net_yoy)}")
-    elif "文明趋势" in dim_key:
-        parts.append(f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}")
-        parts.append(f"净利率{np_margin}%，{_np_text(np_margin)}")
-        parts.append(f"ROE{roe}%，{_roe_text(roe)}")
-    elif "估值" in dim_key:
-        parts.append(f"PE{pe}，{_pe_text(pe)}")
-
-    return "；".join(parts)
-
-
 def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
     """生成大师答疑：归属大师针对其他大师质疑的回答"""
     if dim_key not in MASTER_PERSPECTIVES:

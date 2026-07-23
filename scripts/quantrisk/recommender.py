@@ -1360,27 +1360,6 @@ def _np_text(np_margin):
         return "无数据"
 
 
-def _gen_master_view(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
-    """生成大师视角：核心追问 + 大师基于数据的观点"""
-    if dim_key not in MASTER_PERSPECTIVES:
-        return ""
-    question = MASTER_PERSPECTIVES[dim_key]["question"]
-    parts = [f"**核心追问**：{question}"]
-    if "生意质量" in dim_key:
-        parts.extend([f"毛利率{gm}%，{_gm_text(gm)}", f"ROE{roe}%，{_roe_text(roe)}", f"净利率{np_margin}%，{_np_text(np_margin)}"])
-    elif "护城河" in dim_key:
-        parts.extend([f"ROE{roe}%，{_roe_text(roe)}", f"毛利率{gm}%，{_gm_text(gm)}", f"负债率{dr}%，{_dr_text(dr)}"])
-    elif "管理层" in dim_key:
-        parts.extend([f"ROE{roe}%，{_roe_text(roe)}", f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}", f"净利率{np_margin}%，{_np_text(np_margin)}"])
-    elif "最大风险" in dim_key:
-        parts.extend([f"负债率{dr}%，{_dr_text(dr)}", f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}", f"净利增速{net_yoy}%，{_net_text(net_yoy)}"])
-    elif "文明趋势" in dim_key:
-        parts.extend([f"营收增速{rev_yoy}%，{_rev_text(rev_yoy)}", f"净利率{np_margin}%，{_np_text(np_margin)}", f"ROE{roe}%，{_roe_text(roe)}"])
-    elif "估值" in dim_key:
-        parts.extend([f"PE{pe}，{_pe_text(pe)}"])
-    return "；".join(parts)
-
-
 def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
     """生成其他大师对当前维度的质疑"""
     if dim_key not in MASTER_PERSPECTIVES:

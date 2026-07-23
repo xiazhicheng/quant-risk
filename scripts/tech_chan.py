@@ -10,6 +10,7 @@ from scripts.quantrisk.report import StockAnalyzer
 from scripts.quantrisk.data import (hk_kline_tencent_async, stock_kline_yahoo_async,
                                      kline_tickflow_async, close_async_session, close_tickflow)
 from scripts.quantrisk.chan import chan_theory_full, calc_ma
+from scripts.quantrisk.chain_renderer import load_chain_data, render_mermaid
 
 def fmt(v, dec=2):
     if v is None:
@@ -32,91 +33,27 @@ async def fetch_klines(code, period="1d", days=730):
     return kl or []
 
 def _print_industry_chain(code, name):
-    """输出产业链 Mermaid 全景图"""
-    if code == "02460":
-        print("```mermaid")
-        print("graph LR")
-        print("    subgraph 上游_原材料")
-        print("        PET[PET 聚酯瓶片<br/>⚠️2026年+40%]")
-        print("        Water[水源<br/>❌无独占水源]")
-        print("        Pkg[瓶盖/标签/纸箱]")
-        print("    end")
-        print("    subgraph 中游_生产制造")
-        print("        Own[自有工厂 13家<br/>产量占比46% ↑]")
-        print("        OEM[合作代工厂 35家<br/>产量占比54%<br/>💸年付20亿代工费]")
-        print("    end")
-        print("    subgraph 下游_渠道终端")
-        print("        Trad[传统经销商<br/>1,198家 + 3,938家次级]")
-        print("        Cold[冷柜/现代渠道<br/>🔴冷柜战落败]")
-        print("        EC[电商/特通<br/>🟢CAGR+34%]")
-        print("    end")
-        print("    subgraph 终端用户")
-        print("        User[消费者<br/>个人 / 家庭 / 企业]")
-        print("    end")
-        print("    PET --> Own")
-        print("    PET --> OEM")
-        print("    Water --> Own")
-        print("    Water --> OEM")
-        print("    Pkg --> Own")
-        print("    Pkg --> OEM")
-        print("    Own --> Trad")
-        print("    Own --> Cold")
-        print("    Own --> EC")
-        print("    OEM --> Trad")
-        print("    OEM --> Cold")
-        print("    OEM --> EC")
-        print("    Trad --> User")
-        print("    Cold --> User")
-        print("    EC --> User")
-        print("```")
+    """输出产业链 Mermaid 全景图 — 从 research/chain/{code}.yaml 加载"""
+    data = load_chain_data(code)
+    if data is None:
+        print(f"  暂无{name}的产业链数据")
         print()
-        print("**卡脖子环节**: 🔴 PET原料价格波动（占成本20%+）| 🔴 自产率仅46%代工费吞噬利润")
-        print("**对标龙头差距**: vs 农夫山泉 — 毛利率-13.6pp | 饮料收入占比-47.7pp | 市值1:23")
+        return
+    industry = data.get("industry", "")
+    if industry:
+        print(f"**{industry}**")
         print()
-    elif code == "03888":
-        print("```mermaid")
-        print("graph LR")
-        print("    subgraph 上游_技术算力")
-        print("        LLM[AI大模型<br/>OpenAI / 国产]")
-        print("        Cloud[云计算 IaaS<br/>🟢金山云协同]")
-        print("        HW[硬件终端<br/>🟢WPS for iPad]")
-        print("    end")
-        print("    subgraph 中游_软件平台")
-        print("        WPS[WPS Office<br/>✅月活6.78亿<br/>💰现金牛]")
-        print("        WPS365[WPS 365 协同<br/>⚠️连续4Q+60%<br/>但市占率<8%]")
-        print("        WPSAI[WPS AI<br/>🟢月活8013万<br/>🚀+307%]")
-        print("        Game[游戏业务<br/>🔴Q3同比-47%<br/>拖累]")
-        print("    end")
-        print("    subgraph 下游_用户场景")
-        print("        C[个人用户<br/>6.78亿月活<br/>天花板渐近]")
-        print("        B[政企客户<br/>✅75%双一流高校<br/>✅信创壁垒]")
-        print("        O[海外用户<br/>🟢2.45亿月活<br/>🚀+53.67%]")
-        print("    end")
-        print("    subgraph 竞争格局")
-        print("        DD[钉钉 ~2亿月活<br/>阿里生态]")
-        print("        WX[企业微信 ~1亿月活<br/>微信私域]")
-        print("        FS[飞书 ~5000万月活<br/>字节AI]")
-        print("    end")
-        print("    LLM --> WPSAI")
-        print("    Cloud --> WPS365")
-        print("    Cloud --> WPS")
-        print("    HW --> WPS")
-        print("    WPS --> C")
-        print("    WPS --> O")
-        print("    WPSAI --> WPS")
-        print("    WPSAI --> WPS365")
-        print("    WPS365 --> B")
-        print("    WPS365 -.->|竞争 92%市占率| DD")
-        print("    WPS365 -.->|竞争| WX")
-        print("    WPS365 -.->|竞争| FS")
-        print("    Game --> C")
-        print("```")
-        print()
-        print("**卡脖子环节**: 🔴 AI大模型依赖外部 | 🔴 协同办公'飞钉微'占92%市占率")
-        print("**转型关键**: WPS从工具→平台转型，2025年研发投入20.95亿(+23.57%)")
-        print()
-    else:
-        print(f"  暂无{name}的产业链数据\n")
+    print("```mermaid")
+    print(render_mermaid(data))
+    print("```")
+    print()
+    bottleneck = data.get("bottleneck", "")
+    vs_leader = data.get("vs_leader", "")
+    if bottleneck:
+        print(f"**卡脖子环节**: {bottleneck}")
+    if vs_leader:
+        print(f"**对标/转型关键**: {vs_leader}")
+    print()
 
 async def analyze(code, cost=None, shares=None):
     a = StockAnalyzer()

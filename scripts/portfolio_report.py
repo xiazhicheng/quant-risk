@@ -17,6 +17,7 @@ from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tence
                                      key_indicators_eastmoney_async, close_async_session, close_tickflow)
 from scripts.quantrisk.chan import chan_theory_full, calc_ma
 from scripts.quantrisk.indicators import calc_stop_loss_take_profit
+from scripts.quantrisk.chain_renderer import load_chain_data, render_mermaid
 
 def fmt(v, dec=2):
     if v is None: return "-"
@@ -39,73 +40,10 @@ STOCK_SECTORS = {
     "03888": "互联网/IT",
 }
 
-# ── 公墓爷树 ──
-INDUSTRY_CHAINS = {
-    "02460": {
-        "name": "饮料行业",
-        "mermaid": """graph TB
-    subgraph 上游_原材料
-        PET[PET 聚酯瓶片<br/>⚠️2026年+40%]
-        Water[水源<br/>❌无独占水源]
-        Pkg[瓶盖/标签/纸箱]
-    end
-    subgraph 中游_生产制造
-        Own[自有工厂 13家<br/>产量占比46% ↑]
-        OEM[合作代工厂 35家<br/>产量占比54%<br/>💸年付20亿代工费]
-    end
-    subgraph 下游_渠道终端
-        Trad[传统经销商<br/>1,198家 + 3,938家次级]
-        Cold[冷柜/现代渠道<br/>🔴冷柜战落败]
-        EC[电商/特通<br/>🟢CAGR+34%]
-    end
-    subgraph 终端消费者
-        User[消费者<br/>个人 / 家庭 / 企业]
-    end
-    PET -->|供应原料| Own & OEM
-    Water -->|供应水源| Own & OEM
-    Pkg -->|供应包材| Own & OEM
-    Own -->|自主生产 46%| Trad & Cold & EC
-    OEM -->|代工生产 54%| Trad & Cold & EC
-    Trad & Cold & EC -->|触达| User""",
-        "bottleneck": "🔴 PET原料价格波动（占成本20%+）| 🔴 自产率仅46%代工费吞噬利润",
-        "vs_leader": "vs 农夫山泉 — 毛利率-13.6pp | 饮料收入占比-47.7pp | 市值1:23",
-    },
-    "03888": {
-        "name": "软件/办公行业",
-        "mermaid": """graph TB
-    subgraph 上游_技术算力
-        LLM[AI大模型<br/>OpenAI / 国产]
-        Cloud[云计算 IaaS<br/>🟢金山云协同]
-        HW[硬件终端<br/>🟢WPS for iPad]
-    end
-    subgraph 中游_软件平台
-        WPS[WPS Office<br/>✅月活6.78亿<br/>💰现金牛]
-        WPS365[WPS 365 协同<br/>⚠️连续4Q+60%<br/>但市占率<8%]
-        WPSAI[WPS AI<br/>🟢月活8013万<br/>🚀+307%]
-        Game[游戏业务<br/>🔴Q3同比-47%<br/>拖累]
-    end
-    subgraph 下游_用户场景
-        C[个人用户<br/>6.78亿月活<br/>天花板渐近]
-        B[政企客户<br/>✅75%双一流高校<br/>✅信创壁垒]
-        O[海外用户<br/>🟢2.45亿月活<br/>🚀+53.67%]
-    end
-    subgraph 竞争格局
-        DD[钉钉 ~2亿月活]
-        WX[企业微信 ~1亿月活]
-        FS[飞书 ~5000万月活]
-    end
-    LLM -->|提供AI能力| WPSAI
-    Cloud -->|基础设施| WPS365 & WPS
-    HW -->|运行平台| WPS
-    WPSAI -->|赋能| WPS & WPS365
-    WPS -->|办公服务| C & O
-    WPS365 -->|协同办公| B
-    WPS365 -.->|竞争 92%市占率| DD & WX & FS
-    Game -->|娱乐| C""",
-        "bottleneck": "🔴 AI大模型依赖外部 | 🔴 协同办公'飞钉微'占92%市占率",
-        "vs_leader": "转型关键: WPS从工具→平台转型，研发投入20.95亿(+23.57%)",
-    },
-}
+# ── 产业链数据 ──
+# 结构化的产业链数据保存在 research/chain/{code}.yaml 中，
+# 渲染器 load_chain_data() / render_mermaid() 从 YAML 加载生成 Mermaid。
+# 新股票补链：按 ai-berkshire industry-research SOP 生成 YAML 文件放入该目录。
 
 async def fetch_klines(code, days=730):
     kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", f"{days//365}y")
@@ -1111,19 +1049,25 @@ async def generate_report(holdings=None):
         m = d["masters"]
         dims = m.get("dims", [])
         dim_logs = m.get("dim_logs", {})
-        chain = INDUSTRY_CHAINS.get(code)
+        chain_data = load_chain_data(code)
         print("### 📊 基本面分析")
         print()
         # 产业链 Mermaid
-        if chain:
-            print(f"**{chain['name']}**")
-            print()
+        if chain_data:
+            industry = chain_data.get("industry", "")
+            if industry:
+                print(f"**{industry}**")
+                print()
             print("```mermaid")
-            print(chain["mermaid"])
+            print(render_mermaid(chain_data))
             print("```")
             print()
-            print(f"> **卡脖子**: {chain['bottleneck']}")
-            print(f"> **竞品对标**: {chain['vs_leader']}")
+            bottleneck = chain_data.get("bottleneck", "")
+            vs_leader = chain_data.get("vs_leader", "")
+            if bottleneck:
+                print(f"> **卡脖子**: {bottleneck}")
+            if vs_leader:
+                print(f"> **竞品对标**: {vs_leader}")
             print()
         # ── 六维评分表（2026-07-22 六维框架） ──
         print("| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |")
@@ -1315,16 +1259,16 @@ async def _generate_data_json(holdings):
         pnl = (price / cost - 1) * 100 if cost else 0
         masters = result["masters"]
         dims = masters.get("dims", [])
-        chain = INDUSTRY_CHAINS.get(code)
+        chain_data = load_chain_data(code)
         stock = {
             "code": code, "name": name,
             "cost": round(cost, 3), "price": round(price, 2),
             "shares": shares, "pnl": round(pnl, 2),
             "cost_value": round(cost_value, 0), "market_value": round(market_value, 0),
             "sector": result.get("sector", STOCK_SECTORS.get(code, "未知")),
-            "mermaid": chain.get("mermaid", "") if chain else "",
-            "mermaid_bottleneck": chain.get("bottleneck", "") if chain else "",
-            "mermaid_vs_leader": chain.get("vs_leader", "") if chain else "",
+            "mermaid": render_mermaid(chain_data) if chain_data else "",
+            "mermaid_bottleneck": chain_data.get("bottleneck", "") if chain_data else "",
+            "mermaid_vs_leader": chain_data.get("vs_leader", "") if chain_data else "",
             "dims": [],
             "total_score": masters["total_score"],
             "pe": round(result.get("pe", 0), 2),

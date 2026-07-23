@@ -1239,5 +1239,91 @@ async def generate_report():
     print(f"> ⚠️ 声明: 基于公开市场数据，不构成投资建议")
     print(f"> 脚本: scripts/portfolio_report.py | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
+
+# ── JSON管道：脚本→LLM→脚本（保证输出格式一致性） ──
+async def _generate_data_json(holdings):
+    """生成六维评分原始数据JSON（供LLM生成大师视角/质疑/答疑）"""
+    report = {"stocks": []}
+    for h in holdings:
+        code = h["code"]
+        result = await analyze_holding(h, await _fetch_stock_data(code))
+        masters = result["masters"]
+        dims = masters.get("dims", [])
+        stock = {"code": code, "name": STOCK_NAMES.get(code, code), "dims": []}
+        for dim in dims:
+            stock["dims"].append({
+                "label": dim["label"],
+                "score": dim["score"],
+                "confidence": dim["confidence"],
+                "conclusion": dim["master_perspective"],
+            })
+        stock["total_score"] = masters["total_score"]
+        stock["pe"] = round(result.get("pe", 0), 2)
+        stock["roe"] = round(result.get("roe", 0), 2)
+        stock["gm"] = round(result.get("gm", 0), 2)
+        stock["np_margin"] = round(result.get("np_margin", 0), 2)
+        stock["rev_yoy"] = round(result.get("rev_yoy", 0), 2)
+        stock["net_yoy"] = round(result.get("net_yoy", 0), 2)
+        stock["dr"] = round(result.get("dr", 0), 2)
+        report["stocks"].append(stock)
+    return report
+
+
+async def _fetch_stock_data(code):
+    """获取单只股票的完整数据"""
+    from scripts.quantrisk.data import hk_stock_quote_tencent_async
+    quote = await hk_stock_quote_tencent_async(code)
+    day_kl = await fetch_klines(code)
+    return {"quote": quote or {}, "klines": day_kl}
+
+
+async def _render_analysis(analysis):
+    """读取LLM生成的JSON分析，渲染最终报告"""
+    print(f"# 🏦 持仓组合完整报告 | {datetime.now().strftime('%Y-%m-%d')}")
+    print()
+    for stock in analysis.get("stocks", []):
+        code = stock["code"]
+        name = stock["name"]
+        dims = stock.get("dims", [])
+        total = stock.get("total_score", 0)
+        print(f"## {code} {name}")
+        print()
+        print("| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |")
+        print("|:----|:---:|:------:|:--------|:----------:|:--------|")
+        for dim in dims:
+            label = dim["label"]
+            score = dim["score"]
+            conf = dim["confidence"]
+            pv = dim.get("master_perspective", "")
+            ch = dim.get("other_masters_challenge", "")
+            ans = dim.get("master_answer", "")
+            print(f"| {label} | {score}/10 | {conf} | {pv} | {ch} | {ans} |")
+        print(f"> **六维总分**: {total}/60")
+        print()
+
+
 if __name__ == "__main__":
-    asyncio.run(generate_report())
+    import sys
+    if "--sixdim-json" in sys.argv:
+        # 模式1：输出六维评分原始数据JSON（供LLM生成分析文本）
+        import json as _json
+        holdings = [
+            {"code": "02460", "market": "hk", "shares": 4600, "avg_cost": 10.334},
+            {"code": "03888", "market": "hk", "shares": 1600, "avg_cost": 25.013},
+        ]
+        report = asyncio.run(_generate_data_json(holdings))
+        print(_json.dumps(report, ensure_ascii=False, indent=2))
+    elif "--sixdim-render" in sys.argv:
+        # 模式2：读取LLM生成的JSON分析文件，渲染最终报告
+        idx = sys.argv.index("--sixdim-render") + 1
+        if idx < len(sys.argv):
+            analysis_file = sys.argv[idx]
+            import json as _json
+            with open(analysis_file) as _f:
+                analysis = _json.load(_f)
+            # 渲染最终报告
+            asyncio.run(_render_analysis(analysis))
+        else:
+            print("Usage: --sixdim-render <analysis.json>")
+    else:
+        asyncio.run(generate_report())

@@ -1364,6 +1364,21 @@ def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_y
     """生成其他大师对当前维度的凶悍质疑（逼出LLM潜力）"""
     if dim_key not in MASTER_PERSPECTIVES:
         return ""
+    # 格式化原始值，避免 31.180324662625% 这种超长小数
+    def _rv(v, nd=1):
+        if v is None:
+            return None
+        try:
+            return round(float(v), nd)
+        except (ValueError, TypeError):
+            return v
+    pe = _rv(pe, 1)
+    roe = _rv(roe, 1)
+    gm = _rv(gm, 1)
+    np_margin = _rv(np_margin, 1)
+    rev_yoy = _rv(rev_yoy, 1)
+    net_yoy = _rv(net_yoy, 1)
+    dr = _rv(dr, 1)
     others = MASTER_PERSPECTIVES[dim_key]["others"]
     challenges = []
     for master in others:
@@ -1449,6 +1464,21 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
     """生成大师答疑：归属大师针对其他大师质疑的回答"""
     if dim_key not in MASTER_PERSPECTIVES:
         return ""
+    # 格式化原始值，避免超长小数
+    def _rv(v, nd=1):
+        if v is None:
+            return None
+        try:
+            return round(float(v), nd)
+        except (ValueError, TypeError):
+            return v
+    pe = _rv(pe, 1)
+    roe = _rv(roe, 1)
+    gm = _rv(gm, 1)
+    np_margin = _rv(np_margin, 1)
+    rev_yoy = _rv(rev_yoy, 1)
+    net_yoy = _rv(net_yoy, 1)
+    dr = _rv(dr, 1)
     owner = MASTER_PERSPECTIVES[dim_key]["owner"]
     others = MASTER_PERSPECTIVES[dim_key]["others"]
     answers = []
@@ -1476,6 +1506,8 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
                 answers.append(f"风险可控叠加{_np_text(np_margin)}，长期确定性更强")
             elif "估值" in dim_key:
                 answers.append("估值看的是价格安全边际，风险已体现在负债率中")
+            elif "管理层" in dim_key:
+                answers.append(f"管理层维度看的是执行力和纪律，{_dr_text(dr)}说明财务纪律良好，管理风险可控")
         elif master == "李录":
             if "生意质量" in dim_key:
                 answers.append(f"长期趋势好但本维度更关注当期，{_gm_text(gm)}")
@@ -1486,6 +1518,80 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
 
     answer_text = "；".join(answers) if answers else "无回应"
     return f"**{owner}回应**：针对质疑——{answer_text}"
+
+
+def _apply_challenge_penalty(
+    dim_s: float,
+    dim_key: str,
+    pe: Optional[float],
+    roe: Optional[float],
+    gm: Optional[float],
+    np_margin: Optional[float],
+    rev_yoy: Optional[float],
+    net_yoy: Optional[float],
+    dr: Optional[float],
+    pe_limit: Optional[int],
+) -> tuple:
+    """大师质疑后扣分。
+
+    如果该维度的评分与该维度的核心指标相冲突（被其他大师质疑），
+    降低该维度原始分，影响百分位排名和最终得分。
+
+    扣分规则与各大师质疑逻辑一致：
+      - 生意质量: ROE<15% → 扣0.5（高毛利率但低ROE，资金效率存疑）
+      - 护城河: ROE<15% → 扣0.5（低ROE说明护城河不深）
+      - 管理层: 营收/净利负增长 → 扣0.5（执行力存疑）
+      - 最大风险: 负债率>70% 或 营收净利双负 → 扣0.5
+      - 文明趋势: 营收负增长 或 ROE<10% → 扣0.5
+      - 估值: PE>行业阈值 → 扣0.5
+
+    Returns: (adjusted_score, deduction, reasons)
+    """
+    deductions = 0.0
+    reasons = []
+
+    if "生意质量" in dim_key:
+        if roe is not None and roe < 15:
+            deductions += 0.5
+            reasons.append(f"ROE{roe}%<15%，资金效率存疑（巴菲特视角）")
+
+    elif "护城河" in dim_key:
+        if roe is not None and roe < 15:
+            deductions += 0.5
+            reasons.append(f"ROE{roe}%<15%，护城河不深（段永平视角）")
+
+    elif "管理层" in dim_key:
+        if rev_yoy is not None and rev_yoy < 0:
+            deductions += 0.5
+            reasons.append(f"营收{rev_yoy}%负增长，执行力存疑（芒格视角）")
+        if net_yoy is not None and net_yoy < 0:
+            deductions += 0.5
+            reasons.append(f"净利{net_yoy}%负增长，盈利能力恶化（李录视角）")
+
+    elif "最大风险" in dim_key:
+        if dr is not None and dr > 70:
+            deductions += 0.5
+            reasons.append(f"负债率{dr}%>70%，财务风险高（段永平视角）")
+        if rev_yoy is not None and rev_yoy < 0 and net_yoy is not None and net_yoy < 0:
+            deductions += 0.5
+            reasons.append("营收净利双负，经营恶化（巴菲特视角）")
+
+    elif "文明趋势" in dim_key:
+        if rev_yoy is not None and rev_yoy < 0:
+            deductions += 0.5
+            reasons.append(f"营收{rev_yoy}%负增长，长期趋势存疑（段永平视角）")
+        if roe is not None and roe < 10:
+            deductions += 0.5
+            reasons.append(f"ROE{roe}%<10%，资本回报低（巴菲特视角）")
+
+    elif "估值" in dim_key:
+        limit = pe_limit if pe_limit else 30
+        if pe is not None and pe > limit:
+            deductions += 0.5
+            reasons.append(f"PE{pe}倍>阈值{limit}，安全边际不足（芒格视角）")
+
+    adjusted = max(1.0, dim_s - deductions)
+    return adjusted, deductions, reasons
 
 
 def _raw_score_one(
@@ -1517,15 +1623,6 @@ def _raw_score_one(
     dim5_s, dim5_d, dim5_c, dim5_conf = dim_trend(p)
     dim6_s, dim6_d, dim6_c, dim6_conf = dim_valuation(p, p.get("s", "其他"), pe_limit)
 
-    # 合成基本面原始分（六维等权，用于百分位排名）
-    fb_raw = (dim1_s + dim2_s + dim3_s + dim4_s + dim5_s + dim6_s) / 6
-
-    # 芒格式逆向检验
-    reverse_test = _munger_reverse_test(p)
-
-    # 信息丰富度评级
-    ir_rating, ir_detail = info_richness_rating(p)
-
     # 大师视角 + 其他大师质疑（2026-07-22 新增）
     ind = p.get("ind", {}) or {}
     q = p.get("q", {}) or {}
@@ -1543,7 +1640,34 @@ def _raw_score_one(
     ]
     # 六维结论 = 大师视角（归属大师的基于财务数据的具体观点）
     dim_conclusions = [dim1_c, dim2_c, dim3_c, dim4_c, dim5_c, dim6_c]
-    # 其他大师质疑 + 大师答疑
+    # 六维原始分列表（用于循环）
+    dim_scores = [dim1_s, dim2_s, dim3_s, dim4_s, dim5_s, dim6_s]
+
+    # 大师质疑 → 扣分（2026-07-23 新增）
+    adjusted_scores = []
+    penalty_log = {}
+    for i, dk in enumerate(dim_keys):
+        adj_s, ded, reasons = _apply_challenge_penalty(
+            dim_scores[i], dk,
+            pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val,
+            pe_limit,
+        )
+        adjusted_scores.append(adj_s)
+        if ded > 0:
+            penalty_log[f"dim{i+1}_penalty"] = round(ded, 1)
+            penalty_log[f"dim{i+1}_penalty_reason"] = "，".join(reasons)
+    dim1_s, dim2_s, dim3_s, dim4_s, dim5_s, dim6_s = adjusted_scores
+
+    # 合成基本面原始分（六维等权，已扣减大师质疑扣分）
+    fb_raw = (dim1_s + dim2_s + dim3_s + dim4_s + dim5_s + dim6_s) / 6
+
+    # 芒格式逆向检验
+    reverse_test = _munger_reverse_test(p)
+
+    # 信息丰富度评级
+    ir_rating, ir_detail = info_richness_rating(p)
+
+    # 大师视角 + 其他大师质疑 + 大师答疑（2026-07-22 新增）
     other_masters = {}
     master_answers = {}
     for i, dk in enumerate(dim_keys):
@@ -1557,7 +1681,7 @@ def _raw_score_one(
         "c": c, "n": p["n"], "s": p["s"], "p": p["p"], "mc": p["mc"], "pe": p["pe"],
         "fb_raw": fb_raw, "hot_raw": hot, "ch_raw": ch,
         "fb_debug": f"生意质量:{dim1_d} | 护城河:{dim2_d} | 管理层:{dim3_d} | 风险:{dim4_d} | 趋势:{dim5_d} | 估值:{dim6_d}",
-        # 六维原始分（用于百分位排名）
+        # 六维原始分（已扣减大师质疑扣分，用于百分位排名）
         "dim1_raw": dim1_s, "dim2_raw": dim2_s, "dim3_raw": dim3_s,
         "dim4_raw": dim4_s, "dim5_raw": dim5_s, "dim6_raw": dim6_s,
         "dim1_debug": dim1_d, "dim2_debug": dim2_d, "dim3_debug": dim3_d,
@@ -1567,6 +1691,8 @@ def _raw_score_one(
         "dim4_conclusion": dim4_c, "dim5_conclusion": dim5_c, "dim6_conclusion": dim6_c,
         "dim1_confidence": dim1_conf, "dim2_confidence": dim2_conf, "dim3_confidence": dim3_conf,
         "dim4_confidence": dim4_conf, "dim5_confidence": dim5_conf, "dim6_confidence": dim6_conf,
+        # 大师质疑扣分日志（2026-07-23 新增）
+        **penalty_log,
         # 其他大师质疑 + 大师答疑（2026-07-23 新增）
         **other_masters,
         **master_answers,

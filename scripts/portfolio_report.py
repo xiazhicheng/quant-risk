@@ -253,6 +253,21 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
     """生成大师答疑：归属大师针对其他大师质疑的回答"""
     if dim_key not in MASTER_PERSPECTIVES:
         return ""
+    # 格式化原始值，避免超长小数
+    def _rv(v, nd=1):
+        if v is None:
+            return None
+        try:
+            return round(float(v), nd)
+        except (ValueError, TypeError):
+            return v
+    pe = _rv(pe, 1)
+    roe = _rv(roe, 1)
+    gm = _rv(gm, 1)
+    np_margin = _rv(np_margin, 1)
+    rev_yoy = _rv(rev_yoy, 1)
+    net_yoy = _rv(net_yoy, 1)
+    dr = _rv(dr, 1)
     owner = MASTER_PERSPECTIVES[dim_key]["owner"]
     others = MASTER_PERSPECTIVES[dim_key]["others"]
     answers = []
@@ -282,6 +297,8 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
                 answers.append(f"风险可控叠加{_np_text(np_margin)}，长期确定性更强")
             elif "估值" in dim_key:
                 answers.append("估值看的是价格安全边际，风险已体现在负债率中")
+            elif "管理层" in dim_key:
+                answers.append(f"管理层维度看的是执行力和纪律，{_dr_text(dr)}说明财务纪律良好，管理风险可控")
         elif master == "李录":
             if "生意质量" in dim_key:
                 answers.append(f"长期趋势好但本维度更关注当期，{_gm_text(gm)}")
@@ -289,6 +306,8 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
                 answers.append(f"长期确定性是参考，{_roe_text(roe)}是当前竞争力")
             elif "估值" in dim_key:
                 answers.append("长期确定性是参考，估值看的是当前价格是否合理")
+            elif "管理层" in dim_key:
+                answers.append(f"管理层长期视角看的是战略执行，{_rev_text(rev_yoy)}说明战略方向，长期需持续验证")
 
     answer_text = "；".join(answers) if answers else "无回应"
     return f"**{owner}回应**：针对质疑——{answer_text}"
@@ -298,6 +317,21 @@ def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_y
     """生成其他大师对当前维度的凶悍质疑（逼出LLM潜力）"""
     if dim_key not in MASTER_PERSPECTIVES:
         return ""
+    # 格式化原始值，避免 31.180324662625% 这种超长小数
+    def _rv(v, nd=1):
+        if v is None:
+            return None
+        try:
+            return round(float(v), nd)
+        except (ValueError, TypeError):
+            return v
+    pe = _rv(pe, 1)
+    roe = _rv(roe, 1)
+    gm = _rv(gm, 1)
+    np_margin = _rv(np_margin, 1)
+    rev_yoy = _rv(rev_yoy, 1)
+    net_yoy = _rv(net_yoy, 1)
+    dr = _rv(dr, 1)
 
     others = MASTER_PERSPECTIVES[dim_key]["others"]
     challenges = []

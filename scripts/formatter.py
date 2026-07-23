@@ -779,17 +779,18 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
         ("估值（巴菲特+段永平）", 6),
     ]
 
-    dim_rows = []
-    dim_header = "| 维度 | 评分 | 信心度 | 关键指标 |\n|:----|:---:|:------:|:--------|"
-    for label, idx in dim_configs:
-        score = getattr(fb, f"dim{idx}_score", "?")
-        confidence = getattr(fb, f"dim{idx}_confidence", "")
-        conclusion = getattr(fb, f"dim{idx}_conclusion", "")
-        if score != "?":
-            key_indicator = conclusion[:60] + "..." if len(conclusion) > 60 else conclusion
-            dim_rows.append(f"| {label} | {score}/10 | {confidence} | {key_indicator} |")
-        else:
-            dim_rows.append(f"| {label} | 数据不足 | — | 数据不足 |")
+dim_rows = []
+        dim_header = "| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |\n|:----|:---:|:------:|:--------|:----------:|:--------|"
+        for label, idx in dim_configs:
+            score = getattr(fb, f"dim{idx}_score", "?")
+            confidence = getattr(fb, f"dim{idx}_confidence", "")
+            conclusion = getattr(fb, f"dim{idx}_conclusion", "")
+            other_masters = getattr(fb, f"dim{idx}_other_masters", "")
+            master_answer = getattr(fb, f"dim{idx}_master_answer", "")
+            if score != "?":
+                dim_rows.append(f"| {label} | {score}/10 | {confidence} | {conclusion} | {other_masters} | {master_answer} |")
+            else:
+                dim_rows.append(f"| {label} | 数据不足 | — | 数据不足 | 数据不足 | 数据不足 |")
     dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"
 
     # ── 关键指标摘要 ──

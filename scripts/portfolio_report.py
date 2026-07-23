@@ -1073,15 +1073,16 @@ async def generate_report():
             print(f"> **竞品对标**: {chain['vs_leader']}")
             print()
         # ── 六维评分表（2026-07-22 六维框架） ──
-        print("| 维度 | 评分 | 信心度 | 关键指标 |")
-        print("|:----|:---:|:------:|:--------|")
+        print("| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |")
+        print("|:----|:---:|:------:|:--------|:----------:|:--------|")
         for dim in dims:
             label = dim["label"]
             score = dim["score"]
             confidence = dim["confidence"]
-            # 提取关键指标摘要
-            key_indicator = dim["master_perspective"][:60] + "..." if len(dim["master_perspective"]) > 60 else dim["master_perspective"]
-            print(f"| {label} | {score}/10 | {confidence} | {key_indicator} |")
+            master_perspective = dim.get("master_perspective", "")
+            other_masters = dim.get("other_masters_challenge", "")
+            master_answer = dim.get("master_answer", "")
+            print(f"| {label} | {score}/10 | {confidence} | {master_perspective} | {other_masters} | {master_answer} |")
 
         print(f"\n> **六维总分**: {m['total_score']}/60")
         

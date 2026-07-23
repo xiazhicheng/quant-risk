@@ -8,7 +8,6 @@ dependencies = [
     "aiohttp==3.14.1",
     "mootdx>=0.11.7",
     "pydantic>=2.13.4",
-    "pyyaml>=6.0.3",
     "requests>=2.34.2",
     "tickflow==0.1.24",
 ]

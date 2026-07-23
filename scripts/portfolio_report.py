@@ -1240,16 +1240,61 @@ async def generate_report():
     print(f"> 脚本: scripts/portfolio_report.py | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 
-# ── JSON管道：脚本→LLM→脚本（保证输出格式一致性） ──
+# ── JSON管道（脚本→LLM→脚本，保证输出格式一致性） ──
 async def _generate_data_json(holdings):
-    """生成六维评分原始数据JSON（供LLM生成大师视角/质疑/答疑）"""
-    report = {"stocks": []}
+    """生成完整持仓报告原始数据JSON"""
+    report = {"portfolio": {}, "stocks": []}
+    total_cost = 0
+    total_value = 0
     for h in holdings:
         code = h["code"]
         result = await analyze_holding(h, await _fetch_stock_data(code))
+        name = result.get("name", STOCK_NAMES.get(code, code))
+        cost = h["avg_cost"]
+        shares = h["shares"]
+        price = result.get("price", 0)
+        cost_value = cost * shares
+        market_value = price * shares
+        total_cost += cost_value
+        total_value += market_value
+        pnl = (price / cost - 1) * 100 if cost else 0
         masters = result["masters"]
         dims = masters.get("dims", [])
-        stock = {"code": code, "name": STOCK_NAMES.get(code, code), "dims": []}
+        chain = INDUSTRY_CHAINS.get(code)
+        stock = {
+            "code": code, "name": name,
+            "cost": round(cost, 3), "price": round(price, 2),
+            "shares": shares, "pnl": round(pnl, 2),
+            "cost_value": round(cost_value, 0), "market_value": round(market_value, 0),
+            "sector": result.get("sector", STOCK_SECTORS.get(code, "未知")),
+            "mermaid": chain.get("mermaid", "") if chain else "",
+            "mermaid_bottleneck": chain.get("bottleneck", "") if chain else "",
+            "mermaid_vs_leader": chain.get("vs_leader", "") if chain else "",
+            "dims": [],
+            "total_score": masters["total_score"],
+            "pe": round(result.get("pe", 0), 2),
+            "roe": round(result.get("roe", 0), 2),
+            "gm": round(result.get("gm", 0), 2),
+            "np_margin": round(result.get("np_margin", 0), 2),
+            "rev_yoy": round(result.get("rev_yoy", 0), 2),
+            "net_yoy": round(result.get("net_yoy", 0), 2),
+            "dr": round(result.get("dr", 0), 2),
+            "funnel": result.get("funnel_checks", []),
+            "funnel_status": result.get("funnel_status", ""),
+            "funnel_passed": result.get("funnel_passed", 0),
+            "funnel_total": result.get("funnel_total", 0),
+            "risks": result.get("risks", []),
+            "weekly": result.get("weekly", ""),
+            "chan": result.get("chan", {}),
+            "ma_detail": result.get("ma_detail", ""),
+            "macd_detail": result.get("macd_detail", ""),
+            "boll_detail": result.get("boll_detail", ""),
+            "tech_sl": result.get("tech_sl", 0),
+            "sltp": result.get("sltp", {}),
+            "mirror": result.get("mirror", ""),
+            "mirror_reasons": result.get("mirror_reasons", {}),
+            "advice": result.get("advice", ""),
+        }
         for dim in dims:
             stock["dims"].append({
                 "label": dim["label"],
@@ -1257,15 +1302,12 @@ async def _generate_data_json(holdings):
                 "confidence": dim["confidence"],
                 "conclusion": dim["master_perspective"],
             })
-        stock["total_score"] = masters["total_score"]
-        stock["pe"] = round(result.get("pe", 0), 2)
-        stock["roe"] = round(result.get("roe", 0), 2)
-        stock["gm"] = round(result.get("gm", 0), 2)
-        stock["np_margin"] = round(result.get("np_margin", 0), 2)
-        stock["rev_yoy"] = round(result.get("rev_yoy", 0), 2)
-        stock["net_yoy"] = round(result.get("net_yoy", 0), 2)
-        stock["dr"] = round(result.get("dr", 0), 2)
         report["stocks"].append(stock)
+    report["portfolio"] = {
+        "total_cost": round(total_cost, 0),
+        "total_value": round(total_value, 0),
+        "total_pnl": round((total_value / total_cost - 1) * 100, 2) if total_cost else 0,
+    }
     return report
 
 
@@ -1278,16 +1320,51 @@ async def _fetch_stock_data(code):
 
 
 async def _render_analysis(analysis):
-    """读取LLM生成的JSON分析，渲染最终报告"""
+    """读取LLM生成的JSON分析，渲染完整持仓报告（所有表格格式固定）"""
+    portfolio = analysis.get("portfolio", {})
     print(f"# 🏦 持仓组合完整报告 | {datetime.now().strftime('%Y-%m-%d')}")
+    print()
+    print("## 📊 组合总览")
+    print()
+    print("| 指标 | 值 |")
+    print("|:----|:---|")
+    print(f"| 总投入 | {portfolio.get('total_cost',0)} HKD → 当前市值 {portfolio.get('total_value',0)} HKD |")
+    print(f"| 总盈亏 | **{portfolio.get('total_pnl',0)}%**（{portfolio.get('total_value',0) - portfolio.get('total_cost',0)} HKD）|")
+    print(f"| 持仓数 | {len(analysis.get('stocks',[]))} 只 |")
     print()
     for stock in analysis.get("stocks", []):
         code = stock["code"]
         name = stock["name"]
+        pnl = stock.get("pnl", 0)
+        pnl_icon = "🔴" if pnl < -10 else "🟡" if pnl < 0 else "🟢"
+        cost = stock["cost"]
+        price = stock["price"]
         dims = stock.get("dims", [])
         total = stock.get("total_score", 0)
-        print(f"## {code} {name}")
+        print(f"---")
         print()
+        print(f"## {pnl_icon} {name}（{code}）— {stock['shares']} 股")
+        print()
+        print(f"> 成本 {cost} → 现价 {price} | 盈亏 **{pnl}%**（{stock.get('market_value',0) - stock.get('cost_value',0)} HKD）| 仓位 {stock.get('market_value',0) / portfolio.get('total_value',1) * 100:.2f}%")
+        print()
+        # 基本面分析 + 产业链Mermaid
+        print("### 📊 基本面分析")
+        print()
+        mermaid = stock.get("mermaid", "")
+        if mermaid:
+            print(f"**{stock.get('sector','')}行业**")
+            print()
+            print("```mermaid")
+            print(mermaid)
+            print("```")
+            print()
+            bottleneck = stock.get("mermaid_bottleneck", "")
+            vs_leader = stock.get("mermaid_vs_leader", "")
+            if bottleneck or vs_leader:
+                print(f"> **卡脖子**: {bottleneck}")
+                print(f"> **竞品对标**: {vs_leader}")
+                print()
+        # 六维评分表（固定格式）
         print("| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |")
         print("|:----|:---:|:------:|:--------|:----------:|:--------|")
         for dim in dims:
@@ -1298,8 +1375,84 @@ async def _render_analysis(analysis):
             ch = dim.get("other_masters_challenge", "")
             ans = dim.get("master_answer", "")
             print(f"| {label} | {score}/10 | {conf} | {pv} | {ch} | {ans} |")
-        print(f"> **六维总分**: {total}/60")
+        print(f"\n> **六维总分**: {total}/60")
+        # 行业漏斗
+        print("### 📊 行业漏斗")
         print()
+        print("| 指标 | 值 | 通过 |")
+        print("|:----|:---:|:----:|")
+        for f_item in stock.get("funnel", []):
+            f_label, f_val, f_passed = f_item
+            icon = "✅" if f_passed else "❌"
+            print(f"| {f_label} | {f_val} | {icon} |")
+        print(f"\n> **漏斗结果**: {stock.get('funnel_status','')}（{stock.get('funnel_passed',0)}/{stock.get('funnel_total',0)}）")
+        # 芒格式逆向检验
+        print()
+        print("### ⚠️ 芒格式逆向检验")
+        print()
+        print("| 失败路径 | 详情 |")
+        print("|:--------|:----|")
+        for r in stock.get("risks", []):
+            emoji = r[:2] if r.startswith("☠️") or r.startswith("⚠️") or r.startswith("🏭") else ""
+            colon_idx = r.find("：") if "：" in r else -1
+            if colon_idx > 0:
+                title = r[len(emoji):colon_idx+1].strip() if emoji else r[:colon_idx+1].strip()
+                detail = r[colon_idx+1:].strip()
+            else:
+                title, detail = r, ""
+            print(f"| {emoji} {title} | {detail} |")
+        # 技术面分析
+        print()
+        print("### 🔧 技术面分析")
+        print()
+        print("| 维度 | 指标 | 数据 |")
+        print("|:----|:----|:----:|")
+        weekly = stock.get("weekly", "")
+        if weekly and "|" in str(weekly):
+            for p in str(weekly).split("|"):
+                p = p.strip()
+                if "MA60" in p: print(f"| 周线大势 | MA60 | {p} |")
+                elif "缠论" in p: print(f"| 周线大势 | 缠论判定 | {p} |")
+                elif "笔" in p: print(f"| 周线大势 | 缠论笔 | {p} |")
+        else:
+            print(f"| 周线大势 | 综合 | {weekly} |")
+        chan = stock.get("chan", {})
+        print(f"| 日线走势 | 走势类型 | {chan.get('summary','')} |")
+        for line in chan.get("detail", []):
+            ls = line.strip()
+            if "最近笔" in ls: print(f"| 日线走势 | 最近笔 | {ls} |")
+            elif "中枢" in ls and "ZG" in ls: print(f"| 日线走势 | 中枢区间 | {ls} |")
+            elif "价格" in ls and "中枢" in ls: print(f"| 日线走势 | 价格位置 | {ls} |")
+            elif "笔" in ls and "段" in ls and "中枢" in ls: print(f"| 日线走势 | 结构 | {ls} |")
+        ma = stock.get("ma_detail", "")
+        direction = "偏多" if "🔺" in str(ma) else "偏空" if "🔻" in str(ma) else "中性"
+        print(f"| MA排列 | {direction} | {ma} |")
+        macd = stock.get("macd_detail", "")
+        macd_signal = "多头✅" if "多头" in str(macd) else "空头🔴" if "空头" in str(macd) else "中性"
+        print(f"| MACD | {macd_signal} | {macd} |")
+        boll = stock.get("boll_detail", "")
+        if boll: print(f"| 布林带 | 价格在布林带中 | {boll} |")
+        sl = stock.get("tech_sl", 0)
+        if sl:
+            sl_off = (price / sl - 1) * 100 if sl else 0
+            tp = stock.get("sltp", {}).get("take_profit", "-")
+            print(f"| 风控 | 止损-{abs(sl_off):.2f}% | 止损 {sl} / 止盈 {tp} |")
+        # 镜子测试
+        print()
+        print("### 📋 镜子测试")
+        print()
+        print(f"> {stock.get('mirror','')}")
+        ev = stock.get("mirror_reasons", {})
+        print(f"> 📊 生意{ev.get('score_biz',0)}/10 | 护城河{ev.get('score_moat',0)}/10 | 管理层{ev.get('score_mgmt',0)}/10 | 估值{ev.get('score_val',0)}/10 | 风险{ev.get('score_risk',0)}/10")
+        # 操作建议
+        print("### 🎯 操作建议")
+        print()
+        print(f"> {stock.get('advice','')}")
+        print()
+    print("---")
+    print(f"> 📡 数据来源: StockAnalyzer + chan_theory_full + 研报数据库 + 行业分析")
+    print(f"> ⚠️ 声明: 基于公开市场数据，不构成投资建议")
+    print(f"> 脚本: scripts/portfolio_report.py --sixdim-render | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 
 if __name__ == "__main__":

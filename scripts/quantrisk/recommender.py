@@ -1361,20 +1361,87 @@ def _np_text(np_margin):
 
 
 def _gen_other_masters_challenge(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
-    """生成其他大师对当前维度的质疑"""
+    """生成其他大师对当前维度的凶悍质疑（逼出LLM潜力）"""
     if dim_key not in MASTER_PERSPECTIVES:
         return ""
     others = MASTER_PERSPECTIVES[dim_key]["others"]
     challenges = []
     for master in others:
         if master == "段永平":
-            challenges.append(f"段永平：{_gm_text(gm)}；{_roe_text(roe)}；{_np_text(np_margin)}")
+            base = f"段永平：毛利率{gm}%"
+            if roe is not None and roe < 15:
+                base += f"、ROE仅{roe}%"
+            if np_margin is not None and np_margin < 20:
+                base += f"、净利率{np_margin}%——你管这叫对的生意？毛利率再高ROE不行就是资金黑洞"
+            elif roe is not None and roe < 15:
+                base += "——ROE连15%都没有，说明赚来的钱不知道怎么用"
+            elif "护城河" in dim_key:
+                base += "——毛利率高就算护城河？那所有奢侈品公司都是金城汤池了！"
+            elif "最大风险" in dim_key:
+                base += "——营收负增长、净利暴跌，你跟我说风险可控？"
+            elif "文明趋势" in dim_key:
+                base += "——营收增速慢成这样，10年后可能更小"
+            else:
+                base += "！"
+            challenges.append(base)
         elif master == "巴菲特":
-            challenges.append(f"巴菲特：{_pe_text(pe)}；{_roe_text(roe)}；{_dr_text(dr)}")
+            base = f"巴菲特：PE{pe}倍"
+            if roe is not None: base += f"、ROE{roe}%"
+            if dr is not None: base += f"、负债率{dr}%"
+            if "生意质量" in dim_key:
+                base += "——毛利率高但ROE不行，这不是好生意是资金浪费！"
+            elif "管理层" in dim_key:
+                base += "——营收增长这么慢，管理层是在混日子吗？"
+            elif "最大风险" in dim_key:
+                base += "——负债率不高，你芒格说的风险在哪？"
+            elif "文明趋势" in dim_key:
+                base += "——营收增速跑不赢通胀，10年后可能更小"
+            else:
+                base += "！"
+            challenges.append(base)
         elif master == "芒格":
-            challenges.append(f"芒格：{_dr_text(dr)}；{_rev_text(rev_yoy)}；{_net_text(net_yoy)}")
+            base = "芒格："
+            risk_flags = []
+            if dr is not None and dr > 50: risk_flags.append(f"负债率{dr}%这么高")
+            if rev_yoy is not None and rev_yoy < 0: risk_flags.append(f"营收下滑{rev_yoy:.1f}%")
+            if net_yoy is not None and net_yoy < 0: risk_flags.append(f"净利暴跌{net_yoy:.1f}%")
+            if roe is not None and roe < 5: risk_flags.append(f"ROE仅{roe}%")
+            if risk_flags: base += "、".join(risk_flags)
+            else: base += "各项指标看起来还行，但"
+            if "生意质量" in dim_key:
+                base += "——生意质量好就不会死？多少好生意死在杠杆上！"
+            elif "护城河" in dim_key:
+                base += "——护城河？诺基亚的护城河不比你的宽？"
+            elif "管理层" in dim_key:
+                base += '——历史上最惨的亏损都是"值得信任的管理层"造成的！'
+            elif "文明趋势" in dim_key:
+                base += '——10年后还在？我见过太多"10年后还在"的公司最后死得渣都不剩！'
+            elif "估值" in dim_key:
+                base += "——便宜没好货！PE低是因为它就是不值那个价！"
+            else:
+                base += "！"
+            challenges.append(base)
         elif master == "李录":
-            challenges.append(f"李录：{_rev_text(rev_yoy)}；{_np_text(np_margin)}；{_dr_text(dr)}")
+            base = "李录："
+            if rev_yoy is not None and rev_yoy > 10:
+                base += f"营收增长{rev_yoy:.1f}%"
+            elif rev_yoy is not None:
+                base += f"营收仅增长{rev_yoy:.1f}%"
+            if np_margin is not None and np_margin > 0: base += f"、净利率{np_margin}%"
+            if dr is not None: base += f"、负债率{dr}%"
+            if "生意质量" in dim_key:
+                base += "——当期毛利率高有什么用？10年后消费者不喝你的水了，毛利率200%也没用！"
+            elif "护城河" in dim_key:
+                base += "——护城河会变窄的！10年后AI替代，你的护城河还在吗？"
+            elif "最大风险" in dim_key:
+                base += "——短期风险不是核心，10年后这家公司还在不在才是真问题！"
+            elif "管理层" in dim_key:
+                base += "——管理层短期不错，但10年后呢？营收增速这么慢在等死！"
+            elif "估值" in dim_key:
+                base += "——PE便宜就买？10年后它可能一文不值！"
+            else:
+                base += "！"
+            challenges.append(base)
     return "<br/>".join(challenges)
 
 

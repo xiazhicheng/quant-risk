@@ -641,27 +641,23 @@ def weekly_outlook(week_kl, price):
     parts.append(f"笔{ch.get('strokes_count',0)}")
     return " | ".join(parts)
 
-# ── 镜子测试（5句话说清楚为什么买—判分引擎+问答生成） ──
-def mirror_test(code, dims, pe, roe, rev_yoy, net_yoy, chan_info, price_info, gm=0, np_margin=0, net_yoy_val=0, dr=0, dy=0, sl=0, tp=0):
-    """基于六维评分判断「能说清楚几句」，并生成5个问答条目。
-    判分逻辑：维度评分>=5.0算1句有说服力。"""
+# ── 镜子测试（5句话说清楚为什么买—判分引擎） ──
+def mirror_test(code, dims, pe, roe, rev_yoy, net_yoy, chan_info, price_info):
+    """基于六维评分判断「能说清楚几句」，判分逻辑：维度评分>=5.0算1句有说服力。
+    具体5句话由LLM基于证据+联网生成。"""
     dim_dict = {}
     for dim in dims:
         label = dim["label"]
         score = dim["score"]
-        conclusion = dim["master_perspective"]
         for key in ["生意质量", "护城河", "管理层", "最大风险", "文明趋势", "估值"]:
             if key in label:
-                dim_dict[key] = (score, conclusion)
+                dim_dict[key] = (score, dim["master_perspective"])
                 break
 
     biz_score = dim_dict.get("生意质量", (0, ""))[0]
-    biz_conclusion = dim_dict.get("生意质量", (0, ""))[1]
     moat_score = dim_dict.get("护城河", (0, ""))[0]
-    moat_conclusion = dim_dict.get("护城河", (0, ""))[1]
     mgmt_score = dim_dict.get("管理层", (0, ""))[0]
     val_score = dim_dict.get("估值", (0, ""))[0]
-    val_conclusion = dim_dict.get("估值", (0, ""))[1]
     risk_score = dim_dict.get("最大风险", (0, ""))[0]
 
     convincing = sum(1 for s in [biz_score, moat_score, mgmt_score, val_score, risk_score] if s >= 5.0)
@@ -673,54 +669,12 @@ def mirror_test(code, dims, pe, roe, rev_yoy, net_yoy, chan_info, price_info, gm
     else:
         result = f"❌ 未通过（{convincing}/5）"
 
-    # 生成5个问答
-    def _biz_q():
-        if biz_score >= 7.5: return f"是的，{biz_conclusion}"
-        elif biz_score >= 5.0: return f"有一定理解，{biz_conclusion}"
-        else: return "较难理解，商业模式不清晰"
-
-    def _moat_q():
-        if moat_score >= 7.5: return f"护城河宽阔，{moat_conclusion}"
-        elif moat_score >= 5.0: return f"护城河一般，{moat_conclusion}"
-        else: return "护城河不明显"
-
-    def _mgmt_q():
-        if mgmt_score >= 7.5: return f"管理卓越，ROE{roe}%，{dim_dict.get('管理层',('',''))[1] if '管理层' in dim_dict else ''}"
-        elif mgmt_score >= 5.0: return f"管理合格，但ROE仅{roe}%"
-        else: return f"管理存疑，ROE{roe}%偏低"
-
-    def _val_q():
-        if val_score >= 7.5: return f"有安全边际，{val_conclusion}"
-        elif val_score >= 5.0: return f"估值合理，{val_conclusion}"
-        else: return f"估值偏高，{val_conclusion}"
-
-    def _risk_q():
-        if risk_score < 3.0:
-            parts = []
-            if rev_yoy and rev_yoy < -10: parts.append(f"营收下滑{rev_yoy:.1f}%")
-            if net_yoy_val and net_yoy_val < -10: parts.append(f"净利暴跌{net_yoy_val:.1f}%")
-            if dr and dr > 50: parts.append(f"负债率{dr}%偏高")
-            risk_detail = "，".join(parts) if parts else "风险较高"
-            return f"风险极高，{risk_detail}，需设止损{sl}"
-        elif risk_score >= 5.0:
-            return f"风险可控，止损{sl}设好即可"
-        else:
-            return f"需关注，败率较高，止损{sl}"
-
-    answers = [
-        ("① 这门生意我能理解吗？", _biz_q()),
-        ("② 护城河深不深？", _moat_q()),
-        ("③ 管理层值得信任吗？", _mgmt_q()),
-        ("④ 价格有安全边际吗？", _val_q()),
-        ("⑤ 错了会怎样？", _risk_q()),
-    ]
-
     evidence = {
         "score_biz": biz_score, "score_moat": moat_score,
         "score_mgmt": mgmt_score, "score_val": val_score, "score_risk": risk_score,
-        "pe": pe, "roe": roe, "rev_yoy": rev_yoy, "net_yoy": net_yoy_val,
-        "answers": answers,
+        "pe": pe, "roe": roe, "rev_yoy": rev_yoy, "net_yoy": net_yoy,
     }
+    return result, evidence
     return result, evidence
 
 # ── 芒格式逆向检验 ──
@@ -835,12 +789,7 @@ async def analyze_holding(h, result):
     risks = munger_risk_check(rev_yoy, net_yoy, roe, dr, pe, industry_risks_map.get(code))
     
     # 镜子测试
-    mirror_result, mirror_reasons = mirror_test(
-        code, masters.get("dims", []),
-        pe, roe, rev_yoy, net_yoy, chan, ma_detail,
-        gm=gm, np_margin=np_margin, net_yoy_val=net_yoy, dr=dr, dy=dy,
-        sl=sltp.get("stop_loss", 0), tp=sltp.get("take_profit", 0)
-    )
+    mirror_result, mirror_reasons = mirror_test(code, masters.get("dims", []), pe, roe, rev_yoy, net_yoy, chan, ma_detail)
     
     # 技术止损（对已亏损标的用现价计算，对盈利或微亏标的用成本）
     entry_for_sl = price if pnl_pct < -10 else cost
@@ -1065,17 +1014,11 @@ async def generate_report():
             print(f"| 风控 | 止损-{fmt(abs(sl_off))}% | 止损 {fmt(d['tech_sl'])} / 止盈 {fmt(d['sltp'].get('take_profit','-'))} |")
         print()
         
-        # 镜子测试（判分结果 + 5个问答）
+        # 镜子测试（判分结果，5句话由LLM+联网生成）
         ev = d.get("mirror_reasons", {})
         print("### 📋 镜子测试")
         print()
         print(f"> {d['mirror']}")
-        print(f"| # | 问题 | 回答 |")
-        print(f"|:-:|:----|:----|")
-        for q, a in ev.get("answers", []):
-            num = q.split(" ")[0] if " " in q else "?"
-            question_text = q[len(num)+1:] if " " in q else q
-            print(f"| {num} | {question_text} | {a} |")
         print(f"> 📊 生意{ev.get('score_biz',0)}/10 | 护城河{ev.get('score_moat',0)}/10 | 管理层{ev.get('score_mgmt',0)}/10 | 估值{ev.get('score_val',0)}/10 | 风险{ev.get('score_risk',0)}/10")
         
         # 操作建议

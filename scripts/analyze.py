@@ -621,6 +621,65 @@ async def main():
         print(f"错误: {e}")
         sys.exit(1)
 
+    # ── 非 JSON 模式：委托给 portfolio_report 统一渲染 ──
+    # 所有分析（单只/批量）复用同一套模板（六维评分+产业链+漏斗+镜子测试+技术面）
+    if not json_mode:
+        import subprocess
+        import json
+        import os
+
+        # 先用 StockAnalyzer 获取真实名称（避免报告里出现 "00268" 而不是 "金蝶国际"）
+        analyzer = StockAnalyzer()
+        name_map = {}
+        async def _fetch_name(c, m):
+            try:
+                if m == "hk":
+                    r = await analyzer.analyze_hk(c)
+                elif m == "cn":
+                    r = await analyzer.analyze_cn(c)
+                else:
+                    r = await analyzer.analyze_us(c)
+                return r.get("name") or c if "error" not in r else c
+            except Exception:
+                return c
+
+        for code, (market, clean_code) in tasks:
+            nm = await _fetch_name(clean_code, market)
+            name_map[clean_code] = nm
+
+        # 构造持仓 JSON（成本设为 0，让报告模板正常渲染）
+        holdings = []
+        for code, (market, clean_code) in tasks:
+            holdings.append({
+                "code": clean_code,
+                "market": market,
+                "name": name_map.get(clean_code, code),
+                "shares": 1,
+                "avg_cost": 0,
+            })
+        await analyzer.close()
+        await close_async_session()
+        await close_tickflow()
+        stdin_data = json.dumps({"holdings": holdings})
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        report_script = os.path.join(script_dir, "portfolio_report.py")
+
+        # 直接调用 venv python（analyze.py 自身已由 uv run 执行，使用相同环境）
+        result = subprocess.run(
+            [sys.executable, report_script, "--stdin", "--single"],
+            input=stdin_data,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env={**os.environ, "PYTHONPATH": os.path.join(script_dir, os.pardir)},
+        )
+        print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        return
+
+    # ── JSON 模式：保持原有行为 ──
+
     analyzer = StockAnalyzer()
     results: Dict[str, Dict[str, Any]] = {}
 

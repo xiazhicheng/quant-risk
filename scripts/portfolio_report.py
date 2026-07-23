@@ -866,7 +866,11 @@ def munger_risk_check(code, name, rev_yoy, net_yoy, roe, dr, pe, gm, np_margin, 
 async def analyze_holding(h, result):
     """分析一只持仓，返回结构化数据"""
     code = h["code"]
-    name = STOCK_NAMES.get(code, code)
+    # 优先用传入的名称（analyze.py 已 resolve），再回退 STOCK_NAMES，最后用代码
+    name = h.get("name") or STOCK_NAMES.get(code, code)
+    # 如果传入的就是代码，再尝试用 STOCK_NAMES 覆盖
+    if name == code:
+        name = STOCK_NAMES.get(code, code)
     sector = STOCK_SECTORS.get(code, "未知")
     cost = h["avg_cost"]
     shares = h["shares"]
@@ -1004,22 +1008,28 @@ def load_holdings_from_stdin():
         return data.get("holdings", [])
     return []
 
-async def generate_report():
-    # 读取持仓：优先 --stdin，回退本地文件
-    holdings = []
-    use_stdin = "--stdin" in sys.argv
+async def generate_report(holdings=None):
+    """生成持仓报告。
 
-    if use_stdin:
-        holdings = load_holdings_from_stdin()
-    elif os.path.exists(PORTFOLIO_FILE):
-        pf = json.loads(open(PORTFOLIO_FILE).read())
-        holdings = pf.get("holdings", [])
-    else:
-        print("❌ 未发现持仓数据。请通过以下方式提供：")
-        print("   方式1: uv run scripts/portfolio_report.py --stdin < portfolio.json")
-        print("   方式2: 在本地创建 portfolio.json")
-        print("   方式3: 告诉 AI 你的持仓，由 AI 从 AgentMemory 读取后传入")
-        return
+    Args:
+        holdings: 持仓列表（直接传入，优先于命令行参数）
+    """
+    # 读取持仓：优先参数，其次 --stdin，回退本地文件
+    if holdings is None:
+        holdings = []
+        use_stdin = "--stdin" in sys.argv
+
+        if use_stdin:
+            holdings = load_holdings_from_stdin()
+        elif os.path.exists(PORTFOLIO_FILE):
+            pf = json.loads(open(PORTFOLIO_FILE).read())
+            holdings = pf.get("holdings", [])
+        else:
+            print("❌ 未发现持仓数据。请通过以下方式提供：")
+            print("   方式1: uv run scripts/portfolio_report.py --stdin < portfolio.json")
+            print("   方式2: 在本地创建 portfolio.json")
+            print("   方式3: 告诉 AI 你的持仓，由 AI 从 AgentMemory 读取后传入")
+            return
 
     if not holdings:
         print("❌ 持仓为空")
@@ -1059,20 +1069,25 @@ async def generate_report():
     top1_pct = analyzed[0]["market_value"] / total_value * 100 if total_value else 0
     
     # ── 输出 ──
-    print(f"# 🏦 持仓组合完整报告 | {datetime.now().strftime('%Y-%m-%d')}")
-    print()
-    
-    # 组合总览
-    print("## 📊 组合总览")
-    print()
-    print("| 指标 | 值 |")
-    print("|:----|:---|")
-    print(f"| 总投入 | {fmt(total_cost,0)} HKD → 当前市值 {fmt(total_value,0)} HKD |")
-    print(f"| 总盈亏 | **{fmt(total_pnl)}%**（{fmt(total_value-total_cost,0)} HKD）|")
-    print(f"| 持仓数 | {len(analyzed)} 只 |")
-    print(f"| 集中度 TOP1 | {analyzed[0]['name']} {fmt(top1_pct)}% {'⚠️超50%红线' if top1_pct>50 else ''}|")
-    print(f"| 组合健康度 | {'★'*max(1,min(5,round(avg_health)))}{'☆'*max(0,5-round(avg_health))} {fmt(avg_health)}/5 |")
-    print()
+    single_mode = "--single" in sys.argv
+    if single_mode:
+        print(f"# 📊 股票分析报告 | {analyzed[0]['name']}（{analyzed[0]['code']}）| {datetime.now().strftime('%Y-%m-%d')}")
+        print()
+    else:
+        print(f"# 🏦 持仓组合完整报告 | {datetime.now().strftime('%Y-%m-%d')}")
+        print()
+        
+        # 组合总览
+        print("## 📊 组合总览")
+        print()
+        print("| 指标 | 值 |")
+        print("|:----|:---|")
+        print(f"| 总投入 | {fmt(total_cost,0)} HKD → 当前市值 {fmt(total_value,0)} HKD |")
+        print(f"| 总盈亏 | **{fmt(total_pnl)}%**（{fmt(total_value-total_cost,0)} HKD）|")
+        print(f"| 持仓数 | {len(analyzed)} 只 |")
+        print(f"| 集中度 TOP1 | {analyzed[0]['name']} {fmt(top1_pct)}% {'⚠️超50%红线' if top1_pct>50 else ''}|")
+        print(f"| 组合健康度 | {'★'*max(1,min(5,round(avg_health)))}{'☆'*max(0,5-round(avg_health))} {fmt(avg_health)}/5 |")
+        print()
     
     # 各股分析
     for d in analyzed:
@@ -1081,12 +1096,16 @@ async def generate_report():
         pnl = d["pnl_pct"]
         pnl_icon = "🔴" if pnl < -10 else "🟡" if pnl < 0 else "🟢"
         
-        print(f"---")
-        print()
-        print(f"## {pnl_icon} {name}（{code}）— {d['shares']} 股")
-        print()
-        print(f"> 成本 {fmt(d['cost'])} → 现价 {fmt(d['price'])} | 盈亏 **{fmt(pnl)}%**（{fmt(d['market_value']-d['cost_value'],0)} HKD）| 仓位 {fmt(d['market_value']/total_value*100)}%")
-        print()
+        if single_mode:
+            print(f"## {name}（{code}）— 现价 {fmt(d['price'])}")
+            print()
+        else:
+            print(f"---")
+            print()
+            print(f"## {pnl_icon} {name}（{code}）— {d['shares']} 股")
+            print()
+            print(f"> 成本 {fmt(d['cost'])} → 现价 {fmt(d['price'])} | 盈亏 **{fmt(pnl)}%**（{fmt(d['market_value']-d['cost_value'],0)} HKD）| 仓位 {fmt(d['market_value']/total_value*100)}%")
+            print()
         
         # 基本面分析（产业链全景图 + 六维评分）
         m = d["masters"]
@@ -1239,23 +1258,24 @@ async def generate_report():
             print(f"> **✅ 持有** — 基本面+技术面均未触发卖出信号")
         print()
     
-    # 组合优化建议
-    print("---")
-    print()
-    print("## 🎯 组合优化建议")
-    print()
-    total_release = 0
-    for d in analyzed:
-        pnl = d["pnl_pct"]
-        code = d["code"]
-        if pnl < -20 and d["masters"]["total_score"] < 30:
-            print(f"| **{code} {d['name']}** | 🔴 止损 | 释放~{fmt(d['market_value'],0)} HKD | 亏损{fmt(pnl)}%+六维评分低 |")
-            total_release += d["market_value"]
-    if total_release == 0:
-        print("  当前持仓无紧急操作需求")
-    else:
-        print(f"\n> 合计可释放 **~{fmt(total_release,0)} HKD** 用于重新配置")
-    print()
+    # 组合优化建议（单股模式跳过）
+    if not single_mode:
+        print("---")
+        print()
+        print("## 🎯 组合优化建议")
+        print()
+        total_release = 0
+        for d in analyzed:
+            pnl = d["pnl_pct"]
+            code = d["code"]
+            if pnl < -20 and d["masters"]["total_score"] < 30:
+                print(f"| **{code} {d['name']}** | 🔴 止损 | 释放~{fmt(d['market_value'],0)} HKD | 亏损{fmt(pnl)}%+六维评分低 |")
+                total_release += d["market_value"]
+        if total_release == 0:
+            print("  当前持仓无紧急操作需求")
+        else:
+            print(f"\n> 合计可释放 **~{fmt(total_release,0)} HKD** 用于重新配置")
+        print()
     
     # AI偏见自查
     print("### 🧠 AI偏见自查清单")

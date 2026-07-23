@@ -1384,43 +1384,41 @@ def _gen_master_answer(dim_key, pe, roe, gm, np_margin, rev_yoy, net_yoy, dr):
         return ""
     owner = MASTER_PERSPECTIVES[dim_key]["owner"]
     others = MASTER_PERSPECTIVES[dim_key]["others"]
-    parts = [f"**{owner}回应**："]
+    answers = []
     for master in others:
         if master == "巴菲特":
-            parts.append(f"巴菲特说{_pe_text(pe)}、{_roe_text(roe)}")
             if "生意质量" in dim_key or "管理层" in dim_key:
-                parts.append(f"但毛利率{gm}%说明生意本质好，{_np_text(np_margin)}")
+                answers.append(f"PE估值和ROE是结果指标，{_gm_text(gm)}才是生意本质，{_np_text(np_margin)}")
             elif "文明趋势" in dim_key:
-                parts.append(f"但营收增速{rev_yoy}%说明长期趋势向上，{_dr_text(dr)}")
+                answers.append(f"估值合理说明市场认可，{_rev_text(rev_yoy)}支撑长期确定性")
             elif "最大风险" in dim_key:
-                parts.append("但本维度核心是风险，估值和ROE只是辅助判断")
+                answers.append("估值和ROE与本维度无关，风险核心在下行保护")
         elif master == "段永平":
-            parts.append(f"段永平说{_gm_text(gm)}、{_roe_text(roe)}")
             if "护城河" in dim_key:
-                parts.append(f"但护城河看的是综合竞争力，{_dr_text(dr)}")
+                answers.append(f"生意质量好是护城河的基础，{_dr_text(dr)}")
             elif "最大风险" in dim_key:
-                parts.append("但风险维度看的是下行保护，好生意也会面临风险")
+                answers.append("好生意≠无风险，本维度看的是下行空间")
             elif "文明趋势" in dim_key or "估值" in dim_key:
-                parts.append(f"但本维度侧重不同——{_rev_text(rev_yoy)}")
+                answers.append(f"生意质量好但本维度侧重不同，{_rev_text(rev_yoy)}")
         elif master == "芒格":
-            parts.append(f"芒格说{_dr_text(dr)}、{_rev_text(rev_yoy)}")
             if "生意质量" in dim_key:
-                parts.append(f"但生意质量看的是商业模式本质，{_gm_text(gm)}")
+                answers.append(f"风险可控说明生意稳健，{_gm_text(gm)}是商业模式的核心")
             elif "护城河" in dim_key:
-                parts.append(f"但护城河看的是长期竞争优势，{_roe_text(roe)}")
+                answers.append(f"负债率低是护城河的一部分，{_roe_text(roe)}说明竞争力")
             elif "文明趋势" in dim_key:
-                parts.append(f"但长期趋势看的是10年确定性，{_np_text(np_margin)}")
+                answers.append(f"风险可控叠加{_np_text(np_margin)}，长期确定性更强")
             elif "估值" in dim_key:
-                parts.append("但估值维度看的是价格安全边际，风险已体现在负债率中")
+                answers.append("估值看的是价格安全边际，风险已体现在负债率中")
         elif master == "李录":
-            parts.append(f"李录说{_rev_text(rev_yoy)}、{_dr_text(dr)}、{_np_text(np_margin)}")
             if "生意质量" in dim_key:
-                parts.append(f"但生意质量更关注当期盈利能力，{_gm_text(gm)}")
+                answers.append(f"长期趋势好但本维度更关注当期，{_gm_text(gm)}")
             elif "护城河" in dim_key or "最大风险" in dim_key:
-                parts.append(f"但本维度侧重不同——{_roe_text(roe)}")
+                answers.append(f"长期确定性是参考，{_roe_text(roe)}是当前竞争力")
             elif "估值" in dim_key:
-                parts.append("但估值看的是当前价格是否合理，长期确定性是参考")
-    return "；".join(parts)
+                answers.append("长期确定性是参考，估值看的是当前价格是否合理")
+
+    answer_text = "；".join(answers) if answers else "无回应"
+    return f"**{owner}回应**：针对质疑——{answer_text}"
 
 
 def _raw_score_one(

@@ -17,7 +17,7 @@ from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tence
                                      key_indicators_eastmoney_async, close_async_session, close_tickflow)
 from scripts.quantrisk.chan import chan_theory_full, calc_ma
 from scripts.quantrisk.indicators import calc_stop_loss_take_profit
-from scripts.quantrisk.chain_renderer import load_chain_data, render_mermaid
+from scripts.quantrisk.chain_renderer import render_mermaid_raw, render_chain_block, has_chain_data
 
 def fmt(v, dec=2):
     if v is None: return "-"
@@ -41,9 +41,9 @@ STOCK_SECTORS = {
 }
 
 # ── 产业链数据 ──
-# 结构化的产业链数据保存在 research/chain/{code}.yaml 中，
-# 渲染器 load_chain_data() / render_mermaid() 从 YAML 加载生成 Mermaid。
-# 新股票补链：按 ai-berkshire industry-research SOP 生成 YAML 文件放入该目录。
+# 产业链 Mermaid 由 LLM 按 ai-berkshire industry-research SOP 生成，
+# 作为临时中间产物传入 render_mermaid_raw() / render_chain_block()。
+# 不持久化到文件系统。
 
 async def fetch_klines(code, days=730):
     kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", f"{days//365}y")
@@ -1049,21 +1049,19 @@ async def generate_report(holdings=None):
         m = d["masters"]
         dims = m.get("dims", [])
         dim_logs = m.get("dim_logs", {})
-        chain_data = load_chain_data(code)
+        mermaid = d.get("mermaid", "")
+        bottleneck = d.get("mermaid_bottleneck", "")
+        vs_leader = d.get("mermaid_vs_leader", "")
+        industry = d.get("mermaid_industry", "")
         print("### 📊 基本面分析")
         print()
         # 产业链 Mermaid
-        if chain_data:
-            industry = chain_data.get("industry", "")
+        if mermaid:
             if industry:
                 print(f"**{industry}**")
                 print()
-            print("```mermaid")
-            print(render_mermaid(chain_data))
-            print("```")
+            print(render_mermaid_raw(mermaid))
             print()
-            bottleneck = chain_data.get("bottleneck", "")
-            vs_leader = chain_data.get("vs_leader", "")
             if bottleneck:
                 print(f"> **卡脖子**: {bottleneck}")
             if vs_leader:
@@ -1259,16 +1257,16 @@ async def _generate_data_json(holdings):
         pnl = (price / cost - 1) * 100 if cost else 0
         masters = result["masters"]
         dims = masters.get("dims", [])
-        chain_data = load_chain_data(code)
         stock = {
             "code": code, "name": name,
             "cost": round(cost, 3), "price": round(price, 2),
             "shares": shares, "pnl": round(pnl, 2),
             "cost_value": round(cost_value, 0), "market_value": round(market_value, 0),
             "sector": result.get("sector", STOCK_SECTORS.get(code, "未知")),
-            "mermaid": render_mermaid(chain_data) if chain_data else "",
-            "mermaid_bottleneck": chain_data.get("bottleneck", "") if chain_data else "",
-            "mermaid_vs_leader": chain_data.get("vs_leader", "") if chain_data else "",
+            "mermaid": result.get("mermaid", ""),
+            "mermaid_bottleneck": result.get("mermaid_bottleneck", ""),
+            "mermaid_vs_leader": result.get("mermaid_vs_leader", ""),
+            "mermaid_industry": result.get("mermaid_industry", ""),
             "dims": [],
             "total_score": masters["total_score"],
             "pe": round(result.get("pe", 0), 2),

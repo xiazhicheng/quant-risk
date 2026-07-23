@@ -10,7 +10,7 @@ from scripts.quantrisk.report import StockAnalyzer
 from scripts.quantrisk.data import (hk_kline_tencent_async, stock_kline_yahoo_async,
                                      kline_tickflow_async, close_async_session, close_tickflow)
 from scripts.quantrisk.chan import chan_theory_full, calc_ma
-from scripts.quantrisk.chain_renderer import load_chain_data, render_mermaid
+from scripts.quantrisk.chain_renderer import render_mermaid_raw
 
 def fmt(v, dec=2):
     if v is None:
@@ -32,23 +32,16 @@ async def fetch_klines(code, period="1d", days=730):
     kl = await kline_tickflow_async(f"{code}.HK", "1d", days)
     return kl or []
 
-def _print_industry_chain(code, name):
-    """输出产业链 Mermaid 全景图 — 从 research/chain/{code}.yaml 加载"""
-    data = load_chain_data(code)
-    if data is None:
-        print(f"  暂无{name}的产业链数据")
-        print()
+def _print_industry_chain(mermaid_text: str = "", industry: str = "",
+                          bottleneck: str = "", vs_leader: str = ""):
+    """输出产业链 Mermaid 全景图 — 由 LLM 传入临时生成"""
+    if not mermaid_text:
         return
-    industry = data.get("industry", "")
     if industry:
         print(f"**{industry}**")
         print()
-    print("```mermaid")
-    print(render_mermaid(data))
-    print("```")
+    print(render_mermaid_raw(mermaid_text))
     print()
-    bottleneck = data.get("bottleneck", "")
-    vs_leader = data.get("vs_leader", "")
     if bottleneck:
         print(f"**卡脖子环节**: {bottleneck}")
     if vs_leader:
@@ -88,7 +81,8 @@ async def analyze(code, cost=None, shares=None):
         # =====================
         print("## 产业链全景图")
         print()
-        _print_industry_chain(code, name)
+        # 产业链数据由 LLM 传入（参数链），此处为空待调用方补入
+        # _print_industry_chain(mermaid_text=..., industry=..., bottleneck=..., vs_leader=...)
         
         # =====================
         # 1. 周线定大势

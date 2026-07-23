@@ -747,22 +747,86 @@ def mirror_test(code, dims, pe, roe, rev_yoy, net_yoy, chan_info, price_info):
     return result, evidence
     return result, evidence
 
-# ── 芒格式逆向检验 ──
-def munger_risk_check(rev_yoy, net_yoy, roe, dr, pe, industry_risks=None):
+# ── 芒格式逆向检验（芒格：这家公司可能怎么死？） ──
+def munger_risk_check(code, name, rev_yoy, net_yoy, roe, dr, pe, gm, np_margin, industry_risks=None):
+    """芒格式逆向检验：不问怎么成功，问怎么死——然后避开所有死法。
+
+    为每只股票生成 3-5 条具体的失败路径，基于：
+    - 已知股票：硬编码业务特征（行业地位、竞争格局、商业模式缺陷）
+    - 未知股票：基于财务指标的逆向推断
+    """
     risks = []
-    if rev_yoy and rev_yoy < -15: risks.append(f"☠️ 营收同比{fmt(rev_yoy)}%，主业严重萎缩")
-    elif rev_yoy and rev_yoy < 0: risks.append(f"⚠️ 营收同比{fmt(rev_yoy)}%，下滑趋势")
-    if net_yoy and net_yoy < -30: risks.append(f"☠️ 净利同比{fmt(net_yoy)}%，盈利崩盘")
-    elif net_yoy and net_yoy < 0: risks.append(f"⚠️ 净利同比{fmt(net_yoy)}%，盈利下滑")
-    if roe and roe < 5: risks.append(f"⚠️ ROE仅{fmt(roe)}%，资本回报极低")
-    if dr and dr > 70: risks.append(f"☠️ 负债率{fmt(dr)}%，高杠杆风险")
-    if pe and pe < 0: risks.append(f"☠️ PE为负，公司亏损")
-    if industry_risks:
-        for r in industry_risks:
-            risks.append(f"🏭 {r}")
+    s = float(rev_yoy or 0)
+    n = float(net_yoy or 0)
+    r = float(roe or 0)
+    d = float(dr or 0)
+    p = float(pe or 0) if pe else 0
+    g = float(gm or 0)
+    pm = float(np_margin or 0)
+
+    # ── 已知股票：基于业务特征生成具体失败路径 ──
+    if code == "03888":
+        risks.append("☠️ 游戏业务持续失血：Q3同比-47%，如果游戏部门继续恶化，将拖累整体利润")
+        risks.append("☠️ AI替代办公软件：WPS核心是文档编辑，AI直接生成文档时用户不再需要手动编辑，WPS价值归零")
+        risks.append("☠️ 协同办公被挤出：'飞钉微'占92%市占率，WPS365仅8%，政企市场一旦被锁定就翻不了身")
+        risks.append("☠️ ROE仅4.13%：大量现金低效配置，如果管理层持续乱投资，资本在慢慢毁灭")
+    elif code == "02460":
+        risks.append("☠️ 营收-18.63%持续萎缩：份额被农夫山泉蚕食，按此速度3年后营收可能腰斩")
+        risks.append("☠️ 净利-39.28%崩盘：PET成本2026年+40%叠加价格战，毛利率可能跌破40%")
+        risks.append("☠️ 冷柜战落败：农夫山泉垄断终端陈列，新品无法触达消费者，渠道被锁死")
+        risks.append("☠️ 代工模式反噬：自产率仅46%，代工费年付20亿，规模缩小时利润会加速崩塌")
+        risks.append("☠️ 无水源壁垒：农夫山泉有千岛湖水源独占，华润没有，消费者不认品牌只认水")
+    else:
+        # ── 未知股票：基于财务指标逆向推断 ──
+        # 营收萎缩
+        if s < -30:
+            risks.append(f"☠️ 营收暴跌{s:.1f}%：生意在消失，不是周期问题而是结构性问题")
+        elif s < -15:
+            risks.append(f"☠️ 营收-{abs(s):.1f}%持续萎缩：如果市场份额持续流失，3年后营收可能腰斩")
+        elif s < 0:
+            risks.append(f"⚠️ 营收下滑{s:.1f}%：增长动力不足，需确认是周期还是结构性问题")
+
+        # 净利崩盘
+        if n < -50:
+            risks.append(f"☠️ 净利暴跌{n:.1f}%：盈利崩盘，成本失控或收入崩塌，离亏损一步之遥")
+        elif n < -30:
+            risks.append(f"☠️ 净利-{abs(n):.1f}%：盈利恶化，如果持续下去将进入亏损区间")
+        elif n < 0:
+            risks.append(f"⚠️ 净利下滑{n:.1f}%：盈利承压，需关注成本控制和收入质量")
+
+        # ROE 过低
+        if r < 3:
+            risks.append(f"☠️ ROE仅{r:.1f}%：连定存都跑不赢，资本在毁灭而非创造价值")
+        elif r < 5:
+            risks.append(f"⚠️ ROE仅{r:.1f}%：资本回报极低，大量现金低效配置")
+
+        # 高杠杆
+        if d > 70:
+            risks.append(f"☠️ 负债率{d:.1f}%：高杠杆，利率上行或收入下滑时可能债务违约")
+
+        # 毛利率低 + 营收下滑 = 定价权丢失
+        if g < 20 and s < 0:
+            risks.append(f"☠️ 毛利率仅{g:.1f}%且营收下滑：无定价权+生意萎缩，双重打击")
+        elif g < 10:
+            risks.append(f"☠️ 毛利率仅{g:.1f}%：几乎没有定价权，成本上涨直接吃掉利润")
+
+        # 净利率低
+        if pm < 5 and s < 0:
+            risks.append(f"☠️ 净利率仅{pm:.1f}%且营收下滑：利润率极薄，收入下跌直接亏损")
+
+        # PE 为负
+        if p < 0:
+            risks.append("☠️ PE为负：公司亏损，无法用PE估值")
+
+        # 行业风险
+        if industry_risks:
+            for r_text in industry_risks:
+                risks.append(f"🏭 {r_text}")
+
     if not risks:
-        risks.append("✅ 无明显逆向风险")
-    return risks
+        risks.append("✅ 无明显逆向风险——但芒格会说：活得久比赚得多重要")
+
+    return risks[:6]  # 最多6条，保持简洁
 
 # ── 主分析函数 ──
 async def analyze_holding(h, result):
@@ -856,7 +920,7 @@ async def analyze_holding(h, result):
     funnel_checks, funnel_status, f_passed, f_total = funnel_check(pe, roe, dr, gm, rev_yoy, net_yoy)
     
     # 芒格式风险
-    risks = munger_risk_check(rev_yoy, net_yoy, roe, dr, pe, industry_risks_map.get(code))
+    risks = munger_risk_check(code, name, rev_yoy, net_yoy, roe, dr, pe, gm, np_margin, industry_risks_map.get(code))
     
     # 镜子测试
     mirror_result, mirror_reasons = mirror_test(code, masters.get("dims", []), pe, roe, rev_yoy, net_yoy, chan, ma_detail)

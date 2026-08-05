@@ -166,18 +166,23 @@ async def fetch_cn_industry_ranking(top_n: int = 20) -> List[Dict[str, Any]]:
         return []
 
 
-async def fetch_cn_capital_flow(codes: List[str]) -> Dict[str, float]:
-    """批量获取 A 股个股资金流向（并行）"""
+async def fetch_cn_capital_flow(codes: List[str]) -> Dict[str, Dict[str, float]]:
+    """批量获取 A 股个股近5日主力资金净流入（并行）"""
     async def _fetch_one(code):
         try:
             flows = await cn_fund_flow_minute_async(code)
             if flows and len(flows) > 0:
-                return code, flows[-1].get("main_net", 0)
-            return code, 0.0
+                mains = [r.get("main_net", 0) or 0 for r in flows[-5:]]
+                return code, {
+                    "flow_5d": sum(mains),
+                    "flow_1d": mains[-1] if mains else 0,
+                    "days": min(len(mains), 5),
+                }
+            return code, {}
         except Exception:
-            return code, 0.0
+            return code, {}
     results_list = await asyncio.gather(*[_fetch_one(c) for c in codes], return_exceptions=True)
-    return {c: v for c, v in results_list if isinstance(v, (int, float))}
+    return {c: v for c, v in results_list if isinstance(v, dict) and v}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -283,10 +288,28 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     for i, item in enumerate(sector_ranking):
         item[1]["rank"] = i
 
+    # 板块资金流汇总 + 资金排名（近5日主力净流入）
+    capital_flow = await fetch_cn_capital_flow([p["c"] for p in passed])
+    for sec, data in sector_ranking:
+        data["flow_5d"] = 0.0
+        data["stocks"] = []
+    for p in passed:
+        cf = capital_flow.get(p["c"], {})
+        flow_5d = cf.get("flow_5d", 0) or 0
+        for sec, data in sector_ranking:
+            if sec == p["s"]:
+                data["flow_5d"] += flow_5d
+                data["stocks"].append({"code": p["c"], "name": p["n"], "flow_5d": flow_5d})
+                break
+    if any(d["flow_5d"] != 0 for _, d in sector_ranking):
+        sector_ranking.sort(key=lambda x: x[1]["flow_5d"], reverse=True)
+        for i, item in enumerate(sector_ranking):
+            item[1]["flow_rank"] = i
+
     # 计算原始分
     raw_scores = [
         _raw_score_one(p, kl_map.get(p["c"], []), CN_SECTOR_PE_THRESHOLD,
-                       sector_ranking=sector_ranking, market="cn")
+                       sector_ranking=sector_ranking, market="cn", capital_flow=capital_flow)
         for p in passed
     ]
 
@@ -296,6 +319,10 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     # 补充 kl/ind 字段
     for s in scored:
         s["kl"] = kl_map.get(s["c"], [])
+        cf = capital_flow.get(s["c"], {})
+        s["flow_5d"] = cf.get("flow_5d", 0) or 0
+        s["flow_1d"] = cf.get("flow_1d", 0) or 0
+        s["flow_days"] = cf.get("days", 0) or 0
 
     # Step 5: 格式化
     from scripts.quantrisk.recommender import build_selection_data

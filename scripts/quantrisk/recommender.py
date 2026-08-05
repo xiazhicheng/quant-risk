@@ -968,21 +968,23 @@ def hot_score(
     kl: List[Dict],
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
     market: str = "hk",
+    capital_flow: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> int:
-    """热点评分 — 基于近5日成交额变化+股价收盘价变化（替代资金流向）。
+    """热点评分 — 真实资金流（近5日主力净流入）为主，量价为辅。
 
-    港股资金流向数据长期缺失，改用K线数据计算：
-      ① 板块整体表现（板块平均5日涨跌幅排名）
+      ① 板块整体表现（板块平均5日涨跌幅排名，量价兜底）
       ② 近5日成交额变化（后5日/前5日成交额比）
       ③ 近5日收盘价变化
       ④ 量价共振（涨且量放大加分，跌且量放大减分）
       ⑤ 板块内相对强弱（个股vs板块平均）
+      ⑥ 真实资金流向（近5日主力净流入）：个股金额分档 + 板块资金排名 + 板块龙头
 
     Args:
         p: 股票信息
         kl: 日K线数据
         sector_ranking: [(sector_name, {"avg_5d_pct": ..., "stock_count": ..., "rank": ...})]
         market: 市场标识
+        capital_flow: {code: {"flow_5d": 近5日主力净流入(元), "flow_1d": 最近1日净流入(元)}}
     """
     s, sec, c = 2.0, p.get("s", "其他"), p.get("c", "")
 
@@ -1080,6 +1082,62 @@ def hot_score(
                     elif relative < -2:
                         s -= 0.2
                 break
+
+    # ⑥ 真实资金流向（近5日主力净流入）— 核心热点信号
+    if capital_flow:
+        cf = capital_flow.get(c) or {}
+        flow_5d = cf.get("flow_5d", 0) or 0
+        flow_1d = cf.get("flow_1d", 0) or 0
+        # 个股近5日净流入金额分档（单位：元）
+        if flow_5d > 5e8:
+            s += 2.0
+        elif flow_5d > 2e8:
+            s += 1.5
+        elif flow_5d > 1e8:
+            s += 1.0
+        elif flow_5d > 5e7:
+            s += 0.6
+        elif flow_5d > 1e7:
+            s += 0.3
+        elif flow_5d > 0:
+            s += 0.1
+        elif flow_5d < -5e7:
+            s -= 1.5
+        elif flow_5d < -1e7:
+            s -= 0.8
+        elif flow_5d < 0:
+            s -= 0.3
+        # 资金趋势：近1日净流入与5日累计同向 → 确认加码
+        if flow_1d > 0 and flow_5d > 0:
+            s += 0.3
+        elif flow_1d < 0 and flow_5d < 0:
+            s -= 0.3
+        # 板块近5日资金排名 + 板块内龙头
+        if sector_ranking:
+            for name, data in sector_ranking:
+                if name == sec:
+                    f_rank = data.get("flow_rank", 999)
+                    total = max(len(sector_ranking), 1)
+                    sec_flow = data.get("flow_5d", 0) or 0
+                    if f_rank == 0 and sec_flow > 0:
+                        s += 1.0
+                    elif f_rank == 1 and sec_flow > 0:
+                        s += 0.6
+                    elif f_rank == 2 and sec_flow > 0:
+                        s += 0.3
+                    elif f_rank >= total * 0.7:
+                        s -= 0.6
+                    # 板块内5日净流入龙头
+                    stocks = data.get("stocks") or []
+                    ranked = sorted(stocks, key=lambda x: x.get("flow_5d", 0) or 0, reverse=True)
+                    for rk, st in enumerate(ranked):
+                        if st.get("code") == c:
+                            if rk == 0 and (st.get("flow_5d", 0) or 0) > 0:
+                                s += 0.5
+                            elif rk == 1 and (st.get("flow_5d", 0) or 0) > 0:
+                                s += 0.25
+                            break
+                    break
 
     return s  # 未clamp，百分位排名会处理归一化
 
@@ -1634,6 +1692,7 @@ def _raw_score_one(
     industry_thresholds: Dict[str, int],
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
     market: str = "hk",
+    capital_flow: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     """计算单只股票的原始分（fb/hot/ch，未做百分位排名）。
 
@@ -1708,7 +1767,7 @@ def _raw_score_one(
         other_masters[f"dim{i+1}_other_masters"] = _gen_other_masters_challenge(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
         master_answers[f"dim{i+1}_master_answer"] = _gen_master_answer(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
 
-    hot = hot_score(p, kl, sector_ranking, market)
+    hot = hot_score(p, kl, sector_ranking, market, capital_flow)
     ch, cd = chan_score(p, kl)
 
     return {
@@ -1826,6 +1885,7 @@ def score_one(
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
     industry_thresholds: Dict[str, int] = None,
     market: str = "hk",
+    capital_flow: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     """单只股票三维评分。"""
     c = p["c"]
@@ -1833,7 +1893,7 @@ def score_one(
 
     fb, _ = fb_score(p, p.get("s", "其他"), pe_limit)
     fb = _clamp(fb)
-    hot = _clamp(hot_score(p, kl, sector_ranking, market))
+    hot = _clamp(hot_score(p, kl, sector_ranking, market, capital_flow))
     ch, cd = _clamp(chan_score(p, kl)[0]), chan_score(p, kl)[1]
     fb_w = round(fb * 12, 1)
     hot_w = round(hot * 4, 1)
@@ -1951,7 +2011,32 @@ def build_selection_data(
             vol_desc = f"量平({vol_5d_ratio:.1f}x)"
 
         pct_desc = f"{'%2B' if pct_5d >= 0 else ''}{pct_5d:.2f}%"
-        hot_desc = f"{s['s']}板块 5日量{vol_desc} | 5日涨幅{pct_desc}"
+        flow_5d = s.get("flow_5d", 0) or 0
+        flow_1d = s.get("flow_1d", 0) or 0
+        if abs(flow_5d) > 5e6:
+            if (s.get("flow_days", 0) or 0) >= 2:
+                flow_desc = (f"近{s['flow_days']}日主力净流入{flow_5d/1e8:+.2f}亿"
+                             f" | 最近1日{flow_1d/1e8:+.2f}亿")
+            else:
+                flow_desc = f"今日主力净流入{flow_5d/1e8:+.2f}亿"
+            hot_desc = f"{s['s']}板块 {flow_desc} | 5日量{vol_desc} | 5日涨幅{pct_desc}"
+        else:
+            hot_desc = f"{s['s']}板块 5日量{vol_desc} | 5日涨幅{pct_desc}"
+
+        # 板块排名
+        sector_rank_val = "?"
+        sector_5d_pct = "?"
+        if sector_ranking:
+            for rank_idx, (sec_name, sec_data) in enumerate(sector_ranking):
+                if sec_name == s['s']:
+                    sector_rank_val = rank_idx + 1
+                    sector_5d_pct = sec_data.get("avg_5d_pct", "?")
+                    break
+
+        # 相对强弱
+        rel_strength = "?"
+        if isinstance(pct_5d, (int, float)) and isinstance(sector_5d_pct, (int, float)):
+            rel_strength = pct_5d - sector_5d_pct
 
         # 缠论信号
         v_str = str(d.get("v", ""))
@@ -2028,6 +2113,16 @@ def build_selection_data(
                 "score": s["hot"],
                 "score_w": s.get("hot_w", round(s["hot"] * 4, 1)),
                 "desc": hot_desc,
+                "flow_5d": s.get("flow_5d", 0),
+                "flow_1d": s.get("flow_1d", 0),
+                "flow_days": s.get("flow_days", 0),
+                "sector_rank": sector_rank_val,
+                "sector_5d_pct": sector_5d_pct,
+                "vol_ratio": round(vol_5d_ratio, 2) if isinstance(vol_5d_ratio, float) else vol_5d_ratio,
+                "vol_desc": vol_desc,
+                "pct_5d": round(pct_5d, 2) if isinstance(pct_5d, float) else pct_5d,
+                "pct_desc": pct_desc,
+                "relative_strength": round(rel_strength, 2) if isinstance(rel_strength, float) else rel_strength,
             },
             "ch": {
                 "score": s["ch"],

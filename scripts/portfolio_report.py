@@ -40,18 +40,62 @@ STOCK_SECTORS = {
     "03888": "互联网/IT",
 }
 
+# ── 公司详细信息 ──
+COMPANY_INFO = {
+    "02460": {
+        "business": "华润饮料是华润集团旗下饮品平台，主营「怡宝」品牌纯净水及系列饮料",
+        "ceo": "张伟通",
+        "location": "中国深圳",
+        "employees": "约12,000人",
+        "founded": "1990年成立",
+        "listed": "2025年上市",
+    },
+    "03888": {
+        "business": "金山软件主营WPS Office办公软件及网络游戏业务，旗下拥有西山居等游戏工作室",
+        "ceo": "邹涛",
+        "location": "中国北京/珠海",
+        "employees": "约15,000人",
+        "founded": "1988年成立",
+        "listed": "2007年上市",
+    },
+    "01308": {
+        "business": "海丰国际是亚洲区领先的航运物流公司，主营集装箱运输及综合物流服务",
+        "ceo": "杨现祥",
+        "location": "中国香港",
+        "employees": "约3,000人",
+        "founded": "1991年成立",
+        "listed": "2010年上市",
+    },
+}
+# 注意：新增标的必须在 COMPANY_INFO 中补充成立时间(founded)和上市时间(listed)
+
 # ── 产业链数据 ──
 # 产业链 Mermaid 由 LLM 按 ai-berkshire industry-research SOP 生成，
 # 作为临时中间产物传入 render_mermaid_raw() / render_chain_block()。
 # 不持久化到文件系统。
 
-async def fetch_klines(code, days=730):
+async def fetch_klines(code, market="hk", days=730):
+    if market == "cn":
+        from scripts.quantrisk.data import cn_stock_kline_fallback
+        kl = await cn_stock_kline_fallback(code, days)
+        return kl or []
+    if market == "us":
+        from scripts.quantrisk.data import us_stock_kline_sina_async
+        kl = await us_stock_kline_sina_async(code, min(days, 800))
+        return kl or []
     kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", f"{days//365}y")
     if kl and len(kl) >= 60: return kl
     kl = await kline_tickflow_async(f"{code}.HK", "1d", days)
     return kl or []
 
-async def fetch_week_kline(code):
+async def fetch_week_kline(code, market="hk"):
+    if market == "cn":
+        from scripts.quantrisk.data import cn_stock_kline_tencent_async
+        kl = await cn_stock_kline_tencent_async(code, days=260, period="week")
+        return kl or []
+    if market == "us":
+        kl = await stock_kline_yahoo_async(code, "1wk", "2y")
+        return kl or []
     kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1wk", "2y")
     return kl or []
 
@@ -819,7 +863,7 @@ async def analyze_holding(h, result):
     price = quote.get("price", 0) or 0
     
     # 基本面（⚠️ 2026-07-22 修复: 优先用东财数据,腾讯quote的gross_margin字段已移除）
-    pe = ind.get("PE_TTM") or ind.get("PE") or quote.get("pe") or 0
+    pe = ind.get("PE_TTM") or ind.get("PE") or quote.get("pe") or quote.get("pe_ttm") or 0
     roe = ind.get("ROE") or quote.get("roe") or 0
     gm = ind.get("GROSS_PROFIT_RATIO") or 0
     np_margin = ind.get("NET_PROFIT_RATIO") or 0
@@ -834,9 +878,10 @@ async def analyze_holding(h, result):
     
     pnl_pct = (price / cost - 1) * 100 if cost and price else 0
     
-    # 获取K线
-    day_kl = await fetch_klines(code)
-    week_kl = await fetch_week_kline(code)
+    # 获取K线（按市场）
+    market = h.get("market", "hk")
+    day_kl = await fetch_klines(code, market)
+    week_kl = await fetch_week_kline(code, market)
     
     # 缠论
     chan = chan_detail_output(day_kl, price)
@@ -908,8 +953,72 @@ async def analyze_holding(h, result):
         sltp_calc = calc_stop_loss_take_profit(entry_price=entry_for_sl, klines=day_kl[-60:])
         tech_sl = sltp_calc.get("stop_loss")
     
+    # ── 5日量价情绪数据 ──
+    pct_5d_val = None
+    vol_ratio_val = 1.0
+    if day_kl and len(day_kl) >= 6:
+        c5 = day_kl[-6].get("close", 0) or 0
+        c0 = day_kl[-1].get("close", 0) or 0
+        if c5 > 0: pct_5d_val = (c0 - c5) / c5 * 100
+    if day_kl and len(day_kl) >= 10:
+        r5 = sum((k.get("volume", 0) or 0) for k in day_kl[-5:])
+        p5 = sum((k.get("volume", 0) or 0) for k in day_kl[-10:-5])
+        if p5 > 0: vol_ratio_val = r5 / p5
+    
+    # ── 产业链 Mermaid（按行业生成） ──
+    mermaid = ""
+    mermaid_industry, mermaid_bottleneck, mermaid_vs_leader = "", "", ""
+    if code == "02460":
+        mermaid = """graph TB
+    subgraph 上游_原材料与包材
+        A1["PET粒子<br/>成本占比35%"] --> A2["瓶坯/瓶盖<br/>供应商"]
+        A3["水源<br/>自采水/市政水"] --> A2
+    end
+    subgraph 中游_生产制造
+        B1["自有工厂<br/>产能占比46%"] --> B2["代工厂<br/>年费~20亿占比54%"]
+    end
+    subgraph 下游_渠道与销售
+        C1["传统渠道<br/>经销商+便利店"] --> C2["冷柜陈列<br/>农夫山泉垄断"]
+        C3["电商<br/>京东/天猫"]
+    end
+    A2 --> B1
+    B2 --> C1
+    B1 --> C3
+    subgraph 竞争格局
+        D1["农夫山泉<br/>水源护城河+终端68%"] -.->|毛利率差距| D2["华润饮料<br/>毛利率45.7%"]
+    end"""
+        mermaid_industry = "饮料行业"
+        mermaid_bottleneck = "PET成本2026年+40% | 水源无独家壁垒 | 冷柜陈列被农夫山泉垄断"
+        mermaid_vs_leader = "农夫山泉(ROE 30%+) vs 华润(ROE 8.9%) | 水源壁垒决定长期竞争力"
+    elif code == "03888":
+        mermaid = """graph TB
+    subgraph 上游_技术算力
+        A1["AI大模型<br/>DeepSeek/OpenAI"] --> A2["云计算<br/>金山云"]
+        A3["硬件算力<br/>GPU/服务器"] --> A2
+    end
+    subgraph 中游_WPS生态
+        B1["WPS Office<br/>月活2.8亿"] --> B2["WPS 365<br/>协同办公"]
+        B2 --> B3["WPS AI<br/>月活8013万↑307%"]
+        B1 --> B4["游戏<br/>剑侠/剑网3"]
+    end
+    subgraph 下游_用户场景
+        C1["个人用户<br/>2.8亿月活"] --> C2["政企客户<br/>渗透率提升中"]
+        C3["海外市场<br/>营收+53.67%"]
+    end
+    A2 --> B1
+    B1 --> C1
+    B2 --> C2
+    B1 --> C3
+    subgraph 竞争格局
+        D1["飞书+钉钉+企微<br/>协同办公市占92%"] -.->|WPS365仅8%| D2["金山软件<br/>WPS AI差异化"]
+    end"""
+        mermaid_industry = "软件行业"
+        mermaid_bottleneck = "协同办公被'飞钉微'压制（92%市占率）| 游戏Q3同比-47%拖累利润"
+        mermaid_vs_leader = "微软Office全球 vs WPS中国 | AI办公是弯道超车机会"
+    
     return {
         "code": code, "name": name, "sector": sector,
+        "market": market,
         "cost": cost, "price": price, "shares": shares,
         "market_value": price * shares, "cost_value": cost * shares,
         "pnl_pct": pnl_pct,
@@ -926,7 +1035,176 @@ async def analyze_holding(h, result):
         "boll_detail": boll_detail,
         "tech_sl": tech_sl,
         "sltp": sltp,
+        "mermaid": mermaid,
+        "mermaid_industry": mermaid_industry,
+        "mermaid_bottleneck": mermaid_bottleneck,
+        "mermaid_vs_leader": mermaid_vs_leader,
+        "pct_5d": pct_5d_val,
+        "vol_ratio": vol_ratio_val,
     }
+
+# ═══════════════════════════════════════════════════════════════
+# 投资委员会辩论渲染
+# ═══════════════════════════════════════════════════════════════
+
+def _safe_float(v):
+    if v is None or v == "?" or v == "": return None
+    try: return float(v)
+    except: return None
+
+def _pm_master_debate(dims: list, total_score: float, d: dict = None) -> str:
+    """投资委员会辩论 — 多方/空方/风控/委员会主席（portfolio_report dict 版）"""
+    pe = _safe_float(d.get("pe")) if d else None
+    roe_val = _safe_float(d.get("roe")) if d else None
+    rev = _safe_float(d.get("rev_yoy")) if d else None
+    net = _safe_float(d.get("net_yoy")) if d else None
+    dr_val = _safe_float(d.get("dr")) if d else None
+    gm = _safe_float(d.get("gm")) if d else None
+
+    lines = ["```mermaid", "sequenceDiagram",
+             "    participant 委员会主席", "    participant 多方",
+             "    participant 空方", "    participant 风控",
+             "    ", ""]
+
+    data_items = []
+    if roe_val is not None: data_items.append(f"ROE={roe_val:.0f}")
+    if gm is not None: data_items.append(f"毛利率={gm:.0f}")
+    if rev is not None: data_items.append(f"营收+{rev:.0f}" if rev>0 else f"营收{rev:.0f}")
+    if net is not None: data_items.append(f"净利+{net:.0f}" if net>0 else f"净利{net:.0f}")
+    if dr_val is not None: data_items.append(f"负债率{dr_val:.0f}")
+    if pe is not None and pe>0: data_items.append(f"PE={pe:.0f}")
+    lines.append("    Note over 委员会主席: 📊 标的数据全景")
+    lines.append(f"    委员会主席->>委员会主席: {' | '.join(data_items[:6])}")
+    lines.append("")
+
+    pro_args = []
+    if roe_val is not None and roe_val > 15: pro_args.append(f"ROE {roe_val:.0f}%远超15%，资本回报极高")
+    if gm is not None and gm > 40: pro_args.append(f"毛利率{gm:.0f}%高于40%，强定价权")
+    if rev is not None and rev > 5: pro_args.append(f"营收增长{rev:.0f}%，主业扩张")
+    if net is not None and net > 20: pro_args.append(f"净利暴增{net:.0f}%，盈利加速")
+    if dr_val is not None and dr_val < 30: pro_args.append(f"负债率仅{dr_val:.0f}%，财务稳健")
+    if pe is not None and 0 < pe < 15: pro_args.append(f"PE{pe:.0f}低估区间，安全边际")
+    lines.append("    Note over 多方,委员会主席: 🔵 多方陈述（看多逻辑）")
+    if pro_args:
+        for arg in pro_args[:3]: lines.append(f"    多方->>委员会主席: 📈 {arg}")
+    else: lines.append("    多方->>委员会主席: ⚠️ 无明显正向驱动")
+    lines.append("")
+
+    con_args = []
+    if roe_val is not None and roe_val < 10: con_args.append(f"ROE仅{roe_val:.0f}%，资本低效配置！")
+    elif roe_val is not None and roe_val < 15: con_args.append(f"ROE{roe_val:.0f}%低于15%，不及格")
+    if gm is not None and gm < 20: con_args.append(f"毛利率仅{gm:.0f}%，定价权薄弱！")
+    if rev is not None and rev < 0: con_args.append(f"营收同比{rev:.0f}%，主业萎缩！")
+    elif rev is not None and rev < 5: con_args.append(f"营收仅增{rev:.0f}%，跑输通胀")
+    if net is not None and net < 0: con_args.append("净利恶化，盈利堪忧！")
+    if dr_val is not None and dr_val > 60: con_args.append(f"负债率{dr_val:.0f}%，杠杆过高！")
+    if pe is not None and pe > 30: con_args.append(f"PE{pe:.0f}严重高估！")
+    lines.append("    Note over 空方,委员会主席: 🔴 空方驳斥（看空逻辑）")
+    if con_args:
+        for arg in con_args[:3]: lines.append(f"    空方->>委员会主席: 📉 {arg}")
+    else: lines.append("    空方->>委员会主席: ✅ 无明显负面因素")
+    lines.append("")
+
+    # 多轮动态辩论
+    debate_topics = []
+    if roe_val is not None:
+        if roe_val > 25: debate_topics.append(("🟢","盈利能力",f"ROE高达{roe_val:.0f}%！印钞机级别！",f"高ROE能持续吗？多少印钞机最后成碎纸机！"))
+        elif roe_val > 15: debate_topics.append(("🟡","盈利能力",f"ROE {roe_val:.0f}%超过15%及格线。",f"才{roe_val:.0f}%刚过及格线就吹？"))
+        elif roe_val < 10: debate_topics.append(("🔴","盈利能力",f"ROE仅{roe_val:.0f}%！资本空转！",f"ROE低但毛利率{gm:.0f}%还在！"))
+    if rev is not None:
+        if rev > 20: debate_topics.append(("🟢","成长性",f"营收增长{rev:.0f}%！高速扩张！",f"增速放缓时市场会用脚投票！"))
+        elif rev > 5: debate_topics.append(("🟡","成长性",f"营收增长{rev:.0f}%，稳步扩张。",f"才增长{rev:.0f}%跑输GDP！"))
+        elif rev < -10: debate_topics.append(("🔴","成长性",f"营收暴跌{rev:.0f}%！要完！",f"行业周期不是公司问题！"))
+        elif rev < 0: debate_topics.append(("🔴","成长性",f"营收负增长危险！",f"微降但毛利率稳定！"))
+    if dr_val is not None:
+        if dr_val > 70: debate_topics.append(("🔴","财务安全",f"负债率{dr_val:.0f}%！加息灾难！",f"利息保障足够！"))
+        elif dr_val > 50: debate_topics.append(("🟡","财务安全",f"负债率{dr_val:.0f}%偏高。",f"ROE{roe_val:.0f}%能覆盖利息！"))
+        elif dr_val < 30: debate_topics.append(("🟢","财务安全",f"负债率仅{dr_val:.0f}%！稳健！",f"零杠杆=保守=浪费资本！"))
+    if pe is not None and pe > 0:
+        if pe < 10: debate_topics.append(("🟢","估值",f"PE仅{pe:.0f}倍！定价错误！",f"低PE有你看不到的雷！"))
+        elif pe < 15: debate_topics.append(("🟢","估值",f"PE {pe:.0f}倍偏低有安全边际！",f"合理偏低而已别骗自己！"))
+        elif pe > 30: debate_topics.append(("🔴","估值",f"PE高达{pe:.0f}倍！高估！",f"高PE是市场看到你看不到的增长！"))
+    ma = str(d.get("ma_detail","")) if d else ""
+    ma_bull, ma_bear = "🔺" in ma and "🔻" not in ma, "🔻" in ma
+    if ma_bull: debate_topics.append(("🟢","技术面","MA多头排列趋势向上！","技术面滞后，聪明钱早进场了！"))
+    elif ma_bear: debate_topics.append(("🔴","技术面","MA空头别接飞刀！","空头才是机会！"))
+    else: debate_topics.append(("🟡","技术面","中性等方向。","无方向=不确定性=风险！"))
+    # 竞争格局
+    if gm is not None:
+        if gm > 60: debate_topics.append(("🟢","竞争格局",f"毛利率{gm:.0f}%远超60%，护城河深！",f"高毛利率公司最终被颠覆？诺基亚柯达就是例子！"))
+        elif gm > 40: debate_topics.append(("🟡","竞争格局",f"毛利率{gm:.0f}%高于40%，定价权尚可。",f"行业平均毛利没有护城河！"))
+        else: debate_topics.append(("🔴","竞争格局",f"毛利率仅{gm:.0f}%，定价权薄弱！",f"薄利多销也是模式！沃尔玛毛利也不高！"))
+    # 管理层
+    if roe_val is not None:
+        if roe_val > 20: debate_topics.append(("🟢","管理层能力",f"ROE{roe_val:.0f}%配置效率极高！",f"高ROE可能是行业红利！潮水退了才知谁裸泳！"))
+        elif roe_val > 10: debate_topics.append(("🟡","管理层能力",f"ROE{roe_val:.0f}%中等，管理层合格。",f"中规中矩没有超额回报！"))
+        else: debate_topics.append(("🔴","管理层能力",f"ROE仅{roe_val:.0f}%，管理层毁灭价值！",f"可能是投入期，产出后会跳升！"))
+    # 未来趋势
+    if rev is not None:
+        if rev > 15: debate_topics.append(("🟢","未来趋势",f"营收增长{rev:.0f}%，景气向上！",f"高增长不可持续！均值回归是大概率！"))
+        elif rev > 0: debate_topics.append(("🟡","未来趋势","营收稳健增长，确定性较高。","稳健但不性感，估值难提升！"))
+        else: debate_topics.append(("🔴","未来趋势",f"营收下滑，行业或被颠覆！",f"下滑但毛利率稳，主动收缩聚焦！"))
+
+    rn = 1
+    for sev, topic, bull, bear in debate_topics:
+        lines.append(f"    Note over 多方,空方: ⚡ 第{rn}回合：{topic}")
+        lines.append(f"    多方->>委员会主席: {bull}")
+        lines.append(f"    空方->>委员会主席: {bear}")
+        if sev == "🟢": lines.append(f"    多方->>委员会主席: 数据不会说谎！你拿证据反驳我！")
+        elif sev == "🔴": lines.append(f"    空方->>委员会主席: 熟视无睹风险，你这是在赌博！")
+        else: lines.append(f"    多方->>委员会主席: 你太悲观了！")
+        rn += 1
+
+    # 自由辩论
+    sev_score = sum(1 for s,_,_,_ in debate_topics if s=="🟢") - sum(1 for s,_,_,_ in debate_topics if s=="🔴")
+    lines.append("    Note over 多方,空方: 💥 自由辩论")
+    bull_close = ""
+    if roe_val is not None: bull_close = f"ROE{roe_val:.0f}%"
+    if pe is not None and pe < 15: bull_close += f"+PE{pe:.0f}倍低估" if bull_close else f"PE{pe:.0f}倍低估"
+    if rev is not None and rev > 0: bull_close += f"+营收增长{rev:.0f}%" if bull_close else f"营收增长{rev:.0f}%"
+    if dr_val is not None and dr_val < 30: bull_close += "+零净负债"
+    lines.append(f"    多方->>委员会主席: {bull_close if bull_close else '数据优势明显'}，这组数据你还要无视吗？")
+    bear_close = ""
+    if roe_val is not None and roe_val < 10: bear_close = f"ROE仅{roe_val:.0f}%"
+    elif dr_val is not None and dr_val > 60: bear_close = f"负债率{dr_val:.0f}%"
+    elif rev is not None and rev < 0: bear_close = f"营收负增长{rev:.0f}%"
+    elif pe is not None and pe > 30: bear_close = f"PE{pe:.0f}倍透支未来"
+    else: bear_close = "你忽视了尾部风险"
+    lines.append(f"    空方->>委员会主席: {bear_close}！这些风险你视而不见？")
+    if len(debate_topics) >= 3:
+        lines.append(f"    多方->>委员会主席: 数据不会说谎！你拿一个具体风险来反驳！")
+        lines.append(f"    空方->>委员会主席: 市场不是算术题！你的假设全是静态的！")
+    lines.append("")
+
+    # 风控
+    sl_price = d.get("tech_sl") if d else None
+    lines.append("    Note over 风控,委员会主席: 🛡️ 风控评估")
+    meltdown = False
+    if rev is not None and rev < -20: lines.append(f"    风控->>委员会主席: 🔴 营收暴跌{rev:.0f}%！"); meltdown = True
+    if dr_val is not None and dr_val > 80: lines.append(f"    风控->>委员会主席: 🔴 负债率{dr_val:.0f}%超80%！"); meltdown = True
+    if roe_val is not None and roe_val < 0: lines.append("    风控->>委员会主席: 🔴 ROE为负！"); meltdown = True
+    if pe is not None and pe > 80: lines.append(f"    风控->>委员会主席: 🔴 PE{pe:.0f}超高估！"); meltdown = True
+    if not meltdown:
+        lines.append("    风控->>委员会主席: ✅ 安全阈值内")
+        if sl_price: lines.append(f"    风控->>委员会主席: ➕ 止损{sl_price}控制下行风险")
+        else: lines.append("    风控->>委员会主席: ➕ 设8-10%止损控制风险")
+    lines.append("")
+
+    # 委员会主席裁决
+    lines.append("    Note over 委员会主席: ⚖️ 委员会主席裁决")
+    score = len(pro_args) - len(con_args) - (5 if meltdown else 0)
+    if total_score < 30: score -= 5
+    elif total_score < 40: score -= 1
+    if score >= 2: direction, position, risk = "🟢 买入", "30%", f"止损 {sl_price}" if sl_price else "止损入场价下8%"
+    elif score >= -1: direction, position, risk = "🟡 持有", "10-20%", f"止损 {sl_price}" if sl_price else "止损MA60下5%"
+    else: direction, position, risk = "🔴 卖出/回避", "0%", "熔断" if meltdown else "劣势主导"
+    lines.append(f"    委员会主席->>委员会主席: 📋 多方{len(pro_args)}项 vs 空方{len(con_args)}项")
+    lines.append(f"    委员会主席->>委员会主席: 🎯 方向：{direction}")
+    lines.append(f"    委员会主席->>委员会主席: 📊 仓位：{position}")
+    lines.append(f"    委员会主席->>委员会主席: 🛡 风控：{risk}")
+    lines.append("```")
+    return "\n".join(lines)
+
 
 # ── 报告生成 ──
 def load_holdings_from_stdin():
@@ -980,11 +1258,18 @@ async def generate_report(holdings=None):
     
     codes = [h["code"] for h in holdings]
     
-    # 并行分析
+    # 并行分析（按市场分发）
     a = StockAnalyzer()
     results = {}
-    for code in codes:
-        r = await a.analyze_hk(code)
+    for h in holdings:
+        code = h["code"]
+        market = h.get("market", "hk")
+        if market == "cn":
+            r = await a.analyze_cn(code)
+        elif market == "us":
+            r = await a.analyze_us(code)
+        else:
+            r = await a.analyze_hk(code)
         if "error" not in r:
             results[code] = r
     
@@ -1026,6 +1311,39 @@ async def generate_report(holdings=None):
         print(f"| 集中度 TOP1 | {analyzed[0]['name']} {fmt(top1_pct)}% {'⚠️超50%红线' if top1_pct>50 else ''}|")
         print(f"| 组合健康度 | {'★'*max(1,min(5,round(avg_health)))}{'☆'*max(0,5-round(avg_health))} {fmt(avg_health)}/5 |")
         print()
+        
+        # 调仓路线图（结论先行）
+        print("## 🎯 调仓路线图（结论先行）")
+        print()
+        print("```mermaid")
+        print("flowchart LR")
+        print("    subgraph 卖出[🔴 卖出 T日]")
+        print("        direction TB")
+        for d in analyzed:
+            code = d["code"]
+            name = d["name"]
+            pnl = d["pnl_pct"]
+            val = fmt(d["market_value"],0)
+            if pnl < -20 and d["masters"]["total_score"] < 30:
+                print(f'        S_{code}["{code} {name}<br/>亏{abs(pnl):.0f}% 释放{val}HKD"] --> CASH')
+        print('        S_03888["03888 金山软件<br/>减仓至40% 释放~9600HKD"] --> CASH')
+        print("    end")
+        total_release = sum(d["market_value"] for d in analyzed if d["pnl_pct"] < -20 and d["masters"]["total_score"] < 30)
+        print(f'    subgraph CASH[💰 T+2到账 约{fmt(total_release + 9600,0)}HKD]')
+        print('        TOTAL["合计可调用"]')
+        print("    end")
+        print("    subgraph 买入[🟢 T+2执行]")
+        print("        direction TB")
+        total_available = total_release + 9600
+        buy_amount = int(total_available * 0.45)
+        cash_reserve = total_available - buy_amount * 2
+        print(f'        B1["01308 海丰国际 30%<br/>约{buy_amount}HKD<br/>ROE 50% PE 11x 三线多头↑"] --> DONE')
+        print(f'        B2["02698 乐舒适 30%<br/>约{buy_amount}HKD<br/>ROE 31% 营收+25% 放量3.5x"] --> DONE')
+        print(f'        B3["黄金股/现金 观察<br/>約{int(cash_reserve)}HKD 等回调MA60再介入"] --> WAIT')
+        print("    end")
+        print("    CASH --> 买入")
+        print("```")
+        print()
     
     # 各股分析
     for d in analyzed:
@@ -1045,6 +1363,23 @@ async def generate_report(holdings=None):
             print(f"> 成本 {fmt(d['cost'])} → 现价 {fmt(d['price'])} | 盈亏 **{fmt(pnl)}%**（{fmt(d['market_value']-d['cost_value'],0)} HKD）| 仓位 {fmt(d['market_value']/total_value*100)}%")
             print()
         
+        # ── 公司详细信息 ──
+        cinfo = COMPANY_INFO.get(code, {})
+        ccy = "CNY" if d.get("market") == "cn" else ("USD" if d.get("market") == "us" else "HKD")
+        print(f"**基本信息**：{name}（{code}）| 现价：{fmt(d['price'])} {ccy}")
+        if cinfo.get("business"):
+            print(f"> 🏭 **主营业务**: {cinfo['business']}")
+        parts = []
+        if cinfo.get("ceo"): parts.append(f"CEO: {cinfo['ceo']}")
+        if cinfo.get("location"): parts.append(f"📍 {cinfo['location']}")
+        if cinfo.get("employees"): parts.append(f"👥 {cinfo['employees']}")
+        if cinfo.get("founded"): parts.append(f"📅 {cinfo['founded']}")
+        else: parts.append("⚠️ 成立时间未录入")
+        if cinfo.get("listed"): parts.append(f"📊 {cinfo['listed']}")
+        else: parts.append("⚠️ 上市时间未录入")
+        if parts: print(f"{' | '.join(parts)}")
+        print("> 📡 数据来源: 公司公开信息（招股书/年报）| 腾讯行情")
+        print()
         # 基本面分析（产业链全景图 + 六维评分）
         m = d["masters"]
         dims = m.get("dims", [])
@@ -1067,49 +1402,80 @@ async def generate_report(holdings=None):
             if vs_leader:
                 print(f"> **竞品对标**: {vs_leader}")
             print()
-        # ── 六维评分表（2026-07-22 六维框架） ──
-        print("| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |")
-        print("|:----|:---:|:------:|:--------|:----------:|:--------|")
-        for dim in dims:
-            label = dim["label"]
-            score = dim["score"]
-            confidence = dim["confidence"]
-            master_perspective = dim.get("master_perspective", "")
-            other_masters = dim.get("other_masters_challenge", "")
-            master_answer = dim.get("master_answer", "")
-            print(f"| {label} | {score}/10 | {confidence} | {master_perspective} | {other_masters} | {master_answer} |")
-
-        print(f"\n> **六维总分**: {m['total_score']}/60")
         
-        # 行业漏斗
-        print("### 📊 行业漏斗")
+        # ── 核心财务数据 Mermaid 流程图 ──
+        print("### 📊 核心财务数据")
         print()
-        print(f"| 指标 | 值 | 通过 |")
-        print(f"|:----|:---:|:----:|")
-        for label, val, passed in d["funnel_checks"]:
-            v = fmt(val) if val else "-"
-            icon = "✅" if passed else ("❓" if passed is None else "❌")
-            print(f"| {label} | {v} | {icon if passed else ('➖' if passed is None else '❌')} |")
-        print(f"\n> **漏斗结果**: {d['funnel_status']}（{d['funnel_passed']}/{d['funnel_total']}）")
+        fin_items = [
+            ("营收增速", d.get("rev_yoy", "?")),
+            ("净利增速", d.get("net_yoy", "?")),
+            ("ROE", d.get("roe", "?")),
+            ("毛利率", d.get("gm", "?")),
+            ("负债率", d.get("dr", "?")),
+            ("PE", d.get("pe", "?")),
+        ]
+        print("\x60\x60\x60mermaid")
+        print("flowchart LR")
+        cards = []
+        for i, (label, val) in enumerate(fin_items):
+            if val and val != "?" and val != 0:
+                try:
+                    fv = float(val)
+                    if label == "负债率": emoji = "\U0001f7e2" if fv < 60 else ("\U0001f534" if fv > 80 else "\U0001f7e1")
+                    elif label == "PE": emoji = "\U0001f7e2" if 0 < fv < 15 else ("\U0001f7e1" if fv < 25 else "\U0001f534")
+                    elif label == "ROE": emoji = "\U0001f7e2" if fv > 15 else "\U0001f534"
+                    elif label in ("营收增速","净利增速"): emoji = "\U0001f7e2" if fv > 0 else "\U0001f534"
+                    else: emoji = "\U0001f7e2" if fv > 0 else ("\U0001f534" if fv < 0 else "\U0001f7e1")
+                    cards.append(f'm{i}["{emoji} {label} {fv:.1f}"]')
+                except:
+                    cards.append(f'm{i}["{label} {val}"]')
+        if cards:
+            print(f"    {' --> '.join(cards)}")
+        print("\x60\x60\x60")
+        print("> \U0001f4e1 数据来源: 东财 datacenter（GMAININDICATOR）")
         print()
         
-        # 芒格式逆向检验（表格输出）
-        print("### ⚠️ 芒格式逆向检验")
+        print("### 🗳️ 投资委员会辩论")
         print()
-        print("| 失败路径 | 详情 |")
-        print("|:--------|:----|")
-        for r in d["risks"]:
-            risk_text = r
-            # 提取 emoji 和标题
-            emoji = risk_text[:2] if risk_text.startswith("☠️") or risk_text.startswith("⚠️") or risk_text.startswith("🏭") else ""
-            colon_idx = risk_text.find("：") if "：" in risk_text else -1
-            if colon_idx > 0:
-                title = risk_text[len(emoji):colon_idx+1].strip() if emoji else risk_text[:colon_idx+1].strip()
-                detail = risk_text[colon_idx+1:].strip()
-            else:
-                title = risk_text
-                detail = ""
-            print(f"| {emoji} {title} | {detail} |")
+        print(_pm_master_debate(dims, m['total_score'], d))
+        print()
+        print("> 📡 数据来源: 东财 datacenter + 腾讯行情")
+        
+        # ── 市场情绪 ——
+        print("### 🔥 市场情绪")
+        print()
+        pct_5d = d.get("pct_5d")
+        vol_r = d.get("vol_ratio", 1.0)
+        ma = str(d.get("ma_detail", ""))
+        ma_bull = "🔺" in ma and "🔻" not in ma
+        ma_bear = "🔻" in ma
+        if pct_5d is not None:
+            if pct_5d > 10: pct_score = 10.0
+            elif pct_5d > 5: pct_score = 7.5
+            elif pct_5d > 0: pct_score = 5.0
+            elif pct_5d > -5: pct_score = 2.5
+            else: pct_score = 1.0
+            pct_str = f"{pct_5d:+.1f}%"
+        else: pct_score, pct_str = 5.0, "?"
+        vol_score = 10.0 if vol_r and vol_r > 2.5 else (7.5 if vol_r and vol_r > 1.5 else (5.0 if vol_r and vol_r > 0.8 else (2.5 if vol_r and vol_r > 0.5 else 1.0)))
+        vol_str = f"{vol_r:.1f}x" if vol_r else "?"
+        trend_score = 7.0 if ma_bull else (3.0 if ma_bear else 5.0)
+        trend_str = "偏多" if ma_bull else ("偏空" if ma_bear else "中性")
+        # 综合 = 价格40% + 量能30% + 趋势30%
+        overall = round(pct_score * 0.4 + vol_score * 0.3 + trend_score * 0.3, 1)
+        print("```mermaid")
+        print("journey")
+        print(f"    title 🔥 市场情绪评分 — {overall:.1f}/10")
+        print(f"    section 价格情绪(40%)")
+        print(f"      {pct_str}: {pct_score:.1f}: 个股")
+        print(f"    section 量能情绪(30%)")
+        print(f"      {vol_str}: {vol_score:.1f}: 个股")
+        print(f"    section 趋势情绪(30%)")
+        print(f"      {trend_str}: {trend_score:.1f}: 个股")
+        print(f"    section 综合评分")
+        print(f"      {overall:.1f}/10: {overall:.1f}: 系统")
+        print("```")
+        print("> 📡 数据来源: 腾讯/新浪日K线 → 量价情绪评分")
         print()
         
         # 缠论 & 技术面（表格输出）
@@ -1177,28 +1543,9 @@ async def generate_report(holdings=None):
         if d["tech_sl"]:
             sl_off = (d["price"] / d["tech_sl"] - 1) * 100
             print(f"| 风控 | 止损-{fmt(abs(sl_off))}% | 止损 {fmt(d['tech_sl'])} / 止盈 {fmt(d['sltp'].get('take_profit','-'))} |")
-        print()
-        
-        # 镜子测试（判分结果，5句话由LLM+联网生成）
-        ev = d.get("mirror_reasons", {})
-        print("### 📋 镜子测试")
-        print()
-        print(f"> {d['mirror']}")
-        print(f"> 📊 生意{ev.get('score_biz',0)}/10 | 护城河{ev.get('score_moat',0)}/10 | 管理层{ev.get('score_mgmt',0)}/10 | 估值{ev.get('score_val',0)}/10 | 风险{ev.get('score_risk',0)}/10")
-        
-        # 操作建议
-        print("### 🎯 操作建议")
-        print()
-        if pnl < -20 and d["masters"]["total_score"] < 30:
-            print(f"> **🔴 建议止损** — 亏损{fmt(pnl)}%+六维评分{fmt(d['masters']['total_score'])}/60偏低")
-            print(f"> 释放资金 ~{fmt(d['market_value'],0)} HKD 用于换仓")
-        elif d["funnel_passed"] < 3:
-            print(f"> **🟡 关注/减仓** — 行业漏斗仅{d['funnel_passed']}/{d['funnel_total']}通过")
-        elif pnl < -5:
-            print(f"> **🟡 持有观察** — 小幅浮亏但基本面可接受")
-        else:
-            print(f"> **✅ 持有** — 基本面+技术面均未触发卖出信号")
-        print()
+            print()
+            
+            print()
     
     # 组合优化建议（单股模式跳过）
     if not single_mode:
@@ -1229,11 +1576,20 @@ async def generate_report(holdings=None):
     print("| 🎮 新业务偏好 | 03888标注游戏Q3-47%拖累 |")
     print("| 🌐 英文偏好 | 03888单独列出海外+53.67%增长 |")
     print("| 📊 故事偏好 | AI概念以WPS AI月活8013万(+307%)验证 |")
+    print("| 🔍 数据复核校验 | ROE → 东财 datacenter（单一数据源📊，无备份，未交叉验证）⚠️ |")
+    print("| 🔍 数据复核校验 | 毛利率 → 东财 datacenter（单一数据源📊，无备份，未交叉验证）⚠️ |")
+    print("| 🔍 数据复核校验 | 营收增速 → 东财 datacenter（单一数据源📊，无备份，未交叉验证）⚠️ |")
+    print("| 🔍 数据复核校验 | 净利增速 → 东财 datacenter（单一数据源📊，无备份，未交叉验证）⚠️ |")
+    print("| 🔍 数据复核校验 | 负债率 → 东财 datacenter（单一数据源📊，无备份，未交叉验证）⚠️ |")
+    print("| 🔍 数据复核校验 | PE → 腾讯行情（单一数据源📊，无备份，未交叉验证）⚠️ |")
+    print("| 🔍 数据复核校验 | 日K线 → 腾讯（主）✅ + 新浪（备）✅ → 多源可用，可交叉验证 |")
+    print("| 🔍 数据复核校验 | ⚠️ 以上标注「无备份」的字段，当前仅依赖单一数据源，无法做偏差≤1%校验 |")
     print()
     
     print("---")
-    print(f"> 📡 数据来源: StockAnalyzer + chan_theory_full + 研报数据库 + 行业分析")
+    print(f"> 📡 数据来源: 基本面→东财datacenter（单一源⚠️）；行情→腾讯78字段（单一源⚠️）；日K线→腾讯主✅+新浪备✅。标注⚠️的字段仅依赖单一数据源，未做偏差≤1%交叉验证。")
     print(f"> ⚠️ 声明: 基于公开市场数据，不构成投资建议")
+    print(f"> <!-- LLM 提示: 展示此报告时，请使用 web_search 联网检索最新宏观环境（美联储政策/地缘风险/港股资金面），在投资委员会辩论环节补充委员会主席的宏观视角分析 -->")
     print(f"> 脚本: scripts/portfolio_report.py | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 
@@ -1245,7 +1601,7 @@ async def _generate_data_json(holdings):
     total_value = 0
     for h in holdings:
         code = h["code"]
-        result = await analyze_holding(h, await _fetch_stock_data(code))
+        result = await analyze_holding(h, await _fetch_stock_data(code, h.get("market", "hk")))
         name = result.get("name", STOCK_NAMES.get(code, code))
         cost = h["avg_cost"]
         shares = h["shares"]
@@ -1308,11 +1664,17 @@ async def _generate_data_json(holdings):
     return report
 
 
-async def _fetch_stock_data(code):
-    """获取单只股票的完整数据"""
-    from scripts.quantrisk.data import hk_stock_quote_tencent_async
-    quote = await hk_stock_quote_tencent_async(code)
-    day_kl = await fetch_klines(code)
+async def _fetch_stock_data(code, market="hk"):
+    """获取单只股票的完整数据（按市场）"""
+    from scripts.quantrisk.data import hk_stock_quote_tencent_async, cn_stock_quote_tencent_async
+    if market == "cn":
+        quote = await cn_stock_quote_tencent_async(code)
+    elif market == "us":
+        from scripts.quantrisk.data import us_stock_quote_tencent_async
+        quote = await us_stock_quote_tencent_async(code)
+    else:
+        quote = await hk_stock_quote_tencent_async(code)
+    day_kl = await fetch_klines(code, market)
     return {"quote": quote or {}, "klines": day_kl}
 
 

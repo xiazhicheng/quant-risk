@@ -39,6 +39,7 @@ SECTOR_PE_THRESHOLD = {
 from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tencent_async,
                                      stock_kline_yahoo_async, kline_tickflow_async,
                                      parallel_map, key_indicators_eastmoney_async,
+                                     fund_flow_daily_async,
                                      close_async_session, close_tickflow)
 
 # 共享评分引擎（三市场统一使用百分位排名）
@@ -462,7 +463,32 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             vol_desc = f"量平({vol_5d_ratio:.1f}x)"
 
         pct_desc = f"{'+' if pct_5d >= 0 else ''}{pct_5d:.2f}%"
-        hot_desc = f"{s['s']}板块 5日量{vol_desc} | 5日涨幅{pct_desc}"
+        flow_5d = s.get("flow_5d", 0) or 0
+        flow_1d = s.get("flow_1d", 0) or 0
+        if flow_5d:
+            if s.get("flow_days", 0) >= 2:
+                flow_desc = (f"近{s['flow_days']}日主力净流入{flow_5d/1e8:+.2f}亿"
+                             f" | 最近1日{flow_1d/1e8:+.2f}亿")
+            else:
+                flow_desc = f"今日主力净流入{flow_5d/1e8:+.2f}亿"
+            hot_desc = f"{s['s']}板块 {flow_desc} | 5日量{vol_desc} | 5日涨幅{pct_desc}"
+        else:
+            hot_desc = f"{s['s']}板块 5日量{vol_desc} | 5日涨幅{pct_desc}（资金流数据缺失）"
+
+        # 板块排名
+        sector_rank_val = "?"
+        sector_5d_pct = "?"
+        if sector_ranking:
+            for rank_idx, (sec_name, sec_data) in enumerate(sector_ranking):
+                if sec_name == s['s']:
+                    sector_rank_val = rank_idx + 1  # 1-based rank
+                    sector_5d_pct = sec_data.get("avg_5d_pct", "?")
+                    break
+
+        # 相对强弱 = 个股涨幅 - 板块涨幅
+        rel_strength = "?"
+        if isinstance(pct_5d, (int, float)) and isinstance(sector_5d_pct, (int, float)):
+            rel_strength = pct_5d - sector_5d_pct
 
         # 缠论信号
         v_str = str(d.get("v", ""))
@@ -555,6 +581,16 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
                 "score": s["hot"],
                 "score_w": s.get("hot_w", round(s["hot"] * 4, 1)),
                 "desc": hot_desc,
+                "flow_5d": s.get("flow_5d", 0),
+                "flow_1d": s.get("flow_1d", 0),
+                "flow_days": s.get("flow_days", 0),
+                "sector_rank": sector_rank_val,
+                "sector_5d_pct": sector_5d_pct,
+                "vol_ratio": round(vol_5d_ratio, 2) if isinstance(vol_5d_ratio, float) else vol_5d_ratio,
+                "vol_desc": vol_desc,
+                "pct_5d": round(pct_5d, 2) if isinstance(pct_5d, float) else pct_5d,
+                "pct_desc": pct_desc,
+                "relative_strength": round(rel_strength, 2) if isinstance(rel_strength, float) else rel_strength,
             },
             "ch": {
                 "score": s["ch"],
@@ -662,13 +698,31 @@ async def _fetch_klines(c: str) -> Tuple[str, List[Dict], List[Dict]]:
 
 async def score_all_passed(
     passed: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """对全部候选股先并行获取K线，再用共享评分引擎（百分位排名）。"""
+) -> Tuple[List[Dict[str, Any]], List[Tuple[str, Any]]]:
+    """对全部候选股先并行获取K线，再用共享评分引擎（百分位排名）。
+    
+    Returns:
+        (scored, sector_ranking) — scored 是评分结果列表，sector_ranking 是板块排名数据
+    """
     # Step 1: 并行获取 K 线（日K + 周K）
     kline_tasks = [asyncio.create_task(_fetch_klines(p["c"])) for p in passed]
     kline_results = await asyncio.gather(*kline_tasks)
     kl_map = {c: kl for c, kl, _ in kline_results}
     kl_week_map = {c: klw for c, _, klw in kline_results}
+
+    # Step 1b: 并行获取近5日主力资金净流入（真实热点信号）
+    async def _fetch_flow(code: str):
+        try:
+            rows = await fund_flow_daily_async(code, secid_prefix=116, limit=5)
+            if rows:
+                mains = [r.get("main_net", 0) or 0 for r in rows]
+                return code, {"flow_5d": sum(mains), "flow_1d": mains[-1] if mains else 0,
+                              "days": len(rows)}
+        except Exception:
+            pass
+        return code, {}
+    flow_results = await asyncio.gather(*[_fetch_flow(p["c"]) for p in passed])
+    capital_flow = {c: v for c, v in flow_results if v}
 
     # 从K线数据计算板块排名（基于近5日平均涨跌幅，替代资金流向排名）
     sector_5d_pcts = {}
@@ -691,10 +745,28 @@ async def score_all_passed(
     for i, item in enumerate(sector_ranking):
         item[1]["rank"] = i
 
+    # 板块资金流汇总 + 资金排名（真实资金流向优先）
+    for sec, data in sector_ranking:
+        data["flow_5d"] = 0.0
+        data["stocks"] = []
+    for p in passed:
+        cf = capital_flow.get(p["c"], {})
+        flow_5d = cf.get("flow_5d", 0) or 0
+        for sec, data in sector_ranking:
+            if sec == p["s"]:
+                data["flow_5d"] += flow_5d
+                data["stocks"].append({"code": p["c"], "name": p["n"], "flow_5d": flow_5d})
+                break
+    has_flow = any(d["flow_5d"] != 0 for _, d in sector_ranking)
+    if has_flow:
+        sector_ranking.sort(key=lambda x: x[1]["flow_5d"], reverse=True)
+        for i, item in enumerate(sector_ranking):
+            item[1]["flow_rank"] = i
+
     # Step 2: 计算原始分（调用 recommender 共享函数）
     raw_scores = [
         _raw_score_one(p, kl_map.get(p["c"], []), SECTOR_PE_THRESHOLD,
-                       sector_ranking=sector_ranking, market="hk")
+                       sector_ranking=sector_ranking, market="hk", capital_flow=capital_flow)
         for p in passed
     ]
 
@@ -732,12 +804,15 @@ async def score_all_passed(
         p = passed_map.get(s["c"], {})
         s["q"] = p.get("q", {})
         s["ind"] = p.get("ind", {})
+        cf = capital_flow.get(s["c"], {})
+        s["flow_5d"] = cf.get("flow_5d", 0) or 0
+        s["flow_1d"] = cf.get("flow_1d", 0) or 0
+        s["flow_days"] = cf.get("days", 0) or 0
         # 合并周线数据
         kl_week = kl_week_map.get(s["c"], [])
         s["cd"] = _fmt_chan_week(s["cd"], kl_week)
 
-        # ── 返回评分结果 ──
-        return scored
+    return scored, sector_ranking
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -808,7 +883,7 @@ async def hk_recommend_pipeline(min_stocks: int = 300, industry: str = "") -> di
     funnel["after_veto"] = len(passed)
 
     # ── Step 3: 并行评分（K线→板块排名→评分→百分位排名→策略检查）
-    scored = await score_all_passed(passed)
+    scored, sector_ranking = await score_all_passed(passed)
 
     # ── Step 3b: 关键数据多源交叉验证（TOP5 标的，腾讯 vs Yahoo）
     cross_validate_results = []
@@ -821,7 +896,7 @@ async def hk_recommend_pipeline(min_stocks: int = 300, industry: str = "") -> di
 
     # ── 构建裸数据 ──
     raw_data = build_selection_data(ds, ss, elim, scored, len(passed),
-                                    vetoed=vetoed)
+                                    vetoed=vetoed, sector_ranking=sector_ranking)
     # 追加行业漏斗数据
     if industry:
         raw_data["funnel"] = funnel

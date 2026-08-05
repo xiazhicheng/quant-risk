@@ -468,19 +468,20 @@ async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 12
 
 
 
-async def cn_stock_kline_tencent_async(code: str, days: int = 120) -> list[dict]:
-    """A股日K线（腾讯，前复权，不封IP）"""
-    url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},qfq,,{days}"
+async def cn_stock_kline_tencent_async(code: str, days: int = 120, period: str = "day") -> list[dict]:
+    """A股K线（腾讯，前复权，不封IP）。period: day/week"""
+    url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={cn_market_prefix(code)}{code},{period},,,{days},qfq"
     d = await _get_json(url, headers={"Referer":"https://finance.qq.com/"})
     data = d.get("data",{})
     key = f"{cn_market_prefix(code)}{code}"
-    # 优先前复权 qfq，兜底原始 m
-    klines = data.get(key,{}).get("qfq",[]) or data.get(key,{}).get("m",[]) or data.get(key,{}).get("day",[]) or []
-    if not klines or not klines[0]:
-        klines = data.get(key,{}).get("m",[]) or data.get(key,{}).get("day",[]) or []
+    kdata = data.get(key, {}) if isinstance(data.get(key), dict) else {}
+    # 优先前复权 qfqday/qfqweek/qfq，兜底原始 m/day/week
+    klines = (kdata.get("qfqday", []) or kdata.get("qfqweek", []) or kdata.get("qfq", [])
+              or kdata.get("m", []) or kdata.get("day", []) or kdata.get("week", []) or [])
     if not klines or not klines[0]: return []
-    return [{"date":i[0],"open":float(i[1]),"high":float(i[2]),"low":float(i[3]),
-             "close":float(i[4]),"volume":int(i[5])} for i in klines if len(i)>=6]
+    # 腾讯 fqkline 字段顺序: [date, open, close, high, low, volume]
+    return [{"date":i[0],"open":float(i[1]),"close":float(i[2]),"high":float(i[3]),
+             "low":float(i[4]),"volume":int(float(i[5]))} for i in klines if len(i)>=6]
 
 async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
     """A股日K（百度，带MA5/10/20）"""
@@ -1071,11 +1072,16 @@ def _normalize_cn_indicators(data: list[dict]) -> list[dict]:
         "ROE": ("ROE", "WEIGHTAVG_ROE"),            # 加权净资产收益率
         "JQROE": ("JQROE", "WEIGHTAVG_ROE"),        # 同上
         "GROSS_PROFIT_RATIO": ("GROSS_PROFIT_RATIO", "XSMLL"),  # 销货毛利率
-        "DEBT_ASSET_RATIO": ("DEBT_ASSET_RATIO", "YSHZ", "SJLHZ"),  # 资产利润率/净资产利润率
+        "DEBT_ASSET_RATIO": ("DEBT_ASSET_RATIO", "ZCFZL"),  # 资产负债率（来自 F10 主要财务指标）
         "HOLDER_PROFIT_YOY": ("HOLDER_PROFIT_YOY", "SJLTZ"),     # 净利润增长率
+        "OPERATE_INCOME": ("OPERATE_INCOME", "TOTAL_OPERATE_INCOME"),  # 营业总收入
+        "OPERATE_INCOME_YOY": ("OPERATE_INCOME_YOY", "YSTZ"),    # 营收同比增长
+        "HOLDER_PROFIT": ("HOLDER_PROFIT", "PARENT_NETPROFIT"),  # 归母净利润
     }
     PRECISION = {"ROE": 2, "JQROE": 2, "GROSS_PROFIT_RATIO": 2,
-                 "DEBT_ASSET_RATIO": 2, "HOLDER_PROFIT_YOY": 2}
+                 "DEBT_ASSET_RATIO": 2, "HOLDER_PROFIT_YOY": 2,
+                 "OPERATE_INCOME": 2, "OPERATE_INCOME_YOY": 2,
+                 "HOLDER_PROFIT": 2}
     result = []
     for record in data:
         n = dict(record)
@@ -1100,7 +1106,28 @@ async def cn_key_indicators_async(code:str, page_size:int=4) -> list[dict]:
     secucode = f"{code}.{'SH' if code.startswith(('6','9')) else 'SZ'}"
     data = await eastmoney_datacenter("RPT_LICO_FN_CPD", filter_str=f'(SECUCODE="{secucode}")',
                                       page_size=page_size, sort_columns="REPORTDATE", sort_types="-1")
-    return _normalize_cn_indicators(data)
+    result = _normalize_cn_indicators(data)
+    # CPD 报表缺少正确的资产负债率/净利率，补充东财 F10 主要财务指标（ZCFZL/XSJLL）
+    try:
+        main = await eastmoney_datacenter("RPT_F10_FINANCE_MAINFINADATA",
+                                          filter_str=f'(SECUCODE="{secucode}")',
+                                          page_size=1, sort_columns="REPORT_DATE", sort_types="-1")
+        if main and result:
+            m = main[0]
+            latest = result[0]
+            for src, dst in (("ZCFZL", "DEBT_ASSET_RATIO"),
+                             ("XSJLL", "NET_PROFIT_RATIO"),
+                             ("ROEJQ", "ROE"),
+                             ("XSMLL", "GROSS_PROFIT_RATIO"),
+                             ("TOTALOPERATEREVE", "OPERATE_INCOME"),
+                             ("TOTALOPERATEREVETZ", "OPERATE_INCOME_YOY"),
+                             ("PARENTNETPROFIT", "HOLDER_PROFIT"),
+                             ("PARENTNETPROFITTZ", "HOLDER_PROFIT_YOY")):
+                if m.get(src) is not None:
+                    latest[dst] = round(float(m[src]), 2)
+    except Exception:
+        pass
+    return result
 
 
 async def cn_key_indicators_fallback(code: str) -> list[dict]:
@@ -1181,9 +1208,9 @@ async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:
     import json as _json
     s = await get_async_session()
 
-    # 港股走 kline/get（daykline/get 对港股返回空数据）
-    urls = ["https://push2.eastmoney.com/api/qt/stock/fflow/kline/get",
-            "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"]
+    # push2his 端点支持多日历史（push2 只返回当日）；港股走 kline/get，A股走 daykline/get
+    urls = ["https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get",
+            "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"]
     if secid_prefix == 116:
         urls = urls  # kline/get 优先
     else:

@@ -159,15 +159,20 @@ def kline_contain(klines: list[dict]) -> list[dict]:
       4. 合并后的K线记录被合并的原始K线（_elements 字段）
     """
     if len(klines) < 3:
-        return [dict(k) for k in klines]
+        result = [dict(k) for k in klines]
+        for i, k in enumerate(result):
+            k["_idx"] = i
+        return result
 
     processed = [dict(klines[0])]
     processed[0]["_elements"] = [processed[0]]
+    processed[0]["_idx"] = 0
 
     i = 1
     while i < len(klines):
         curr = dict(klines[i])
         curr["_elements"] = [curr]
+        curr["_idx"] = i
 
         if len(processed) < 2:
             processed.append(curr)
@@ -189,6 +194,7 @@ def kline_contain(klines: list[dict]) -> list[dict]:
         if has_inclusion:
             # 合并 prev 和 curr
             merged = _merge_bar(prev, curr, direction)
+            merged["_idx"] = curr["_idx"]
             processed[-1] = merged
         else:
             processed.append(curr)
@@ -226,7 +232,7 @@ def find_fractals(klines: list[dict]) -> list[dict]:
         if (k1["high"] < k2["high"] and k2["high"] > k3["high"] and
             k1["low"] < k2["low"] and k2["low"] > k3["low"]):
             fractals.append({
-                "index": i,
+                "index": k2.get("_idx", i),
                 "type": "top",
                 "high": k2["high"],
                 "low": k2["low"],
@@ -239,7 +245,7 @@ def find_fractals(klines: list[dict]) -> list[dict]:
         elif (k1["low"] > k2["low"] and k2["low"] < k3["low"] and
               k1["high"] > k2["high"] and k2["high"] < k3["high"]):
             fractals.append({
-                "index": i,
+                "index": k2.get("_idx", i),
                 "type": "bottom",
                 "high": k2["high"],
                 "low": k2["low"],

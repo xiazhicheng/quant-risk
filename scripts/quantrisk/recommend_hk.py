@@ -412,9 +412,9 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             "fb": s["fb"],
             "hot": s["hot"],
             "ch": s["ch"],
-            "fb_w": s.get("fb_w", round(s["fb"] * 12, 1)),
+            "fb_w": s.get("fb_w", round(s["fb"] * 10, 1)),
             "hot_w": s.get("hot_w", round(s["hot"] * 4, 1)),
-            "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+            "ch_w": s.get("ch_w", round(s["ch"] * 6, 1)),
             "total": t,
             "advice": advice,
         })
@@ -509,7 +509,7 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             "total": s["total"],
             "fb": {
                 "score": s["fb"],
-                "score_w": s.get("fb_w", round(s["fb"] * 12, 1)),
+                "score_w": s.get("fb_w", round(s["fb"] * 10, 1)),
                 "debug": s.get("fb_debug", ""),
                 "pe": _fmt_num(s.get("pe")),
                 "revenue_yoy": _fmt_num(s.get("rev")),
@@ -594,7 +594,7 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             },
             "ch": {
                 "score": s["ch"],
-                "score_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+                "score_w": s.get("ch_w", round(s["ch"] * 6, 1)),
                 "ma60": ma60,
                 "price": _fmt_num(s.get("p")),
                 "macd_hist": _fmt_num(macd_hist) if macd_hist != "?" else "?",
@@ -724,6 +724,17 @@ async def score_all_passed(
     flow_results = await asyncio.gather(*[_fetch_flow(p["c"]) for p in passed])
     capital_flow = {c: v for c, v in flow_results if v}
 
+    # Step 1c: 周线定大势（缠论结论，用于日线评分的大势权重调整）
+    from scripts.quantrisk.indicators import chan_risk_assessment as _week_chan
+    week_verdict_map = {}
+    for c, klw in kl_week_map.items():
+        if klw and len(klw) >= 20:
+            try:
+                wcv = _week_chan(klw)
+                week_verdict_map[c] = wcv.get("chan_verdict", "")
+            except Exception:
+                pass
+
     # 从K线数据计算板块排名（基于近5日平均涨跌幅，替代资金流向排名）
     sector_5d_pcts = {}
     for p in passed:
@@ -766,7 +777,8 @@ async def score_all_passed(
     # Step 2: 计算原始分（调用 recommender 共享函数）
     raw_scores = [
         _raw_score_one(p, kl_map.get(p["c"], []), SECTOR_PE_THRESHOLD,
-                       sector_ranking=sector_ranking, market="hk", capital_flow=capital_flow)
+                       sector_ranking=sector_ranking, market="hk", capital_flow=capital_flow,
+                       week_verdict=week_verdict_map.get(p["c"], ""))
         for p in passed
     ]
 

@@ -1145,8 +1145,12 @@ def hot_score(
 def chan_score(
     p: Dict[str, Any],
     kl: List[Dict],
+    week_verdict: str = "",
 ) -> Tuple[int, Dict[str, Any]]:
-    """缠论评分 — 统一评分规则（已细化多 tier 版本）。"""
+    """缠论评分 — 周线定大势，日线定买卖点。
+
+    week_verdict: 周线缠论结论（偏多/中性/偏空），作为大势权重调整。
+    """
     from scripts.quantrisk.indicators import calc_ma, calc_macd, chan_risk_assessment
 
     if not kl or len(kl) < 60:
@@ -1316,6 +1320,17 @@ def chan_score(
         d["chan_verdict"] = cv_data.get("chan_verdict", "")
     except Exception as e:
         d["e"] = str(e)
+
+    # 周线大势调整（2026-08-05 用户明确：周线看大势，日线看点）
+    if week_verdict:
+        if "偏多" in week_verdict:
+            s += 0.5
+            d["week_adjust"] = "+0.5（周线偏多）"
+        elif "偏空" in week_verdict:
+            s -= 0.5
+            d["week_adjust"] = "-0.5（周线偏空）"
+        else:
+            d["week_adjust"] = "0（周线中性）"
     return s, d  # 未clamp，百分位排名会处理归一化
 
 
@@ -1693,6 +1708,7 @@ def _raw_score_one(
     sector_ranking: Optional[List[Tuple[str, Any]]] = None,
     market: str = "hk",
     capital_flow: Optional[Dict[str, Dict[str, float]]] = None,
+    week_verdict: str = "",
 ) -> Dict[str, Any]:
     """计算单只股票的原始分（fb/hot/ch，未做百分位排名）。
 
@@ -1768,7 +1784,7 @@ def _raw_score_one(
         master_answers[f"dim{i+1}_master_answer"] = _gen_master_answer(dk, pe_val, roe_val, gm_val, np_val, rev_val, ny_val, dr_val)
 
     hot = hot_score(p, kl, sector_ranking, market, capital_flow)
-    ch, cd = chan_score(p, kl)
+    ch, cd = chan_score(p, kl, week_verdict)
 
     return {
         "c": c, "n": p["n"], "s": p["s"], "p": p["p"], "mc": p["mc"], "pe": p["pe"],
@@ -1802,8 +1818,8 @@ def percentile_score_all(
 ) -> List[Dict[str, Any]]:
     """对所有已算好原始分的候选股做池内百分位排名，归一化到 1-10。
 
-    基本面评分采用六维等权合成（2026-07-22 重构）：
-      六维各自百分位排名 → 等权求和 → 映射到 1~5 → × 12 = 60分
+    基本面评分采用六维等权合成（2026-07-22 重构；2026-08-05 权重改为 5:3:2）：
+      六维各自百分位排名 → 等权求和 → 映射到 1~5 → × 10 = 50分
 
     Args:
         raw_scores: _raw_score_one 的返回结果列表，每项含 dim1_raw~dim6_raw/hot_raw/ch_raw。
@@ -1834,7 +1850,7 @@ def percentile_score_all(
         # 映射到 1~5
         fb_exact = 1 + fb_pct * 4
         r["fb"] = round(fb_exact, 1)
-        r["fb_w"] = round(fb_exact * 12, 1)
+        r["fb_w"] = round(fb_exact * 10, 1)
 
         # 六维百分位展示（1~10）
         for i in range(1, 7):
@@ -1849,10 +1865,10 @@ def percentile_score_all(
         r["hot"] = round(hot_exact, 1)
         r["ch"] = round(ch_exact, 1)
 
-        # 加权得分：基本面60分(×12) + 技术面40分(hot×4 + ch×4) = 100分
-        fb_w_exact = fb_exact * 12
+        # 加权得分：基本面50分(×10) + 技术面30分(ch×6) + 热点20分(hot×4) = 100分（5:3:2）
+        fb_w_exact = fb_exact * 10
         hot_w_exact = hot_exact * 4
-        ch_w_exact = ch_exact * 4
+        ch_w_exact = ch_exact * 6
         r["fb_w"] = round(fb_w_exact, 1)
         r["hot_w"] = round(hot_w_exact, 1)
         r["ch_w"] = round(ch_w_exact, 1)
@@ -1886,6 +1902,7 @@ def score_one(
     industry_thresholds: Dict[str, int] = None,
     market: str = "hk",
     capital_flow: Optional[Dict[str, Dict[str, float]]] = None,
+    week_verdict: str = "",
 ) -> Dict[str, Any]:
     """单只股票三维评分。"""
     c = p["c"]
@@ -1894,10 +1911,10 @@ def score_one(
     fb, _ = fb_score(p, p.get("s", "其他"), pe_limit)
     fb = _clamp(fb)
     hot = _clamp(hot_score(p, kl, sector_ranking, market, capital_flow))
-    ch, cd = _clamp(chan_score(p, kl)[0]), chan_score(p, kl)[1]
-    fb_w = round(fb * 12, 1)
+    ch, cd = _clamp(chan_score(p, kl, week_verdict)[0]), chan_score(p, kl, week_verdict)[1]
+    fb_w = round(fb * 10, 1)
     hot_w = round(hot * 4, 1)
-    ch_w = round(ch * 4, 1)
+    ch_w = round(ch * 6, 1)
     total = round(fb_w + hot_w + ch_w, 1)
 
     return {
@@ -1959,9 +1976,9 @@ def build_selection_data(
             "fb": s["fb"],
             "hot": s["hot"],
             "ch": s["ch"],
-            "fb_w": s.get("fb_w", round(s["fb"] * 12, 1)),
+            "fb_w": s.get("fb_w", round(s["fb"] * 10, 1)),
             "hot_w": s.get("hot_w", round(s["hot"] * 4, 1)),
-            "ch_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+            "ch_w": s.get("ch_w", round(s["ch"] * 6, 1)),
             "total": t,
             "advice": advice,
         })
@@ -2057,7 +2074,7 @@ def build_selection_data(
             "total": s["total"],
             "fb": {
                 "score": s["fb"],
-                "score_w": s.get("fb_w", round(s["fb"] * 12, 1)),
+                "score_w": s.get("fb_w", round(s["fb"] * 10, 1)),
                 "debug": s.get("fb_debug", ""),
                 "pe": s.get("pe", "?"),
                 "revenue_yoy": s.get("rev", "?"),
@@ -2126,7 +2143,7 @@ def build_selection_data(
             },
             "ch": {
                 "score": s["ch"],
-                "score_w": s.get("ch_w", round(s["ch"] * 4, 1)),
+                "score_w": s.get("ch_w", round(s["ch"] * 6, 1)),
                 "ma60": ma60,
                 "price": s.get("p"),
                 "macd_hist": macd_hist,

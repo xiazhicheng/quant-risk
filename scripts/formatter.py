@@ -69,16 +69,16 @@ class Top10Item(BaseModel):
     fb: float = Field(..., ge=1, le=5, description="基本面评分 1-5")
     hot: float = Field(..., ge=1, le=5, description="热点评分 1-5")
     ch: float = Field(..., ge=1, le=5, description="缠论评分 1-5")
-    fb_w: float = Field(..., ge=0, le=60, description="基本面加权得分 0-60")
+    fb_w: float = Field(..., ge=0, le=50, description="基本面加权得分 0-50")
     hot_w: float = Field(..., ge=0, le=20, description="热点加权得分(技术面子分)")
-    ch_w: float = Field(..., ge=0, le=20, description="缠论加权得分(技术面子分)")
+    ch_w: float = Field(..., ge=0, le=30, description="缠论加权得分(技术面子分) 0-30")
     total: float = Field(..., ge=0, le=100, description="总分 0-100")
     advice: str = Field(..., description="建议")
 
 
 class FbDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=60, description="基本面加权得分 0-60")
+    score_w: float = Field(..., ge=0, le=50, description="基本面加权得分 0-50")
     debug: str = Field(default="", description="基本面计算明细")
     pe: Any = Field(default="?", description="PE")
     revenue_yoy: Any = Field(default="?", description="营收增速")
@@ -165,7 +165,7 @@ class HotDetail(BaseModel):
 
 class ChanDetail(BaseModel):
     score: float = Field(..., ge=1, le=5)
-    score_w: float = Field(..., ge=0, le=20, description="缠论加权得分(技术面子分)")
+    score_w: float = Field(..., ge=0, le=30, description="缠论加权得分(技术面子分) 0-30")
     ma60: Any = Field(default="?", description="MA60")
     price: Any = Field(default="?", description="现价")
     macd_hist: Any = Field(default="?", description="MACD柱")

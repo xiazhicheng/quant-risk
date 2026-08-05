@@ -661,7 +661,10 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy, pb=0, secto
 def chan_detail_output(klines, price, label="日线"):
     if not klines or len(klines) < 60:
         return {"summary": "数据不足", "detail": []}
-    ch = chan_theory_full(klines)
+    # 用 chan_risk_assessment 拿综合结论（偏多/中性/偏空 + 评分 + 买卖点）
+    from scripts.quantrisk.chan import chan_risk_assessment
+    ca = chan_risk_assessment(klines)
+    ch = ca if "error" not in ca else chan_theory_full(klines)
     if "error" in ch:
         return {"summary": ch["error"], "detail": []}
     
@@ -672,7 +675,13 @@ def chan_detail_output(klines, price, label="日线"):
     divs = ch.get("divergences", [])
     bs = ch.get("buy_sell_points", {})
     
-    lines.append(f"走势: {trend.get('description','未知')} | 笔{ch.get('strokes_count',0)} 段{ch.get('segments_count',0)} 中枢{ch.get('pivots_count',0)}")
+    verdict = ca.get("chan_verdict", "") if "error" not in ca else ""
+    chan_score = ca.get("chan_score", "") if "error" not in ca else ""
+    verdict_icon = {"偏多": "🟢", "中性": "🟡", "偏空": "🔴"}.get(verdict, "🟡")
+    verdict_line = f"结论：{verdict_icon} {verdict}" if verdict else "结论：数据不足"
+    if isinstance(chan_score, (int, float)):
+        verdict_line += f"（评分 {chan_score:+d}）"
+    lines.append(f"{verdict_line} | 走势: {trend.get('description','未知')} | 笔{ch.get('strokes_count',0)} 段{ch.get('segments_count',0)} 中枢{ch.get('pivots_count',0)}")
     
     if strokes:
         last_s = strokes[-1]
@@ -703,6 +712,8 @@ def chan_detail_output(klines, price, label="日线"):
     if bs.get("buy_points"):
         for bp in bs["buy_points"]:
             lines.append(f"🟢 {bp['detail']}")
+    elif not bs.get("sell_points"):
+        lines.append("当前无买卖点信号，等待背驰或突破确认")
     if bs.get("sell_points"):
         for sp in bs["sell_points"]:
             lines.append(f"🔴 {sp['detail']}")
@@ -1502,6 +1513,9 @@ async def generate_report(holdings=None):
         print(f"| 日线走势 | 走势类型 | {chan_summary} |")
         for line in d["chan"]["detail"]:
             line = line.strip()
+            if line.startswith("结论"):
+                print(f"| 日线走势 | **缠论结论** | {line} |")
+                continue
             if "走势" in line and "oken" not in line:
                 continue  # 跳过已处理的走势类型
             if "最近笔" in line:

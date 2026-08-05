@@ -268,6 +268,20 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
         else:
             kl_map[p["c"]] = []
 
+    # 周线定大势（缠论结论，用于日线评分的大势权重调整）
+    from scripts.quantrisk.data import cn_stock_kline_tencent_async as _cn_week_kl
+    from scripts.quantrisk.indicators import chan_risk_assessment as _week_chan
+    week_kl_tasks = [asyncio.create_task(_cn_week_kl(p["c"], days=260, period="week")) for p in passed]
+    week_kl_results = await asyncio.gather(*week_kl_tasks, return_exceptions=True)
+    week_verdict_map = {}
+    for p, result in zip(passed, week_kl_results):
+        if isinstance(result, list) and len(result) >= 20:
+            try:
+                wcv = _week_chan(result)
+                week_verdict_map[p["c"]] = wcv.get("chan_verdict", "")
+            except Exception:
+                pass
+
     # 从K线数据计算板块排名（基于近5日平均涨跌幅）
     from collections import defaultdict
     sector_5d_pcts = defaultdict(list)
@@ -309,7 +323,8 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     # 计算原始分
     raw_scores = [
         _raw_score_one(p, kl_map.get(p["c"], []), CN_SECTOR_PE_THRESHOLD,
-                       sector_ranking=sector_ranking, market="cn", capital_flow=capital_flow)
+                       sector_ranking=sector_ranking, market="cn", capital_flow=capital_flow,
+                       week_verdict=week_verdict_map.get(p["c"], ""))
         for p in passed
     ]
 
@@ -323,6 +338,8 @@ async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
         s["flow_5d"] = cf.get("flow_5d", 0) or 0
         s["flow_1d"] = cf.get("flow_1d", 0) or 0
         s["flow_days"] = cf.get("days", 0) or 0
+        if s.get("cd"):
+            s["cd"]["week_chan_verdict"] = week_verdict_map.get(s["c"], "")
 
     # Step 5: 格式化
     from scripts.quantrisk.recommender import build_selection_data

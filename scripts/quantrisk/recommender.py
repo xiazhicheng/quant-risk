@@ -1983,9 +1983,9 @@ def build_selection_data(
             "advice": advice,
         })
 
-    # details (top 5)
+    # details (top 10) — 2026-08-12 由 TOP5 扩展为全量 TOP10 深度分析
     details_data = []
-    for s in top10[:5]:
+    for s in top10:
         idx = scored.index(s) + 1
         chg = (s["q"].get("change_pct") or 0) if s.get("q") else 0
         ind = s.get("ind", {}) or {}
@@ -2188,6 +2188,11 @@ def build_selection_data(
             "buy": s.get("p"),
             "stop_loss": sl_point,
             "take_profit": tp_point,
+            # 三维评分（2026-08-12 新增，定价表展示全部 TOP10 评分）
+            "fb_w": s.get("fb_w", "?"),
+            "ch_w": s.get("ch_w", "?"),
+            "hot_w": s.get("hot_w", "?"),
+            "total": t,
         })
 
     # 基本面一票否决记录

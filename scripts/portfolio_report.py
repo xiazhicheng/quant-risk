@@ -97,6 +97,10 @@ async def fetch_week_kline(code, market="hk"):
         kl = await stock_kline_yahoo_async(code, "1wk", "2y")
         return kl or []
     kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1wk", "2y")
+    if not kl:
+        # Yahoo 失败时回退腾讯港股周K
+        from scripts.quantrisk.data import hk_kline_tencent_async
+        kl = await hk_kline_tencent_async(code.zfill(5), "week", 120)
     return kl or []
 
 # ── 行业漏斗5条硬指标 ──

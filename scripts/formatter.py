@@ -213,6 +213,11 @@ class SummaryItem(BaseModel):
     buy: Any
     stop_loss: Any
     take_profit: Any
+    # 三维评分（2026-08-12 新增，供定价表展示全部 TOP10 评分）
+    fb_w: Any = Field(default="?", description="六维评分加权分 0-50")
+    ch_w: Any = Field(default="?", description="缠论加权分 0-30")
+    hot_w: Any = Field(default="?", description="热点加权分 0-20")
+    total: Any = Field(default="?", description="总分 0-100")
 
 
 class PortfolioTimingItem(BaseModel):
@@ -325,8 +330,8 @@ MARKET_CONFIG = {
 	"score_header": "| 排名 | 标的 | 板块 | 📊六维评分(60分) | 🔧缠论(20分) | 🔥热点(20分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:----------:|:-----:|------|",
 		        "detail_label": "各股详细分析",
 		        "summary_label": "综合建议",
-		        "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
-		        "price_unit": "港元",
+"summary_header": "| 标的 | 建议 | 📊六维(50) | 🔧缠论(30) | 🔥热点(20) | 总分 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:---------:|:--------:|:----:|:--------:|:----:|:----:|",
+			        "price_unit": "港元",
 	    },
 	    "cn": {
 	        "title": "A股选股推荐",
@@ -339,7 +344,7 @@ MARKET_CONFIG = {
 		        "score_header": "| 排名 | 标的 | 板块 | 📊六维评分(60分) | 🔧缠论(20分) | 🔥热点(20分) | 总分(100分) | 建议 |\n|:----:|------|:----:|:----------:|:----------:|:----------:|:-----:|------|",
         "detail_label": "各股详细分析",
         "summary_label": "综合建议",
-        "summary_header": "| 标的 | 建议 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:----:|:----:|",
+        "summary_header": "| 标的 | 建议 | 📊六维(50) | 🔧缠论(30) | 🔥热点(20) | 总分 | 入场区间 | 止损 | 目标 |\n|:----|:----:|:--------:|:---------:|:--------:|:----:|:--------:|:----:|:----:|",
         "price_unit": "元",
     },
     "us": {
@@ -353,7 +358,7 @@ MARKET_CONFIG = {
         "score_header": "| Rank | Stock | Sector | 6D Score(60pt) | Chan(20pt) | Hot(20pt) | Total(100pt) | Advice |\n|:----:|------|:----:|:---------------:|:------------:|:----------:|:-----:|------|",
         "detail_label": "Detailed Analysis",
         "summary_label": "Summary",
-        "summary_header": "| Stock | Advice | Entry | Stop Loss | Target |\n|:-----|:------:|:------:|:---------:|:------:|",
+        "summary_header": "| Stock | Advice | 6D(50) | Chan(30) | Hot(20) | Total | Entry | Stop Loss | Target |\n|:------|:------:|:------:|:--------:|:-------:|:-----:|:------:|:---------:|:------:|",
         "price_unit": "USD",
     },
 }
@@ -402,6 +407,10 @@ TEMPLATE = """\
 ### TOP10 推荐标的（基本面分析）
 
 {top10_mermaid}
+
+### ✨ 推荐理由速览（基于数据自动生成）
+
+{reason_rows}
 
 ### 各股分析（基本面分析）
 
@@ -807,11 +816,15 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
         if fb.info_richness_detail:
             ir_desc += f"（{fb.info_richness_detail}）"
 
-    # 择时结论
+# 择时结论（基于缠论评分，投委会否决可覆盖）
     if ch.score >= 4.5: timing_verdict = "当前可布局"
     elif ch.score >= 4.0: timing_verdict = "等待回调介入"
     elif ch.score >= 3.0: timing_verdict = "观望，等待企稳"
     else: timing_verdict = "暂不建议入场"
+    # 投委会裁决覆盖：基本面差时技术面再好也暂不推荐
+    committee_dir, _ = _committee_verdict(fb)
+    if committee_dir == "卖出/回避":
+        timing_verdict = "暂不建议入场（委员会否决）"
 
     # 镜子测试
     mirror_text = _render_mirror_test(d, price_unit)
@@ -839,6 +852,40 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     adv = d.advice
     adv_emoji = "🔴" if "止损" in adv else ("✅" if "持有" in adv else "🟢")
 
+    # ── 六维评分明细表（2026-08-14: 从死代码区移入，展示得分计算过程） ──
+    _dim_configs = [
+        ("生意质量（段永平）", 1),
+        ("护城河（巴菲特）", 2),
+        ("管理层（段永平+巴菲特）", 3),
+        ("最大风险（芒格）", 4),
+        ("文明趋势（李录）", 5),
+        ("估值（巴菲特+段永平）", 6),
+    ]
+    dim_rows = []
+    dim_header = "| 维度 | 得分 | 信心度 | 得分逻辑 | 大师视角 | 其他大师质疑 | 大师答疑 |\n|:-----|:---:|:------:|:--------|:--------|:----------:|:--------|"
+    for _label, _idx in _dim_configs:
+        _score = getattr(fb, f"dim{_idx}_score", "?")
+        _conf = getattr(fb, f"dim{_idx}_confidence", "")
+        _concl = getattr(fb, f"dim{_idx}_conclusion", "")
+        _other = getattr(fb, f"dim{_idx}_other_masters", "")
+        _answer = getattr(fb, f"dim{_idx}_master_answer", "")
+        _penalty = getattr(fb, f"dim{_idx}_penalty", None)
+        _penalty_reason = getattr(fb, f"dim{_idx}_penalty_reason", "")
+        _debug = getattr(fb, f"dim{_idx}_debug", "") or ""
+        if _score != "?":
+            _score_display = f"{_score}/10"
+            if _penalty is not None and _penalty > 0:
+                _score_display += f" ↓-{_penalty}"
+                if _penalty_reason:
+                    _concl = f"{_concl} ⚠️ {_penalty_reason}"
+            _logic = _debug if len(_debug) <= 60 else _debug[:60] + "…"
+            dim_rows.append(
+                f"| {_label} | {_score_display} | {_conf} | {_logic} | {_concl} | {_other} | {_answer} |"
+            )
+        else:
+            dim_rows.append(f"| {_label} | 数据不足 | — | 数据不足 | 数据不足 | 数据不足 | 数据不足 |")
+    dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"
+
     return f"""\
 #### {d.rank}. {d.name}（{d.code}）— {adv} ✅ | 总分 {d.total}/100
 {ir_desc} 关键指标：{fb_summary}
@@ -854,6 +901,10 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
 
 ---
 ### 二、财务数据与分析
+
+**📊 六维评分明细**（得分 / 得分逻辑 / 大师视角）
+
+{dim_table}
 
 {_render_financial_timeline(fb)}
 > 📡 数据来源: 东财 datacenter（GMAININDICATOR）
@@ -936,7 +987,7 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
     ]
 
     dim_rows = []
-    dim_header = "| 维度 | 评分 | 信心度 | 大师视角 | 其他大师质疑 | 大师答疑 |\n|:----|:---:|:------:|:--------|:----------:|:--------|"
+    dim_header = "| 维度 | 评分 | 信心度 | 大师视角（含计算明细） | 其他大师质疑 | 大师答疑 |\n|:----|:---:|:------:|:--------|:----------:|:--------|"
     for label, idx in dim_configs:
         score = getattr(fb, f"dim{idx}_score", "?")
         confidence = getattr(fb, f"dim{idx}_confidence", "")
@@ -945,13 +996,19 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
         master_answer = getattr(fb, f"dim{idx}_master_answer", "")
         penalty = getattr(fb, f"dim{idx}_penalty", None)
         penalty_reason = getattr(fb, f"dim{idx}_penalty_reason", "")
+        # 2026-08-14: 计算明细链（基础分 + 每项指标加减分），展示得分由来
+        dim_debug = getattr(fb, f"dim{idx}_debug", "") or ""
         if score != "?":
             score_display = f"{score}/10"
             if penalty is not None and penalty > 0:
                 score_display += f" ↓-{penalty}"
                 if penalty_reason:
                     conclusion = f"{conclusion} ⚠️ {penalty_reason}"
-            dim_rows.append(f"| {label} | {score_display} | {confidence} | {conclusion} | {other_masters} | {master_answer} |")
+            view_txt = conclusion
+            if dim_debug:
+                dbg_txt = dim_debug if len(dim_debug) <= 90 else dim_debug[:90] + "…"
+                view_txt = f"{conclusion}<br>🔍 计算: {dbg_txt}"
+            dim_rows.append(f"| {label} | {score_display} | {confidence} | {view_txt} | {other_masters} | {master_answer} |")
         else:
             dim_rows.append(f"| {label} | 数据不足 | — | 数据不足 | 数据不足 | 数据不足 |")
     dim_table = dim_header + "\n" + "\n".join(dim_rows) if dim_rows else "数据不足"
@@ -1049,6 +1106,10 @@ def _render_detail_block(d: DetailItem, price_unit: str = "港元") -> str:
 #### {d.rank}. {d.name}（{d.code}）— {d.advice} ✅ | 总分 {d.total}/100 | 📊基本面分析 {fb.score_w}/60
 {ir_desc} 关键指标：{fb_summary}
 
+**📊 六维评分明细**（每维度：得分 / 计算明细 / 大师视角）
+
+{dim_table}
+
 **📊 基本面分析**
 
 {_render_master_debate(fb, ch, d)}
@@ -1143,6 +1204,59 @@ journey
     section 综合
       情绪评分 ({hot_score_val}/5): {hot_score_7:.1f}: 系统
 ```"""
+
+
+def _committee_counts(fb: FbDetail) -> tuple[int, int, bool]:
+    """投委会裁决公共计算 — 多方项 / 空方项 / 熔断标记。
+
+    与 _render_master_debate 的多空陈词规则一一对应，作为定价表/择时判断/委员会Mermaid
+    三处展示环节的唯一裁决来源，避免各自判定互不通气（如委员会判"卖出/回避"但定价表仍标"强烈关注"）。
+    """
+    pe = _safe_float(fb.pe)
+    roe_val = _safe_float(fb.roe)
+    rev = _safe_float(fb.revenue_yoy)
+    net = _safe_float(fb.net_profit_yoy)
+    dr = _safe_float(fb.debt_ratio)
+    gm = _safe_float(fb.gross_margin)
+
+    # 多方项（看多逻辑）
+    pro = 0
+    if roe_val is not None and roe_val > 15: pro += 1
+    if gm is not None and gm > 40: pro += 1
+    if rev is not None and rev > 5: pro += 1
+    if net is not None and net > 20: pro += 1
+    if dr is not None and dr < 30: pro += 1
+    if pe is not None and 0 < pe < 15: pro += 1
+
+    # 空方项（看空逻辑）— ROE 与营收各自二选一计分，与 _render_master_debate 一致
+    con = 0
+    if roe_val is not None and roe_val < 15: con += 1
+    if gm is not None and gm < 20: con += 1
+    if rev is not None and rev < 5: con += 1
+    if net is not None and net < 0: con += 1
+    if dr is not None and dr > 60: con += 1
+    if pe is not None and pe > 30: con += 1
+
+    # 熔断标记（一票否决级风险）
+    meltdown = False
+    if rev is not None and rev < -20: meltdown = True
+    if dr is not None and dr > 80: meltdown = True
+    if roe_val is not None and roe_val < 0: meltdown = True
+    if pe is not None and pe > 80: meltdown = True
+
+    return pro, con, meltdown
+
+
+def _committee_verdict(fb: FbDetail) -> tuple[str, str]:
+    """投委会最终裁决：返回 (方向, 仓位)。"""
+    pro, con, meltdown = _committee_counts(fb)
+    score = pro - con - (5 if meltdown else 0)
+    if score >= 2:
+        return "买入", "30%"
+    elif score >= -1:
+        return "持有", "10-20%（观察仓）"
+    else:
+        return "卖出/回避", "0%（清仓）"
 
 
 def _render_master_debate(fb: FbDetail, ch: "ChanDetail" = None, d: "DetailItem" = None) -> str:
@@ -1240,9 +1354,11 @@ def _render_master_debate(fb: FbDetail, ch: "ChanDetail" = None, d: "DetailItem"
                 f"ROE {roe_val:.0f}%超过15%及格线，资本回报效率优秀。",
                 f"ROE才{roe_val:.0f}%刚过及格线就吹？优秀企业ROE应该25%起步！"))
         elif roe_val < 10:
+            # gm 可能为 None（缺失字段），交叉引用需兜底避免 f-string 崩溃
+            gm_part = f"看毛利率{gm:.0f}%" if gm is not None else "看营收和净利增速"
             debate_topics.append(("🔴", "盈利能力",
                 f"ROE仅{roe_val:.0f}%，远低于15%！资本在低效空转，这是毁灭价值！",
-                f"ROE{roe_val:.0f}%确实难看但看毛利率{gm:.0f}%，说明定价权没丢，ROE提升只是时间问题！"))
+                f"ROE{roe_val:.0f}%确实难看但{gm_part}，说明定价权没丢，ROE提升只是时间问题！"))
     
     # 议题2：成长性
     if rev is not None:
@@ -1270,9 +1386,11 @@ def _render_master_debate(fb: FbDetail, ch: "ChanDetail" = None, d: "DetailItem"
                 f"负债率{dr:.0f}%！这杠杆率，一旦加息就是灾难！",
                 f"负债率虽高但利息保障倍数足够，而且低息环境还能持续！"))
         elif dr > 50:
+            # roe_val 可能为 None（缺失字段），交叉引用需兜底避免 f-string 崩溃
+            roe_part = f"ROE{roe_val:.0f}%" if roe_val is not None else "盈利稳定"
             debate_topics.append(("🟡", "财务安全",
                 f"负债率{dr:.0f}%，超过50%需关注。",
-                f"负债率{dr:.0f}%确实偏高，但ROE{roe_val:.0f}%能覆盖利息成本，风险可控！"))
+                f"负债率{dr:.0f}%确实偏高，但{roe_part}能覆盖利息成本，风险可控！"))
         elif dr < 30:
             debate_topics.append(("🟢", "财务安全",
                 f"负债率仅{dr:.0f}%，零净负债，财务极其稳健！",
@@ -1437,13 +1555,12 @@ def _render_master_debate(fb: FbDetail, ch: "ChanDetail" = None, d: "DetailItem"
         tp_price = d.take_profit
     
     lines.append("    Note over 委员会主席: \u2696\ufe0f 委员会主席裁决")
-    score = len(pro_args) - len(con_args) - (5 if meltdown else 0)
-    
-    # 方向
-    if score >= 2:
+    # 与共享函数 _committee_verdict 保持逻辑一致，但此处用 Mermaid 专用 emoji
+    direction_raw, position_raw = _committee_verdict(fb)
+    if direction_raw == "买入":
         direction = "\U0001f7e2 买入"
         position = "30%"
-    elif score >= -1:
+    elif direction_raw == "持有":
         direction = "\U0001f7e1 持有"
         position = "10-20%（观察仓）"
     else:
@@ -1831,11 +1948,11 @@ def _render_critique(fb: "FbDetail") -> str:
 
 
 def _render_top10_mermaid(top10: list) -> str:
-    """TOP10 推荐标的 → Mermaid 横向排名图"""
+    """TOP10 推荐标的 → Mermaid 横向排名图（全部 10 只展示评分，2026-08-12 由 TOP5 扩展）"""
     lines = []
     lines.append("```mermaid")
     lines.append("flowchart LR")
-    for t in top10[:5]:  # TOP5 展示
+    for t in top10:  # 全部 TOP10 展示
         sub_id = f"S{t.rank}"
         name_short = t.name[:6]
         lines.append(f"    subgraph {sub_id}_{name_short}_{t.total:.0f}点")
@@ -1843,10 +1960,149 @@ def _render_top10_mermaid(top10: list) -> str:
         # 用箭头表示评分流向
         lines.append(f"        六维_{t.fb_w:.0f} --> 缠论_{t.ch_w:.0f} --> 热点_{t.hot_w:.0f}")
         lines.append("    end")
-    if len(top10) > 5:
-        lines.append(f"    S5 -->|TOP6-10略| S_end")
-        lines.append(f"    S_end((...))")
     lines.append("```")
+    return "\n".join(lines)
+
+
+# ── 推荐理由生成（2026-08-12 新增）────────────────────────────
+# 每只推荐股基于自身数据自动生成一句话理由：基本面高分维度 → 技术面 → 情绪面 → 结论。
+# 让用户看到"为什么推荐"，而不是只有分数。
+
+_DIM_REASON_LABELS = ["生意质量", "护城河", "管理层", "最大风险", "文明趋势", "估值"]
+
+def _gen_reason(d: "DetailItem", max_len: int = 90) -> str:
+    """基于数据自动生成一句话推荐理由（不做联网检索，只解读脚本已有数据）。
+
+    组成：基本面亮点（六维最高分维度结论）+ 技术面信号 + 资金情绪 + 委员会方向。
+    缺数据的维度自动跳过，不会崩溃。
+    """
+    fb, ch, hot = d.fb, d.ch, d.hot
+
+    # ── 基本面亮点：取评分最高的 1-2 个维度结论 ──
+    dim_parts = []
+    dims = []
+    for i in range(1, 7):
+        s = getattr(fb, f"dim{i}_score", None)
+        c = getattr(fb, f"dim{i}_conclusion", "") or ""
+        if s in (None, "?"):
+            continue
+        try:
+            fs = float(s)
+        except (ValueError, TypeError):
+            continue
+        dims.append((fs, _DIM_REASON_LABELS[i - 1], c))
+    dims.sort(key=lambda x: x[0], reverse=True)
+    for fs, label, c in dims[:2]:
+        brief = c.strip()
+        # 结论文本可能很长，截断到一句话
+        if len(brief) > 38:
+            brief = brief[:38] + "…"
+        dim_parts.append(f"{label}亮眼({brief})" if brief else f"{label}{fs:.1f}分")
+    fb_txt = "、".join(dim_parts) if dim_parts else "基本面数据不足"
+
+    # ── 技术面信号：缠论结论 + MA排列 ──
+    tech_parts = []
+    if ch.chan_verdict:
+        tech_parts.append(ch.chan_verdict.strip())
+    if ch.buy_sell_detail and ch.buy_sell_detail != "无":
+        tech_parts.append(ch.buy_sell_detail.strip())
+    if ch.ma_alignment:
+        tech_parts.append(ch.ma_alignment.strip())
+    ch_txt = "，".join(tech_parts) if tech_parts else "技术面数据不足"
+
+    # ── 资金/情绪面：近5日涨幅 + 主力资金 ──
+    emo_parts = []
+    if isinstance(d.pct_5d, (int, float)):
+        emo_parts.append(f"近5日{d.pct_5d:+.1f}%")
+    if isinstance(hot.flow_5d, (int, float)) and abs(hot.flow_5d) > 1e4:
+        emo_parts.append(f"主力近{int(hot.flow_days) if isinstance(hot.flow_days, (int, float)) and hot.flow_days else 1}日净流入{hot.flow_5d / 1e8:+.2f}亿")
+    emo_txt = "、".join(emo_parts) if emo_parts else "资金面数据不足"
+
+    # ── 结论：投委会方向 ──
+    committee_dir, _ = _committee_verdict(fb)
+
+    # 回避标的：理由改为风险警示（指出触发否决/扣分的关键指标），而非亮点
+    if committee_dir == "卖出/回避":
+        risks = []
+        pe = _safe_float(fb.pe)
+        roe_val = _safe_float(fb.roe)
+        dr = _safe_float(fb.debt_ratio)
+        rev = _safe_float(fb.revenue_yoy)
+        ny = _safe_float(fb.net_profit_yoy)
+        if pe is not None and pe > 80:
+            risks.append(f"PE{pe:.0f}倍严重高估触发熔断")
+        elif pe is not None and pe > 30:
+            risks.append(f"PE{pe:.0f}倍偏高")
+        if roe_val is not None and roe_val < 0:
+            risks.append("ROE为负")
+        if roe_val is not None and 0 <= roe_val < 10:
+            risks.append(f"ROE仅{roe_val:.0f}%、资本回报低")
+        if dr is not None and dr > 80:
+            risks.append(f"负债率{dr:.0f}%畸高")
+        if rev is not None and rev < -20:
+            risks.append(f"营收{rev:.0f}%暴跌")
+        if ny is not None and ny < 0:
+            risks.append(f"净利{ny:.0f}%负增长")
+        risk_txt = "；".join(risks) if risks else "委员会综合评估否决"
+        return f"⚠️ 风险警示：{risk_txt}；技术面：{ch_txt}；情绪面：{emo_txt} → 🔴回避"
+
+    dir_icon = {"买入": "🟢买入", "持有": "🟡持有"}.get(committee_dir, committee_dir)
+
+    reason = f"基本面：{fb_txt}；技术面：{ch_txt}；情绪面：{emo_txt} → {dir_icon}"
+    if len(reason) > max_len * 2:
+        reason = reason[: max_len * 2 - 1] + "…"
+    return reason
+
+
+def _score_breakdown(d: "DetailItem") -> str:
+    """生成每只股票的得分构成说明（六维各维分 + 最高分维度计算链）。
+
+    让用户看到"总分是怎么算出来的"，而非只有最终分数。
+    例: 生意9.1/护城河9.8/管理9.8/风险8.6/趋势9.7/估值6.6 ｜ 最高分链: 文明趋势=基础4.0+营收314.6%(>30%→+2.5)+净利率57.0%(>30%→+1.5)...
+    """
+    fb = d.fb
+    short = ["生意", "护城河", "管理", "风险", "趋势", "估值"]
+    dim_scores = []
+    for i in range(1, 7):
+        s = getattr(fb, f"dim{i}_score", None)
+        if s in (None, "?"):
+            dim_scores.append(f"{short[i - 1]}?")
+        else:
+            try:
+                dim_scores.append(f"{short[i - 1]}{float(s):.0f}")
+            except (ValueError, TypeError):
+                dim_scores.append(f"{short[i - 1]}?")
+    six_dim_txt = "/".join(dim_scores)
+
+    # 最高分维度的完整计算明细链（截断保护）
+    chain_parts = []
+    for i in range(1, 7):
+        s = getattr(fb, f"dim{i}_score", None)
+        dbg = getattr(fb, f"dim{i}_debug", "") or ""
+        if s in (None, "?") or not dbg:
+            continue
+        try:
+            chain_parts.append((float(s), short[i - 1], dbg))
+        except (ValueError, TypeError):
+            continue
+    chain_txt = ""
+    if chain_parts:
+        chain_parts.sort(key=lambda x: x[0], reverse=True)
+        label, dbg = chain_parts[0][1], chain_parts[0][2]
+        chain_txt = dbg if len(dbg) <= 70 else dbg[:70] + "…"
+        chain_txt = f"<br>🔍 {label}计算链: {chain_txt}"
+
+    return f"{six_dim_txt}{chain_txt}"
+
+
+def _render_reason_rows(details: list["DetailItem"]) -> str:
+    """TOP10 推荐理由速览表（一个标的一行，理由由 _gen_reason 自动生成）。"""
+    if not details:
+        return ""
+    lines = ["| 排名 | 标的 | 📊 得分构成 | ✨ 推荐理由 |", "|:---:|:----|:----------|:----------|"]
+    for d in details:
+        emoji = {"买入": "🟢", "持有": "🟡", "卖出/回避": "🔴"}.get(_committee_verdict(d.fb)[0], "")
+        lines.append(f"| {d.rank}. | {emoji}{d.name}（{d.code}）| {_score_breakdown(d)} | {_gen_reason(d)} |")
     return "\n".join(lines)
 
 
@@ -1900,7 +2156,7 @@ def _render_timing_block(d: DetailItem, price_unit: str = "港元") -> str:
     ch = d.ch
     fb = d.fb
 
-    # 综合判断（结论先行）
+    # 综合判断（结论先行，投委会否决可覆盖）
     if ch.score >= 4.5:
         timing = "当前可布局"
     elif ch.score >= 4.0:
@@ -1909,6 +2165,10 @@ def _render_timing_block(d: DetailItem, price_unit: str = "港元") -> str:
         timing = "观望，等待技术结构企稳"
     else:
         timing = "暂不建议入场"
+    # 投委会裁决覆盖：基本面差时技术面再好也暂不推荐
+    committee_dir, _ = _committee_verdict(fb)
+    if committee_dir == "卖出/回避":
+        timing = "暂不建议入场（委员会否决）"
 
     lines = [f"**{d.name}（{d.code}）** → 建议：**{timing}** ✅"]
 
@@ -2017,11 +2277,26 @@ def _render_timing_rows(details: list[DetailItem], price_unit: str = "港元") -
     return "\n\n".join(_render_timing_block(d, price_unit=price_unit) for d in details)
 
 
-def _render_summary_rows(summary: list[SummaryItem]) -> str:
-    return "\n".join(
-        f"| {s.code} | {s.advice} | {s.buy} | {s.stop_loss} | {s.take_profit} |"
-        for s in summary
-    )
+def _render_summary_rows(summary: list[SummaryItem], details: list[DetailItem] | None = None) -> str:
+    # 投委会裁决覆盖：按 code 匹配 detail，委员会判"卖出/回避"则定价建议改为"回避"
+    # 注意：summary code 是 "600201 生物股份"（含名称），detail code 是 "600201"（纯代码）
+    verdict_map = {}
+    if details:
+        for d in details:
+            verdict_map[d.code] = _committee_verdict(d.fb)[0]
+    rows = []
+    for s in summary:
+        advice = s.advice
+        # 提取纯代码（去掉空格后的名称部分）
+        code_only = s.code.split()[0] if " " in s.code else s.code
+        v = verdict_map.get(code_only)
+        if v == "卖出/回避" and advice not in ("回避", "不推荐"):
+            advice = "回避"
+        rows.append(
+            f"| {s.code} | {advice} | {s.fb_w} | {s.ch_w} | {s.hot_w} | {s.total} "
+            f"| {s.buy} | {s.stop_loss} | {s.take_profit} |"
+        )
+    return "\n".join(rows)
 
 
 def _render_portfolio_timing(portfolio: list[PortfolioTimingItem], price_unit: str = "港元") -> str:
@@ -2155,8 +2430,9 @@ def format_output(data: dict[str, Any] | str, market: str = "hk") -> str:
         vetoed_section=_render_vetoed_section(model.vetoed),
         passed_count=model.passed_count,
         top10_mermaid=_render_top10_mermaid(model.top10),
+        reason_rows=_render_reason_rows(model.details),
         detail_rows=_render_detail_rows(model.details, price_unit=cfg["price_unit"]),
-        summary_rows=_render_summary_rows(model.summary),
+        summary_rows=_render_summary_rows(model.summary, model.details),
         timing_rows=_render_timing_rows(model.details, price_unit=cfg["price_unit"]),
         portfolio_timing_rows=_render_portfolio_timing(
             [PortfolioTimingItem(**h) for h in data.get("portfolio_timing", [])],

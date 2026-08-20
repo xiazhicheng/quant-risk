@@ -116,6 +116,30 @@ async def _get_json(url: str, **kw) -> dict:
     async with s.get(url, **kw) as r:
         t = await r.text(); return json.loads(t) if t.strip() else {}
 
+
+# 腾讯K线可用域名（2026-08-12 修复：原 http://web.ifzq.gtimg.cn 已不可用返回501）
+# https://ifzq.gtimg.cn 与 https://proxy.finance.qq.com/ifzqgtimg/ 均验证可用。
+_TENCENT_KLINE_HOSTS = [
+    "https://ifzq.gtimg.cn/appstock/app/fqkline/get",
+    "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get",
+]
+
+async def _tencent_kline_get(param: str, referer: str = "https://finance.qq.com/") -> dict:
+    """腾讯K线接口多域名降级请求。
+
+    依次尝试 _TENCENT_KLINE_HOSTS，返回首个带 data 字段的成功响应；
+    全部失败返回空 dict（调用方已有降级链兜底）。
+    """
+    headers = {"Referer": referer}
+    for host in _TENCENT_KLINE_HOSTS:
+        try:
+            d = await _get_json(f"{host}?param={param}", headers=headers)
+            if d and d.get("data"):
+                return d
+        except Exception:
+            continue
+    return {}
+
 async def _get_gbk(url: str, **kw) -> str:
     s = await get_async_session()
     async with s.get(url, **kw) as r: return (await r.read()).decode("gbk")
@@ -433,6 +457,7 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
         if q["open"][i] is None: continue
         # 优先用 adjclose（前复权），缺失时回退 close
         close_price = adj[i] if (i < len(adj) and adj[i] is not None) else q["close"][i]
+        if close_price is None: continue  # ⚠️ Yahoo 偶发缺失，跳过该行避免 float(None) 崩溃
         result.append({"date":datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M" if sub else "%Y-%m-%d"),
                        "open":round(q["open"][i],2),"high":round(q["high"][i],2),
                        "low":round(q["low"][i],2),"close":round(float(close_price),2),
@@ -441,8 +466,7 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
 async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 120) -> list[dict]:
     """腾讯港股K线（日K/周K）。code: 5位数字代码，period: day/week，count: 条数。
     注意：分钟级(5m/60m)只返回当天1根，不建议用于缠论分析。"""
-    url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{code},{period},,,{count},qfq"
-    d = await _get_json(url, headers={"Referer": "https://finance.qq.com/"})
+    d = await _tencent_kline_get(f"hk{code},{period},,,{count},qfq")
     data = d.get("data", {})
     hk_key = f"hk{code}"
     klines_data = data.get(hk_key, {}).get(period, [])
@@ -470,8 +494,7 @@ async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 12
 
 async def cn_stock_kline_tencent_async(code: str, days: int = 120, period: str = "day") -> list[dict]:
     """A股K线（腾讯，前复权，不封IP）。period: day/week"""
-    url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={cn_market_prefix(code)}{code},{period},,,{days},qfq"
-    d = await _get_json(url, headers={"Referer":"https://finance.qq.com/"})
+    d = await _tencent_kline_get(f"{cn_market_prefix(code)}{code},{period},,,{days},qfq")
     data = d.get("data",{})
     key = f"{cn_market_prefix(code)}{code}"
     kdata = data.get(key, {}) if isinstance(data.get(key), dict) else {}

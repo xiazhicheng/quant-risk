@@ -419,9 +419,9 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             "advice": advice,
         })
 
-    # ── details (top 5) ──
+    # ── details (top 10) — 2026-08-12 由 TOP5 扩展为全量 TOP10 深度分析 ──
     details_data = []
-    for s in top10[:5]:
+    for s in top10:
         idx = scored.index(s) + 1
         chg = sf(s.get("q", {}).get("change_pct", 0))
         ind = s.get("ind", {})
@@ -639,6 +639,11 @@ def build_selection_data(ds, ss, elim, scored, passed_cnt, sector_ranking=None, 
             "buy": _fmt_num(s.get("p")),
             "stop_loss": sl_point,
             "take_profit": tp_point,
+            # 三维评分（2026-08-12 新增，定价表展示全部 TOP10 评分）
+            "fb_w": _fmt_num(s.get("fb_w")),
+            "ch_w": _fmt_num(s.get("ch_w")),
+            "hot_w": _fmt_num(s.get("hot_w")),
+            "total": t,
         })
 
     # 基本面一票否决记录

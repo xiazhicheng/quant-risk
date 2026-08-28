@@ -1,0 +1,69 @@
+from datetime import date, timedelta
+
+from scripts.quantrisk.swing import (
+    daily_flow_score,
+    daily_trend_score,
+    intraday_segment_score,
+    swing_score_one,
+    swing_validate,
+)
+
+
+def bars(count=90, step=0.2, start=10.0, prefix="2026-01-01"):
+    base = date.fromisoformat(prefix)
+    rows = []
+    for i in range(count):
+        close = start + i * step
+        rows.append({
+            "date": (base + timedelta(days=i)).isoformat(),
+            "open": close - 0.1,
+            "high": close + 0.3,
+            "low": close - 0.2,
+            "close": close,
+            "volume": 1000 + i * 20,
+        })
+    return rows
+
+
+def test_trend_and_flow_are_technical_only():
+    daily = bars()
+    trend = daily_trend_score(daily)
+    flow = daily_flow_score(daily, {"flow_5d": 100000000})
+    assert 0 <= trend["score"] <= 30
+    assert 0 <= flow["score"] <= 25
+    assert trend["direction"] == "up"
+    assert "PE" not in trend["reason"]
+    assert "ROE" not in flow["reason"]
+
+
+def test_intraday_missing_data_cannot_be_tradable():
+    daily = bars()
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, [], {})
+    assert result["tradable"] is False
+    assert result["status"] == "观望：等待日线笔与30分钟线段共振"
+    assert result["segment"]["available"] is False
+
+
+def test_intraday_direction_conflict_blocks_entry(monkeypatch):
+    daily = bars()
+    up_segment = {"score": 25.0, "direction": "up", "available": True, "reason": "up"}
+    down_stroke = {"score": 4.0, "direction": "down", "reason": "down"}
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score", lambda _: down_stroke)
+    monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
+    assert result["direction_conflict"] is True
+    assert result["tradable"] is False
+    assert "冲突" in result["status"]
+
+
+def test_swing_score_components_sum_to_100():
+    daily = bars()
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {"flow_5d": 1e8})
+    expected = sum(result[k]["score"] for k in ("trend", "flow", "stroke", "segment"))
+    assert result["total"] == expected
+    report = {"selection_mode": "swing", "top10": [{
+        "code": result["code"], "trend_score": result["trend"]["score"],
+        "flow_score": result["flow"]["score"], "stroke_score": result["stroke"]["score"],
+        "segment_score": result["segment"]["score"], "total": result["total"],
+    }]}
+    swing_validate(report)

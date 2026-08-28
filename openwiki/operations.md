@@ -311,6 +311,18 @@ await close_tickflow()
 
 ## Testing & Change Guidance
 
+### Swing Recommendation Validation
+
+A股/港股默认推荐的验收命令：
+
+1. `uv run pytest tests/ -q`：固定OHLCV夹具覆盖日线趋势、量价、日线笔、30分钟线段、方向冲突与30分钟数据失败。
+2. `uv run scripts/recommend.py --market cn --mode swing --min-stocks 20 --json`。
+3. `uv run scripts/recommend.py --market hk --mode swing --min-stocks 20 --json`。
+
+检查标准：总分必须等于日线趋势30 + 日线量价/资金25 + 日线笔20 + 30分钟线段25；任何“当前可布局”必须同时具有向上日线笔和向上30分钟线段；30分钟数据不足或方向冲突必须显示观望，且报告不得包含基本面评分、周线缠论或价值投资入场依据。`--mode value` 仅用于旧策略兼容验证。
+
+---
+
 ### Testing Philosophy
 
 The project currently has no formal test suite. Changes should be validated by:

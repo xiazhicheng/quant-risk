@@ -139,7 +139,22 @@ Returns `{buy_points: [{type, level, price, detail}], sell_points: [...]}`
 
 *Lines 367-430*
 
-### 9. Risk Assessment Integration — `chan_risk_assessment(klines)`
+### Swing Mode: Daily Strokes + 30-Minute Segments
+
+A股与港股默认波段推荐只使用两个缠论周期：
+
+- **日线笔**：判断几天至 1-2 周的交易方向，读取最近已确认笔的方向、起止日期、最高/最低点。
+- **30分钟线段**：确认入场与离场，读取最近已确认线段的方向和突破状态。
+
+周线缠论、日线中枢以及一/二/三类买卖点不参与默认波段评分。日线笔向上且30分钟线段向上才允许“当前可布局”；任一周期数据不足或方向冲突时输出“观望”，不补默认分。
+
+30分钟K线由 `stock_kline_30m_async(code, market)` 统一获取，返回 `available/source/interval/bars/bar_count/error`。数据不足40根、OHLC无效、Yahoo失败或当前未收盘K线均会显式处理；不会用日线、周线或60分钟数据冒充30分钟线段。
+
+波段评分：日线趋势30分 + 日线量价/资金25分 + 日线笔20分 + 30分钟线段25分，共100分。止损和目标是技术位，不依赖估值或基本面。
+
+---
+
+## Risk Assessment Integration — `chan_risk_assessment(klines)`
 
 Entry-point function that runs the full pipeline and produces a risk assessment dictionary. Called by `StockAnalyzer._calc_technicals()`.
 

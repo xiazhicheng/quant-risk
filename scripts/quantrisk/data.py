@@ -463,6 +463,46 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
                        "low":round(q["low"][i],2),"close":round(float(close_price),2),
                        "volume":int(q["volume"][i])})
     return result
+
+
+def _normalize_intraday_bars(rows: list[dict]) -> list[dict]:
+    """排序、去重并剔除当前未收盘的分钟K线。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    bars: dict[str, dict] = {}
+    for row in rows:
+        date = str(row.get("date", ""))
+        if not date or _sf(row.get("open")) <= 0 or _sf(row.get("high")) <= 0 or _sf(row.get("low")) <= 0 or _sf(row.get("close")) <= 0:
+            continue
+        bars[date] = row
+    ordered = [bars[key] for key in sorted(bars)]
+    if ordered and str(ordered[-1].get("date", "")) >= now:
+        ordered.pop()
+    return ordered
+
+
+async def stock_kline_30m_async(code: str, market: str, range_: str = "60d") -> dict:
+    """A股/港股统一30分钟K线入口，仅使用Yahoo，绝不伪造周期。"""
+    market = market.lower()
+    if market == "hk":
+        symbol = f"{int(code)}.HK"
+    elif market == "cn":
+        symbol = f"{code}.SS" if code.startswith(("6", "9")) else f"{code}.SZ"
+    else:
+        return {"available": False, "source": "", "interval": "30m", "bars": [], "bar_count": 0,
+                "error": f"不支持的市场: {market}"}
+    try:
+        rows = await stock_kline_yahoo_async(symbol, interval="30m", range_=range_)
+        bars = _normalize_intraday_bars(rows)
+        if len(bars) < 40:
+            return {"available": False, "source": "Yahoo", "interval": "30m", "bars": bars,
+                    "bar_count": len(bars), "error": "30分钟K线数据不足"}
+        return {"available": True, "source": "Yahoo", "interval": "30m", "bars": bars,
+                "bar_count": len(bars), "error": ""}
+    except Exception as exc:
+        return {"available": False, "source": "Yahoo", "interval": "30m", "bars": [], "bar_count": 0,
+                "error": f"30分钟K线获取失败: {exc}"}
+
+
 async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 120) -> list[dict]:
     """腾讯港股K线（日K/周K）。code: 5位数字代码，period: day/week，count: 条数。
     注意：分钟级(5m/60m)只返回当天1根，不建议用于缠论分析。"""

@@ -16,12 +16,13 @@
     - 📋 巴菲特买入前 Checklist（六关评分）
     - 定价建议 + 择时判断
     - 筛选过程 + ③ 关键数据多源交叉验证
-    - ① 行业漏斗筛选（--industry 模式）
+    - 波段模式（默认）：日线趋势/量价/笔 + 30分钟线段
+    - 价值模式（--mode value）：兼容旧版基本面评分链
 
-三步强制流程:
-  ① 全市场扫描（板块扫描）
-  ② 中观硬约束过滤 + 基本面一票否决
-  ③ 微观评分（基本面60分 + 技术面40分 = 100分）→ TOP10
+波段流程（A股/港股默认）:
+  ① 全市场扫描与日线技术粗筛
+  ② 日线趋势、量价资金、日线笔评分
+  ③ 30分钟线段确认 → TOP10
 """
 from __future__ import annotations
 
@@ -40,22 +41,20 @@ from scripts.quantrisk.data import close_async_session, close_tickflow
 # 市场适配器路由
 # ═══════════════════════════════════════════════════════════════
 
-async def run_hk_recommendation(min_stocks: int = 300, industry: str = "") -> dict:
-    """港股推荐流程"""
+async def run_hk_recommendation(min_stocks: int = 300, industry: str = "", mode: str = "swing") -> dict:
+    """港股推荐流程。"""
     from scripts.quantrisk.recommend_hk import hk_recommend_pipeline
-    return await hk_recommend_pipeline(min_stocks=min_stocks, industry=industry)
+    return await hk_recommend_pipeline(min_stocks=min_stocks, industry=industry, mode=mode)
 
 
-async def run_cn_recommendation(min_stocks: int = 200, industry: str = "") -> dict:
-    """A 股推荐流程"""
-    from scripts.quantrisk.recommend_cn import (
-        fetch_cn_candidate_pool, cn_recommend_pipeline,
-    )
+async def run_cn_recommendation(min_stocks: int = 200, industry: str = "", mode: str = "swing") -> dict:
+    """A股推荐流程。"""
+    from scripts.quantrisk.recommend_cn import fetch_cn_candidate_pool, cn_recommend_pipeline
     candidates = await fetch_cn_candidate_pool(min_stocks=min_stocks)
     if not candidates:
         print("❌ A 股候选池获取失败")
         return {}
-    return await cn_recommend_pipeline(candidates)
+    return await cn_recommend_pipeline(candidates, mode=mode)
 
 
 async def run_us_recommendation(industry: str = "") -> dict:
@@ -77,6 +76,7 @@ def parse_args():
     json_mode = False
     min_stocks = 200
     industry = ""
+    mode = "swing"
 
     args = sys.argv[1:]
     i = 0
@@ -94,6 +94,9 @@ def parse_args():
         elif arg == "--industry" and i + 1 < len(args):
             industry = args[i + 1]
             i += 2
+        elif arg == "--mode" and i + 1 < len(args):
+            mode = args[i + 1].lower()
+            i += 2
         elif arg == "--help":
             print(__doc__)
             sys.exit(0)
@@ -103,30 +106,49 @@ def parse_args():
     if market not in ("hk", "cn", "us"):
         print(f"❌ 未知市场: {market}（可选: hk, cn, us）")
         sys.exit(1)
+    if mode not in ("swing", "value"):
+        print(f"❌ 未知模式: {mode}（可选: swing, value）")
+        sys.exit(1)
 
-    return market, json_mode, min_stocks, industry
+    return market, json_mode, min_stocks, industry, mode
 
 
 async def main():
-    market, json_mode, min_stocks, industry = parse_args()
+    market, json_mode, min_stocks, industry, mode = parse_args()
 
     # 路由到对应市场
     if market == "hk":
         label = f"港股{'(' + industry + ')' if industry else ''}"
-        print(f"🔍 {label}推荐（候选池 {min_stocks}+ 只）...")
-        raw_data = await run_hk_recommendation(min_stocks, industry)
+        print(f"🔍 {label}{'波段' if mode == 'swing' else '价值'}推荐（候选池 {min_stocks}+ 只）...")
+        raw_data = await run_hk_recommendation(min_stocks, industry, mode)
 
     elif market == "cn":
-        print(f"🔍 A 股推荐（候选池 {min_stocks}+ 只）...")
-        raw_data = await run_cn_recommendation(min_stocks)
+        print(f"🔍 A 股{'波段' if mode == 'swing' else '价值'}推荐（候选池 {min_stocks}+ 只）...")
+        raw_data = await run_cn_recommendation(min_stocks, industry, mode)
 
     elif market == "us":
-        print("🔍 美股推荐（S&P 500 核心）...")
+        print("🔍 美股推荐（S&P 500 核心，兼容价值模式）...")
         raw_data = await run_us_recommendation()
+        mode = "value"
 
     if not raw_data:
         print("❌ 推荐流程执行失败")
         sys.exit(1)
+
+    if mode == "swing":
+        from scripts.quantrisk.swing import render_swing_report, swing_validate
+        try:
+            swing_validate(raw_data)
+        except ValueError as exc:
+            print(f"❌ 波段结果校验失败: {exc}")
+            sys.exit(1)
+        if json_mode:
+            print(json.dumps(raw_data, ensure_ascii=False, default=str, indent=2))
+        else:
+            print(render_swing_report(raw_data, market))
+        await close_async_session()
+        await close_tickflow()
+        return
 
     # 检查是否真的有值得推荐的标的
     top10 = raw_data.get("top10", [])

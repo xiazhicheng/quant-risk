@@ -59,9 +59,17 @@ All modules within `scripts/quantrisk/` are independent leaf modules — `data.p
 
 ---
 
-## Three-Dimensional Scoring
+## Current Default: Swing Selection (A-share / HK)
 
-**Formula**: `Total = Fundamentals_Score × 5 + Market_Sentiment_Score × 3 + Chan_Theory_Score × 2`
+A股与港股的默认推荐模式是面向几天至 1-2 周持有周期的纯技术波段筛选，不使用 PE、ROE、负债率、营收、净利或六维基本面评分。推荐总分由四个技术维度组成：日线趋势 30 分、日线量价/资金 25 分、日线笔 20 分、30 分钟线段 25 分。日线笔负责方向，30 分钟线段负责入场确认；二者缺失或方向冲突时只能观望。
+
+入口：`uv run scripts/recommend.py --market cn` 或 `--market hk`，可显式传 `--mode swing`。30 分钟数据统一走 `data.py:stock_kline_30m_async()`，Yahoo 不可用时返回数据缺失，不降级为其他周期。旧的基本面三维评分链只通过 `--mode value` 保留。
+
+---
+
+## Legacy Three-Dimensional Scoring
+
+**Formula (legacy `--mode value`)**: `Total = Fundamentals_Score × 5 + Market_Sentiment_Score × 3 + Chan_Theory_Score × 2`
 
 | Dimension | Weight | Data Sources |
 |-----------|--------|-------------|

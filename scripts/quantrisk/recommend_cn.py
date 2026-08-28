@@ -220,8 +220,39 @@ async def cn_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]
 # A股主流程
 # ═══════════════════════════════════════════════════════════════
 
-async def cn_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
-    """A股推荐完整流程（三步强制流程）"""
+async def cn_swing_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
+    """A股纯技术波段流程：日线笔 + 30分钟线段。"""
+    from scripts.quantrisk.data import stock_kline_30m_async
+    from scripts.quantrisk.swing import run_swing_pipeline_with_intraday
+
+    quote_results = await asyncio.gather(*[cn_stock_quote_tencent_async(c["code"]) for c in candidates], return_exceptions=True)
+    stocks = []
+    for c, quote in zip(candidates, quote_results):
+        q = quote if isinstance(quote, dict) else {}
+        code = c["code"]
+        stocks.append({"c": code, "n": c.get("name") or q.get("name", ""),
+                       "s": c.get("sector", "其他"), "p": q.get("price") or c.get("price", 0), "q": q})
+
+    async def daily_fetch(code: str):
+        return await cn_stock_kline_fallback(code, days=365)
+
+    async def flow_fetch(code: str):
+        rows = await cn_fund_flow_minute_async(code)
+        if not rows:
+            return {}
+        mains = [r.get("main_net", 0) or 0 for r in rows[-5:]]
+        return {"flow_5d": sum(mains), "flow_1d": mains[-1] if mains else 0, "days": len(mains)}
+
+    async def intraday_fetch(code: str):
+        return await stock_kline_30m_async(code, "cn", range_="60d")
+
+    return await run_swing_pipeline_with_intraday(stocks, "cn", daily_fetch, flow_fetch, intraday_fetch)
+
+
+async def cn_recommend_pipeline(candidates: List[Dict[str, str]], mode: str = "value") -> dict:
+    """A股推荐流程；mode=swing时只走纯技术波段链路。"""
+    if mode == "swing":
+        return await cn_swing_recommend_pipeline(candidates)
     ds = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
 
     # Step 1: 构建板块映射

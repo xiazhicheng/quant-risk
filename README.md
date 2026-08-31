@@ -78,11 +78,14 @@ rm -rf /tmp/_qr
 quant-risk/
 ├── scripts/                       # 所有代码统一在此目录
 │   ├── analyze.py                 # 统一多市场分析入口（港股/A股/美股）
-│   ├── recommend.py               # 统一推荐入口：--market hk|cn|us
+│   ├── recommend.py               # 统一推荐入口：--market hk|cn|us（默认 swing 波段模式）
 │   ├── portfolio.py               # 持仓诊断：uv run scripts/portfolio.py diagnose
 │   ├── portfolio_report.py        # 🔥 持仓完整报告：产业链Mermaid+四大师+缠论+行业漏斗
 │   ├── tech_chan.py               # 🔥 缠论深度分析 + 产业链Mermaid 输出
+│   ├── tech_detail.py             # 详细技术面分析（四大师+技术面完整报告）
 │   ├── chan_mtf.py                # 缠论多周期联立
+│   ├── news_pulse.py              # 股价异动快速归因（14天回溯，量价+板块+公告）
+│   ├── financial_rigor.py         # 金融数据精度验证（市值/估值精确验算+多源交叉验证）
 │   ├── formatter.py               # 选股推荐格式化器 (Pydantic + 渲染)
 │   ├── formatters/                # 四阶段风控格式化器
 │   │   ├── __init__.py
@@ -97,11 +100,12 @@ quant-risk/
 │       ├── recommend_hk.py        # 港股选股推荐适配器
 │       ├── recommend_cn.py        # A 股选股推荐适配器
 │       ├── recommend_us.py        # 美股选股推荐适配器
+│       ├── swing.py               # 纯技术波段评分引擎（日线趋势/量价/笔 + 30分钟线段）
 │       ├── data.py                # 数据层：行情/K线/基本面/资金面/信号/公告/期权/SEC
 │       ├── chan.py                # 缠论：分型→笔→线段→中枢→背驰→买卖点
 │       ├── indicators.py          # 技术指标：MA/MACD/RSI/KDJ/BOLL + 支撑压力/止损止盈
+│       ├── chain_renderer.py      # 产业链渲染器：Mermaid 图文本生成（纯渲染）
 │       ├── screener.py            # 标的池筛选 + 批量查询
-│       ├── strategy.py            # 双策略信号检测（回调一买 + 突破三买）
 │       └── report.py              # StockAnalyzer 一键全量分析入口
 ├── SKILL.md                       # Skill 主定义（数据函数 + 风控模板）
 ├── AGENTS.md                      # 项目约定和设计决策
@@ -119,7 +123,7 @@ quant-risk/
 │                                              │
 │  数据层  data.py                              │
 │  ├── 行情层    腾讯/新浪/东财 push2/mootdx    │
-│  ├── K线层     腾讯/新浪/Yahoo/百度/mootdx    │
+│  ├── K线层     腾讯(ifzq)/新浪/AYahoo/百度/TickFlow(兜底) │
 │  ├── 基本面    东财/Yahoo/SEC EDGAR/同花顺    │
 │  ├── 资金面    东财 push2his/两融/大宗/股东    │
 │  ├── 信号层    同花顺/龙虎榜/北向/板块归属     │
@@ -307,21 +311,56 @@ uv sync
 
 | 数据源 | 协议 | 鉴权 | 覆盖 |
 |--------|------|------|------|
-| 东财 push2/datacenter | HTTPS | 零 | A股+美股+港股 |
-| 腾讯财经 | HTTPS | 零 | A股+美股+港股 行情 |
-| 新浪财经 | HTTP | 零 | 美股/港股行情+美股K线+A股三表 |
+| 东财 push2/datacenter | HTTPS | 零 | A股+美股+港股 行情/资金流/基本面 |
+| 腾讯财经 | HTTPS | 零 | A股+美股+港股 行情；A股/港股日K前复权(ifzq.gtimg.cn) |
+| 新浪财经 | HTTP | 零 | 美股/港股行情+美股K线+A股日K+三表 |
 | 百度股市通 | HTTP | 零 | A股日K线（带MA）|
+| Yahoo Finance | HTTPS | crumb自动 | 美股+港股 日K/30分钟K线 |
+| TickFlow | HTTPS | 零 | A股+港股+美股 日K（最终兜底，已降级，8s超时快速失败）|
 | 同花顺 | HTTP | 零 | 强势股/一致预期EPS |
 | 巨潮 cninfo | HTTP | 零 | A股公告 |
-| Yahoo Finance | HTTPS | crumb自动 | 美股+港股 |
 | SEC EDGAR | HTTPS | 零 | 美股 Filing+XBRL |
 | mootdx | TCP | 零 | A股K线/财务快照 |
+
+> ⚠️ 2026-08-31 数据源调整：TickFlow（`free-api.tickflow.org` 连接不稳定）已降级为最终兜底源，所有 K 线 fallback 链前端有腾讯/新浪/百度/Yahoo 兜底，TickFlow 极少触发。新增新浪 A 股日 K（`CN_MarketData.getKLineData`）作为腾讯之后的第二源。新浪港股日 K 接口已失效，港股日 K 依赖腾讯+Yahoo。
+>
+> ⚠️ 2026-08-31 资金流限流修复：东财 fflow 资金流接口高并发下（如两市场脚本并行执行、400+ 只同时拉取）会**静默返回空数组**，导致波段报告"主力5日"显示 +0.00亿（实际是数据缺失而非资金为零）。`fund_flow_daily_async` 已加**全局限流信号量（并发 5）** + 空返回指数退避重试（0.5s/1s/2s，4 轮），所有资金流调用方统一受控。并行执行两市场脚本实测主力资金全部恢复真实值。另注意：部分 A 股小盘（如 600241/600318/600348）东财 fflow 本身无覆盖，长期显示 +0.00亿属数据源覆盖问题，非限流。
 
 ## 更新
 
 ```bash
 git pull origin main
 ```
+
+## last30days 舆情与资金热点辅助技能
+
+集成 [last30days-skill](https://github.com/mvanhorn/last30days-skill)（v3.21.1）作为独立舆情辅助技能，辅助判断**市场舆情和资金热点**。
+
+### 能力
+
+跨平台并行搜索"过去 30 天人们在说什么"，按**真实人类参与度**（upvotes / likes / 真金白银赔率）评分，合成带引用的简报：
+
+- **金融情绪源**：StockTwits（个股讨论）、Polymarket（真金白银赔率）、Reddit 投资社区
+- **通用舆情源**：X/Twitter、YouTube、Hacker News、GitHub、TikTok、Instagram、arXiv、Techmeme
+- 免费源（Reddit / HN / Polymarket / GitHub）零配置可用
+
+### 安装位置
+
+技能已软链到 ZCode 用户级技能目录 `~/.agents/skills/last30days/`，源仓库缓存在 `~/.zcode/cli/skills-cache/last30days-skill/`，便于 `git pull` 更新。
+
+### 用法
+
+重启 ZCode 会话后，直接用 `/last30days` 触发：
+
+```
+/last30days 港股银行板块 资金流向舆情
+/last30days A股种业板块 近期讨论热度
+/last30days nvidia earnings reaction
+```
+
+依赖：Python 3.12+（uv 已集成）、yt-dlp（YouTube 字幕）、Node.js（X 搜索）。yt-dlp 缺失只影响 YouTube 源，不阻塞其他源。
+
+> 📡 适用场景：`uv run scripts/recommend.py` 输出波段 TOP10 后，用 `/last30days` 对主线板块做舆情验证，交叉确认资金情绪方向。
 
 ## FAQ
 

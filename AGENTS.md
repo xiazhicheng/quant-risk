@@ -12,6 +12,10 @@ Codex Skill，覆盖 **美股 + A 股 + 港股** 全生命周期风控：投前�
 - **记忆系统**: AgentMemory（行为记忆） + OpenKnowledge（文档知识）双轨制
 - **数据分析方法（当前默认）**：A股与港股采用纯技术波段筛选，目标持有几天至 1-2 周。总分 100 分：日线趋势 30 + 日线量价/资金 25 + 日线笔 20 + 30 分钟线段 25。基本面不参与评分、估值比较或一票否决；只使用行情、成交量、资金和缠论数据。
 - **波段缠论周期（当前默认）**：只使用**日线笔**判断波段方向、30 分钟**线段**确认入场/离场。禁止把周线缠论、日线中枢或基本面评分作为默认波段入场依据；30 分钟数据缺失或与日线笔方向冲突时只能观望。
+- **波段缠论结论输出（2026-08-31 修复）**：`swing.py` 的 `daily_stroke_score`/`intraday_segment_score` 现在输出 `chan_conclusion` 缠论一句话结论（规则八格式），包含三要素：①方向（🟢偏多/🟡中性/🔴偏空，以 `chan.py` `classify_trend` 的**整体走势 direction** 为准，最近一笔/线段方向仅作参考）；②走势/中枢/买卖点/背驰（如"单中枢盘整（偏空）｜中枢[6.27~6.98]｜卖点：三卖"）；③操作含义（可布局/等回踩/观望警惕续跌）。**关键坑**：整体走势 direction 与最近笔方向冲突时（如"无中枢单边下跌"里出现 up 笔），必须在结论里标注"下跌趋势中的反弹笔"，不能只按最近笔判多。
+- **波段布局状态三档（2026-08-31 新增）**：`swing_score_one` 的 status 判定加入缠论整体方向：短线日线笔+30分钟线段共振 up 但缠论整体走势 down 时，标 **🟡谨慎布局：短线共振但缠论整体偏空**（而非"当前可布局"），杜绝"报告说可布局、缠论说观望"的自相矛盾。`build_swing_report` 的 advice 映射同步：`谨慎布局`→🟡谨慎布局。
+- **东财资金流限流坑（2026-08-31 修复）**：港股/A股波段推荐的"主力5日"显示 +0.00亿 **不一定是数据源失效**——东财 `fflow` 接口在高并发（如两个市场脚本并行执行，共 400+ 只同时拉取）时静默返回空数组，`fund_flow_daily_async` 返回 `[]` 后管线显示 +0.00亿。**已修复**：`data.py` 的 `fund_flow_daily_async` 加全局限流信号量（并发 5，`_fflow_sem`）+ 空返回指数退避重试（0.5s/1s/2s，4 轮），所有资金流调用方统一受控；两市场脚本并行执行实测主力资金全部恢复真实值（招行 +3.84亿、工行 +3.84亿）。注意区分：部分 A 股小盘（600241/600318/600348 等）东财 fflow 本身无覆盖，长期 +0.00亿属覆盖问题非限流。
+- **舆情与资金热点辅助（2026-08-31 集成）**：集成外部技能 [last30days-skill](https://github.com/mvanhorn/last30days-skill)（v3.21.1）作为 ZCode 用户级技能（`~/.agents/skills/last30days/`），跨 Reddit/X/YouTube/StockTwits/Polymarket 等平台按真实参与度评分合成舆情简报。波段推荐（`recommend.py`）输出 TOP10 后，用 `/last30days` 对主线板块做舆情和资金情绪交叉验证。技能源仓库缓存在 `~/.zcode/cli/skills-cache/last30days-skill/`，`git pull` 即可更新。免费源（Reddit/HN/Polymarket/GitHub）零配置可用；yt-dlp（YouTube 字幕）可选。
 - **价值评分链（legacy）**：六维基本面、5:3:2、基本面一票否决、周线定势/日线定点保留在 `--mode value` 兼容路径，不属于 A股/港股默认波段推荐逻辑。
 - **📊 一图胜千言（2026-07-23 新增）**：所有分析报告优先使用 Mermaid 图而非纯表格。目前包含 4 种 Mermaid 图类型：
   - **产业链全景图（流程图+子图）**：上中下游子图+竞争格局+核心财务数据，边框颜色区分层级（蓝=上游、橙=中游、绿=下游、粉=竞争、紫=财务）
@@ -376,14 +380,14 @@ scripts/
 | 数据类型 | 主源 | 备选 | 备注 |
 |---------|------|------|------|
 | A股行情 | 腾讯(不封IP) | 东财 push2 | — |
-| A股日K | 腾讯(前复权) | 百度(带MA) / mootdx / TickFlow | — |
+| A股日K | 腾讯(前复权) | 新浪(免鉴权) / 百度(带MA) / TickFlow(兜底) | 2026-08-31 新浪日K上线，TickFlow 降级为最终兜底 |
 | 港股行情 | 腾讯(78字段) | 新浪(25字段) | — |
-| 港股日K | 腾讯(ifzq.gtimg.cn) | **Yahoo / TickFlow**(备选) | 2026-08-12 修复：原 web.ifzq.gtimg.cn 已501，改用 ifzq.gtimg.cn |
+| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 2026-08-12 修复：原 web.ifzq.gtimg.cn 已501，改用 ifzq.gtimg.cn；新浪港股日K接口已失效不可用 |
 | 美股行情 | 腾讯(71字段) | 新浪(36字段) | — |
-| 美股日K | 新浪 / Yahoo | TickFlow(备选) | — |
+| 美股日K | 新浪 / Yahoo | TickFlow(兜底) | — |
 | 基本面(港股A股) | 东财 datacenter | Yahoo(key stats) | — |
 | 基本面(美股) | Yahoo | — | — |
-| 缠论K线 | 腾讯(ifzq.gtimg.cn) / Yahoo / 新浪 | **TickFlow**(数据最全) | TickFlow支持前复权 |
+| 缠论K线 | 腾讯(ifzq.gtimg.cn) / Yahoo / 新浪 | TickFlow(兜底) | TickFlow支持前复权 |
 
 **腾讯 K 线域名（2026-08-12 修复）**：`http://web.ifzq.gtimg.cn`（HTTP+web 前缀）已失效返回 501，全部落到 TickFlow 导致缠论评分失真。修复为 `data.py` 的 `_tencent_kline_get()` 多域名降级：`https://ifzq.gtimg.cn` → `https://proxy.finance.qq.com/ifzqgtimg/`（均验证可用，0.1s，无 501）。**HTTPS + 非 web 前缀是硬要求**，改回 `web.ifzq.gtimg.cn` 会让缠论全挂（缠论评分 6/20 最低基准 = K 线源全挂的信号）。
 
@@ -393,6 +397,7 @@ scripts/
 - 支持前复权 (`adjust=True`)
 - 不支持实时行情和分钟级K线（free模式）
 - 文档: https://docs.tickflow.org
+- **2026-08-31 降级为最终兜底源**：`free-api.tickflow.org` 连接不稳定（频繁连接失败），所有 K 线 fallback 链中 TickFlow 移到最后，前端有腾讯/新浪/Yahoo 兜底，TickFlow 极少触发。`_get_tickflow()` 初始化加 8s 超时、`kline_tickflow_async` 数据请求加 10s 超时，失败快速返回不拖慢整体。
 
 ## 关键设计决策
 
@@ -401,7 +406,7 @@ scripts/
 - **data.py 四合一**: HTTP 会话管理 + 行情层(8函数) + K线层(6函数) + 基本面/资金面/信号等(30函数)合并为一个文件，GitHub 浏览一目了然
 - **scripts/ 入口**: 可直接 `uv run scripts/analyze.py 03690` 运行，无需 pip install
 - **A股行情主力**: 腾讯 (不封IP) > 东财 push2
-- **A股日K**: 腾讯 (前复权) > 百度 (带MA) / mootdx (多周期)
+- **A股日K**: 腾讯 (前复权) > 新浪 (免鉴权) > 百度 (带MA) / mootdx (多周期) > TickFlow (最终兜底)
 - **缠论背驰**: MACD面积对比, 阈值15%, 强背驰50%
 - **缠论中枢**: 至少3段重叠 (min_overlap=3)
 - **标准化笔**: 分型间距≥4根K线, 同向取极端值

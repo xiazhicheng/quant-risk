@@ -8,6 +8,8 @@ from .data import (
     close_async_session, close_tickflow, hk_stock_quote_tencent_async, hk_stock_quote_sina_async,
     stock_kline_yahoo_async, key_statistics_async, key_indicators_eastmoney_async,
     kline_tickflow_async, hk_company_profile_async,
+    hk_kline_tencent_async, cn_stock_kline_sina_async, cn_stock_kline_baidu_async,
+    us_stock_kline_sina_async,
 )
 from .indicators import (
     calc_ma, calc_macd, calc_rsi, calc_kdj, calc_boll,
@@ -61,11 +63,15 @@ class StockAnalyzer:
 
         ind = indicators[0] if isinstance(indicators, list) and indicators else {}
 
-        # 技术指标 — Yahoo K线不足时用 TickFlow 备选
+        # 技术指标 — Yahoo K线不足时依次降级: 腾讯 → TickFlow(最终兜底)
         if not klines or len(klines) < 20:
-            tickflow_klines = await kline_tickflow_async(f"{code}.HK", "1d", 730)
-            if tickflow_klines and len(tickflow_klines) >= 20:
-                klines = tickflow_klines
+            tencent_klines = await hk_kline_tencent_async(code, "day", 730)
+            if tencent_klines and len(tencent_klines) >= 20:
+                klines = tencent_klines
+            elif not klines or len(klines) < 20:
+                tickflow_klines = await kline_tickflow_async(f"{code}.HK", "1d", 730)
+                if tickflow_klines and len(tickflow_klines) >= 20:
+                    klines = tickflow_klines
         tech = self._calc_technicals(klines, quote)
 
         return {
@@ -101,7 +107,15 @@ class StockAnalyzer:
         if isinstance(blocks, BaseException): blocks = {}
         if isinstance(basic, BaseException): basic = {}
 
-        # 腾讯K线不足时用 TickFlow 备选
+        # 腾讯K线不足时依次降级: 新浪 → 百度 → TickFlow(最终兜底)
+        if not klines or len(klines) < 20:
+            sina_klines = await cn_stock_kline_sina_async(code, datalen=730)
+            if sina_klines and len(sina_klines) >= 20:
+                klines = sina_klines
+        if not klines or len(klines) < 20:
+            baidu_klines = await cn_stock_kline_baidu_async(code)
+            if baidu_klines and len(baidu_klines) >= 20:
+                klines = baidu_klines
         if not klines or len(klines) < 20:
             tf_code = f"{code}.SH" if code.startswith(("6","9")) else f"{code}.SZ"
             tickflow_klines = await kline_tickflow_async(tf_code, "1d", 730)
@@ -156,7 +170,11 @@ class StockAnalyzer:
             if not quote.get("market_cap") or quote["market_cap"] <= 0:
                 quote["market_cap"] = qt_sina.get("market_cap", 0)
 
-        # 美股K线不足时用 TickFlow 备选
+        # 美股K线不足时依次降级: 新浪 → TickFlow(最终兜底)
+        if not klines or len(klines) < 20:
+            sina_klines = await us_stock_kline_sina_async(ticker, 730)
+            if sina_klines and len(sina_klines) >= 20:
+                klines = sina_klines
         if not klines or len(klines) < 20:
             tickflow_klines = await kline_tickflow_async(f"{ticker.upper()}.US", "1d", 730)
             if tickflow_klines and len(tickflow_klines) >= 20:

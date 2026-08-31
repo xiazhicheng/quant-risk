@@ -81,23 +81,73 @@ def _last_direction(items: List[Dict]) -> str:
     return str(items[-1].get("direction", "")).lower()
 
 
+def _chan_conclusion(direction: str, trend: Dict, pivots: List[Dict],
+                     divergences: List[Dict], buy_sell: Dict) -> str:
+    """缠论一句话结论（规则八）：方向 + 走势/中枢/买卖点/背驰 + 操作含义。
+
+    direction 为最近一笔/线段方向，trend 为整体走势类型；两者冲突时以整体走势为准，
+    并明确提示当前仅是反弹笔（下跌趋势中的反弹不构成反转）。
+    """
+    trend_direction = str((trend or {}).get("direction", "") or "neutral")
+    overall = trend_direction if trend_direction in ("up", "down") else direction
+    dir_desc = {"up": "🟢偏多", "down": "🔴偏空"}.get(overall, "🟡中性")
+    trend_desc = str((trend or {}).get("description", "") or "走势未定型")
+    signals = []
+    buy_points = (buy_sell or {}).get("buy_points", []) or []
+    sell_points = (buy_sell or {}).get("sell_points", []) or []
+    if buy_points:
+        names = {"first_buy": "一买", "second_buy": "二买", "third_buy": "三买"}
+        signals.append("买卖点：" + "/".join(names.get(p.get("type"), p.get("type")) for p in buy_points))
+    if sell_points:
+        names = {"first_sell": "一卖", "second_sell": "二卖", "third_sell": "三卖"}
+        signals.append("卖点：" + "/".join(names.get(p.get("type"), p.get("type")) for p in sell_points))
+    for d in (divergences or [])[-1:]:
+        signals.append(str(d.get("detail", "背驰信号")))
+    if pivots:
+        last_pivot = pivots[-1]
+        signals.append(f"中枢[{last_pivot.get('zd')}~{last_pivot.get('zg')}]")
+    # 最近笔方向与整体走势冲突时明确提示
+    if trend_direction in ("up", "down") and direction and direction != trend_direction:
+        conflict = "下跌趋势中的反弹笔" if trend_direction == "down" else "上涨趋势中的回调笔"
+        signals.append(conflict)
+    if not signals:
+        signals.append("当前无买卖点信号，等待背驰或突破确认")
+    # 操作含义
+    if overall == "up" and (buy_points or divergences):
+        action = "操作：可布局，回踩中枢/MA5企稳后介入"
+    elif overall == "up":
+        action = "操作：等回踩确认或放量突破再介入"
+    elif overall == "down":
+        action = "操作：观望，警惕续跌，等底背驰信号"
+    else:
+        action = "操作：观望，等方向选择"
+    return f"缠论结论：{dir_desc} | {trend_desc} | {'；'.join(signals)} → {action}"
+
+
 def daily_stroke_score(daily: List[Dict]) -> Dict[str, Any]:
     from scripts.quantrisk.chan import chan_theory_full
     if len(daily) < 60:
-        return {"score": 0.0, "direction": "", "reason": "日线笔数据缺失"}
+        return {"score": 0.0, "direction": "", "reason": "日线笔数据缺失",
+                "chan_conclusion": "缠论结论：数据缺失"}
     result = chan_theory_full(daily, min_bi_len=6)
     strokes = result.get("strokes", []) or []
     if not strokes:
-        return {"score": 0.0, "direction": "", "reason": "日线没有确认笔"}
+        return {"score": 0.0, "direction": "", "reason": "日线没有确认笔",
+                "chan_conclusion": "缠论结论：数据缺失"}
     last = strokes[-1]
     direction = _last_direction(strokes)
     score = 20.0 if direction == "up" else 4.0 if direction == "down" else 8.0
     if last.get("is_breakout") or last.get("breakthrough"):
         score += 2 if direction == "up" else -2
     score = max(0.0, min(20.0, score))
-    return {"score": round(score, 1), "direction": direction,
+    conclusion = _chan_conclusion(direction, result.get("trend", {}),
+                                  result.get("pivots", []), result.get("divergences", []),
+                                  result.get("buy_sell_points", {}))
+    trend_direction = str((result.get("trend", {}) or {}).get("direction", "") or "neutral")
+    return {"score": round(score, 1), "direction": direction, "trend_direction": trend_direction,
             "start_date": last.get("start_date", ""), "end_date": last.get("end_date", ""),
             "high": last.get("high"), "low": last.get("low"),
+            "chan_conclusion": conclusion,
             "reason": f"最近日线笔{direction or '未知'} {last.get('start_date','')}~{last.get('end_date','')}"}
 
 
@@ -105,19 +155,25 @@ def intraday_segment_score(intraday: List[Dict]) -> Dict[str, Any]:
     from scripts.quantrisk.chan import chan_theory_full
     if len(intraday) < 40:
         return {"score": 0.0, "direction": "", "available": False,
-                "reason": f"30分钟K线不足（{len(intraday)}根，至少40根）"}
+                "reason": f"30分钟K线不足（{len(intraday)}根，至少40根）",
+                "chan_conclusion": "缠论结论：30分钟数据缺失"}
     result = chan_theory_full(intraday, min_bi_len=4)
     segments = result.get("segments", []) or []
     if not segments:
-        return {"score": 0.0, "direction": "", "available": False, "reason": "30分钟没有确认线段"}
+        return {"score": 0.0, "direction": "", "available": False, "reason": "30分钟没有确认线段",
+                "chan_conclusion": "缠论结论：30分钟无确认线段"}
     last = segments[-1]
     direction = _last_direction(segments)
     score = 25.0 if direction == "up" else 3.0 if direction == "down" else 8.0
     if last.get("is_breakout") or last.get("breakthrough"):
         score = min(25.0, score + (2 if direction == "up" else -2))
+    conclusion = _chan_conclusion(direction, result.get("trend", {}),
+                                  result.get("pivots", []), result.get("divergences", []),
+                                  result.get("buy_sell_points", {}))
     return {"score": round(max(0.0, score), 1), "direction": direction, "available": True,
             "start_date": last.get("start_date", ""), "end_date": last.get("end_date", ""),
             "high": last.get("high"), "low": last.get("low"),
+            "chan_conclusion": conclusion,
             "reason": f"最近30分钟线段{direction or '未知'} {last.get('start_date','')}~{last.get('end_date','')}"}
 
 
@@ -132,11 +188,14 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
                               stroke["direction"] != segment["direction"])
     tradable = ok and segment.get("available", False) and not direction_conflict and \
         stroke["direction"] == "up" and segment["direction"] == "up"
+    chan_dn = stroke.get("trend_direction") == "down"  # 缠论整体走势偏空
     total = round(trend["score"] + flow_score["score"] + stroke["score"] + segment["score"], 1)
     if not ok:
         status = "数据缺失"
     elif direction_conflict:
         status = "观望：日线笔与30分钟线段冲突"
+    elif tradable and chan_dn:
+        status = "谨慎布局：短线共振但缠论整体偏空"
     elif tradable:
         status = "当前可布局"
     else:
@@ -176,7 +235,12 @@ def build_swing_report(ds: str, stocks: List[Dict[str, Any]], results: List[Dict
     details = []
     summary = []
     for rank, r in enumerate(top10, 1):
-        advice = "🟢当前可布局" if r["tradable"] else ("🟡观望" if r["status"] != "数据缺失" else "⚪数据缺失")
+        if r["status"].startswith("谨慎布局"):
+            advice = "🟡谨慎布局"
+        elif r["tradable"]:
+            advice = "🟢当前可布局"
+        else:
+            advice = "🟡观望" if r["status"] != "数据缺失" else "⚪数据缺失"
         top_rows.append({"rank": rank, "code": r["code"], "name": r["name"], "sector": r["sector"],
                          "trend_score": r["trend"]["score"], "flow_score": r["flow"]["score"],
                          "stroke_score": r["stroke"]["score"], "segment_score": r["segment"]["score"],
@@ -203,7 +267,9 @@ def render_swing_report(data: Dict[str, Any], market: str) -> str:
         lines += [f"#### {r['rank']}. {r['name']}（{r['code']}）— {r['status']}",
                   f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | **止损**：{r['stop_loss']:.2f} | **目标**：{r['take_profit']:.2f}",
                   f"- 日线趋势（30）：{trend['reason']}", f"- 日线量价/资金（25）：{flow['reason']}",
-                  f"- 日线笔（20）：{stroke['reason']}", f"- 30分钟线段（25）：{segment['reason']}"]
+                  f"- 日线笔（20）：{stroke['reason']}", f"- 30分钟线段（25）：{segment['reason']}",
+                  f"- 日线缠论：{stroke.get('chan_conclusion', '数据缺失')}",
+                  f"- 30分钟缠论：{segment.get('chan_conclusion', '数据缺失')}"]
         if r.get("direction_conflict"):
             lines.append("- ⚠️ 日线笔与30分钟线段方向冲突，禁止当前布局。")
         if r.get("error"):

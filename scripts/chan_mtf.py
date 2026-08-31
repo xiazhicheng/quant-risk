@@ -10,6 +10,9 @@
 """
 import asyncio, sys
 from datetime import datetime
+from pathlib import Path
+# Ensure project root is on sys.path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.quantrisk.data import (stock_kline_yahoo_async, kline_tickflow_async,
                                      hk_kline_tencent_async, hk_stock_quote_tencent_async,
                                      close_async_session, close_tickflow)
@@ -20,7 +23,7 @@ from scripts.quantrisk.indicators import calc_ma, calc_macd, chan_risk_assessmen
 TF_CONFIG = [
     ("短期", "5m", "5d",  "5分钟",  []),
     ("中期", "60m", "1mo", "60分钟", []),
-    ("长期", "1d", "1y",   "日K",    ["tickflow", "tencent"]),
+    ("长期", "1d", "1y",   "日K",    ["tencent", "tickflow"]),
     ("超长", "weekly", "1y", "周K",    ["tencent_week"]),
 ]
 

@@ -561,8 +561,36 @@ async def cn_stock_kline_baidu_async(code: str, start: str = "") -> list[dict]:
             for i in items]
 
 
+async def cn_stock_kline_sina_async(code: str, datalen: int = 365) -> list[dict]:
+    """A股日K（新浪财经，免费免鉴权）。datalen: 返回条数（最多~1000）。
+    接口: money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData
+    scale=240 表示日K。字段 day/open/high/low/close/volume。"""
+    prefix = cn_market_prefix(code)
+    try:
+        txt = await _get("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData",
+                         params={"symbol": f"{prefix}{code}", "scale": "240",
+                                 "datalen": str(min(datalen, 1000)), "ma": "no"},
+                         headers={"Referer": "https://finance.sina.com.cn/"})
+    except Exception:
+        return []
+    try:
+        items = json.loads(txt) if txt else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(items, list) or not items:
+        return []
+    return [{"date": str(i.get("day", "")),
+             "open": float(i.get("open", 0)),
+             "high": float(i.get("high", 0)),
+             "low": float(i.get("low", 0)),
+             "close": float(i.get("close", 0)),
+             "volume": int(float(i.get("volume", 0)))}
+            for i in items if i.get("day") and i.get("close")]
+
+
 async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
-    """A股日K统一入口（腾讯qfq→百度→TickFlow）。任一源返回≥20根即终止。"""
+    """A股日K统一入口（腾讯qfq→新浪→百度→TickFlow）。任一源返回≥20根即终止。
+    TickFlow 已降级为最终兜底，前端腾讯/新浪/百度兜底，极少触发。"""
     kl = []
 
     # 1. 腾讯前复权（主推）
@@ -576,7 +604,18 @@ async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
         _record_source("cn_kline_tencent", False)
         print(f"[WARN] 腾讯K线失败({code}): {e}")
 
-    # 2. 百度（备选，带MA）
+    # 2. 新浪（备选，免费免鉴权，实测比百度稳）
+    try:
+        kl = await cn_stock_kline_sina_async(code, datalen=days)
+        if len(kl) >= 20:
+            _record_source("cn_kline_sina", True)
+            return kl
+        _record_source("cn_kline_sina", False)
+    except Exception as e:
+        _record_source("cn_kline_sina", False)
+        print(f"[WARN] 新浪K线失败({code}): {e}")
+
+    # 3. 百度（备选，带MA）
     try:
         kl = await cn_stock_kline_baidu_async(code)
         if len(kl) >= 20:
@@ -587,7 +626,7 @@ async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
         _record_source("cn_kline_baidu", False)
         print(f"[WARN] 百度K线失败({code}): {e}")
 
-    # 3. TickFlow（最终备选）
+    # 4. TickFlow（最终兜底，已降级，前端三源均失败时才触发）
     try:
         from scripts.quantrisk.data import kline_tickflow_async
         # 判断交易所后缀（6/9=SH, 0/3=SZ, 4/8=BJ）
@@ -604,9 +643,6 @@ async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
     return kl if kl else []
 
 
-    return kl if kl else []
-
-
 # ═════════════════════════════════════════════════
 # TickFlow K线（免费免注册，A股+港股+美股，前复权）
 # ═════════════════════════════════════════════════
@@ -617,15 +653,22 @@ async def cn_stock_kline_fallback(code: str, days: int = 365) -> list[dict]:
 _kline_tickflow_session = None
 
 async def _get_tickflow() -> "AsyncTickFlow":
-    """懒初始化 TickFlow free session（抑制 TickFlow 输出的 banner）"""
+    """懒初始化 TickFlow free session（抑制 banner）。
+    已降级为最终兜底源，初始化加 8s 超时快速失败，避免连接挂起拖慢整体。"""
     global _kline_tickflow_session
     if _kline_tickflow_session is None:
         from tickflow import AsyncTickFlow
-        import os, sys, contextlib
+        import os, contextlib
         devnull = os.devnull
-        with open(devnull, 'w') as fnull:
-            with contextlib.redirect_stdout(fnull):
-                _kline_tickflow_session = await AsyncTickFlow.free().__aenter__()
+        try:
+            with open(devnull, 'w') as fnull:
+                with contextlib.redirect_stdout(fnull):
+                    _kline_tickflow_session = await asyncio.wait_for(
+                        AsyncTickFlow.free().__aenter__(), timeout=8)
+        except (asyncio.TimeoutError, Exception):
+            # 初始化失败/超时，置 None 便于下次重试，不拖慢调用方
+            _kline_tickflow_session = None
+            raise
     return _kline_tickflow_session
 
 async def close_tickflow():
@@ -656,9 +699,10 @@ async def kline_tickflow_async(symbol: str, period: str = "1d", count: int = 365
     文档: https://docs.tickflow.org
     """
     try:
-        tf = await _get_tickflow()
-        df = await tf.klines.get(symbol, period=period, count=count,
-                                  adjust=adjust, as_dataframe=True)
+        tf = await asyncio.wait_for(_get_tickflow(), timeout=8)
+        df = await asyncio.wait_for(
+            tf.klines.get(symbol, period=period, count=count,
+                          adjust=adjust, as_dataframe=True), timeout=10)
     except Exception as e:
         print(f"[WARN] TickFlow K线失败({symbol}): {e}")
         return []
@@ -1262,7 +1306,25 @@ def cn_eps_forecast_sync(code:str) -> list[dict]:
         print(f"[WARN] 一致预期EPS失败({code}): {e}"); return []
 
 # L5 — 资金面
-async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:int=100) -> list[dict]:
+# 东财 fflow 端点高并发下经常静默返回空数组或触发 ServerDisconnectedError（2026-08-31 排查：
+# 两市场脚本并行、400+ 只并发拉资金流时"主力5日"全 +0.00亿）。统一限流并发，所有调用方共用。
+_fflow_sem: Optional[asyncio.Semaphore] = None
+
+
+def _get_fflow_sem() -> asyncio.Semaphore:
+    global _fflow_sem
+    if _fflow_sem is None:
+        _fflow_sem = asyncio.Semaphore(5)
+    return _fflow_sem
+
+
+async def fund_flow_daily_async(ticker_or_code: str, secid_prefix: int = 105, limit: int = 100) -> list[dict]:
+    """获取个股日度资金流向（东财 fflow，全局限流并发 5，空返回指数退避重试）。"""
+    async with _get_fflow_sem():
+        return await _fund_flow_daily_async_inner(ticker_or_code, secid_prefix, limit)
+
+
+async def _fund_flow_daily_async_inner(ticker_or_code: str, secid_prefix: int = 105, limit: int = 100) -> list[dict]:
     """获取个股日度资金流向。
 
     A股使用 daykline/get 端点，港股(secid_prefix=116)使用 kline/get 端点（daykline/get对港股返回空）。
@@ -1279,7 +1341,7 @@ async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:
     else:
         urls = list(reversed(urls))  # daykline/get 优先（A股）
 
-    for attempt in range(3):
+    for attempt in range(4):
         for url in urls:
             try:
                 async with s.get(url, params={
@@ -1300,9 +1362,8 @@ async def fund_flow_daily_async(ticker_or_code:str, secid_prefix:int=105, limit:
             except Exception:
                 continue
         else:
-            if attempt < 2:
-                import asyncio
-                await asyncio.sleep(1 + attempt * 2)
+            if attempt < 3:
+                await asyncio.sleep(0.5 * (2 ** attempt))  # 指数退避 0.5s/1s/2s
                 continue
             return []
         break  # 成功获取数据，跳出外层循环

@@ -85,6 +85,8 @@ async def fetch_klines(code, market="hk", days=730):
         return kl or []
     kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", f"{days//365}y")
     if kl and len(kl) >= 60: return kl
+    kl = await hk_kline_tencent_async(code, "day", days)
+    if kl and len(kl) >= 60: return kl
     kl = await kline_tickflow_async(f"{code}.HK", "1d", days)
     return kl or []
 

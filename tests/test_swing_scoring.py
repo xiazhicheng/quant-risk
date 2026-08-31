@@ -67,3 +67,22 @@ def test_swing_score_components_sum_to_100():
         "segment_score": result["segment"]["score"], "total": result["total"],
     }]}
     swing_validate(report)
+
+
+def test_chan_downtrend_flags_cautious_layout(monkeypatch):
+    """缠论整体走势偏空时，即使短线共振也只给'谨慎布局'，杜绝自相矛盾。"""
+    daily = bars()
+    up_stroke = {"score": 20.0, "direction": "up", "trend_direction": "down",
+                 "start_date": "2026-01-01", "end_date": "2026-01-20",
+                 "reason": "最近日线笔up 2026-01-01~2026-01-20",
+                 "chan_conclusion": "缠论结论：🔴偏空 | 无中枢单边下跌"}
+    up_segment = {"score": 25.0, "direction": "up", "available": True,
+                  "start_date": "2026-01-01", "end_date": "2026-01-20",
+                  "reason": "最近30分钟线段up 2026-01-01~2026-01-20",
+                  "chan_conclusion": "缠论结论：🟢偏多 | 单中枢盘整（偏多）"}
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score", lambda _: up_stroke)
+    monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
+    assert result["tradable"] is True
+    assert result["status"].startswith("谨慎布局")
+    assert "缠论整体偏空" in result["status"]

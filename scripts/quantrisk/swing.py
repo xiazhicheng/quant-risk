@@ -167,7 +167,19 @@ def intraday_segment_score(intraday: List[Dict]) -> Dict[str, Any]:
     score = 25.0 if direction == "up" else 3.0 if direction == "down" else 8.0
     if last.get("is_breakout") or last.get("breakthrough"):
         score = min(25.0, score + (2 if direction == "up" else -2))
-    conclusion = _chan_conclusion(direction, result.get("trend", {}),
+    # 关键修复（2026-08-31）：30m 线段分析的方向应基于 segments 而非 strokes。
+    # classify_trend(pivots, strokes) 对单中枢盘整用 strokes[-1].direction 判定趋势，
+    # 但 30m 的 strokes 因 min_bi_len=4 较细，当天 7 根 bar 的价格小波动就可能
+    # 形成噪声笔，导致 direction 被误判为 down（见 工行 01398: 收盘 7.55→7.53→7.57
+    # 被误判为 down 笔，实际只是 up 线段内的正常波动）。
+    # 修复：用 segments 的 direction 构造 trend，与 30m 分析粒度一致。
+    trend_for_conclusion = dict(result.get("trend", {}) or {})
+    seg_strokes = [{"direction": s.get("direction", "up")} for s in segments]
+    from scripts.quantrisk.chan import classify_trend
+    trend_by_segment = classify_trend(result.get("pivots", []), seg_strokes)
+    trend_for_conclusion["direction"] = trend_by_segment.get("direction", trend_for_conclusion.get("direction", "neutral"))
+    trend_for_conclusion["description"] = trend_by_segment.get("description", trend_for_conclusion.get("description", ""))
+    conclusion = _chan_conclusion(direction, trend_for_conclusion,
                                   result.get("pivots", []), result.get("divergences", []),
                                   result.get("buy_sell_points", {}))
     return {"score": round(max(0.0, score), 1), "direction": direction, "available": True,

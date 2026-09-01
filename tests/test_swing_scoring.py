@@ -86,3 +86,30 @@ def test_chan_downtrend_flags_cautious_layout(monkeypatch):
     assert result["tradable"] is True
     assert result["status"].startswith("谨慎布局")
     assert "缠论整体偏空" in result["status"]
+
+
+def test_intraday_segment_score_direction_matches_segment_not_stroke():
+    """
+    Regression test (2026-08-31): 30m 线段方向应基于 segments 而非 strokes。
+    工行 01398 案例：min_bi_len=4 把同一天 7 根 bar（7.55→7.53→7.57→7.55→7.56→7.55→7.56）
+    识别为 down 笔，导致 classify_trend 用 strokes[-1].direction=down 判定"偏空"，
+    但 segments 方向是 up。修复后结论应与 segments 方向一致（偏多）。
+    """
+    import asyncio
+    from scripts.quantrisk.data import stock_kline_30m_async, close_async_session
+
+    async def _run():
+        r = await stock_kline_30m_async("01398", "hk", range_="60d")
+        if len(r["bars"]) < 40:
+            return  # skip if data unavailable
+        score = intraday_segment_score(r["bars"])
+        if not score.get("available"):
+            return
+        # 关键断言：segment 方向=up 时，结论必须偏多（不能偏空）
+        assert score["direction"] == "up", f"expected segment up, got {score['direction']}"
+        concl = score.get("chan_conclusion", "")
+        assert "🟢偏多" in concl, f"expected 偏多 conclusion for up segment, got: {concl}"
+        assert "🔴偏空" not in concl, f"BUG: up segment shows 偏空: {concl}"
+
+    asyncio.run(_run())
+    asyncio.run(close_async_session())

@@ -78,6 +78,7 @@ rm -rf /tmp/_qr
 quant-risk/
 ├── scripts/                       # 所有代码统一在此目录
 │   ├── analyze.py                 # 统一多市场分析入口（港股/A股/美股）
+│   ├── analyze_swing.py           # 🎯 单股波段分析（A股/港股，复用 swing 评分核心）
 │   ├── recommend.py               # 统一推荐入口：--market hk|cn|us（默认 swing 波段模式）
 │   ├── portfolio.py               # 持仓诊断：uv run scripts/portfolio.py diagnose
 │   ├── portfolio_report.py        # 🔥 持仓完整报告：产业链Mermaid+四大师+缠论+行业漏斗
@@ -187,6 +188,16 @@ uv run scripts/analyze.py 03690 --json       # JSON输出
 uv run scripts/analyze.py 600309             # A股 万华化学
 uv run scripts/analyze.py AAPL               # 美股 苹果
 ```
+
+### 个股波段分析（A股/港股）
+
+```bash
+uv run scripts/analyze_swing.py 600388       # A股 紫金龙净
+uv run scripts/analyze_swing.py 03968        # 港股 招商银行（5位代码）
+uv run scripts/analyze_swing.py 600018 01258 # 批量
+```
+
+与 `recommend.py --market cn/hk --mode swing` 同源（复用 `swing.py` 评分核心 + `data.py` 数据层），仅将"全市场扫描"改为"指定个股"：输出波段四维评分（日线趋势30+量价资金25+日线笔20+30分钟线段25）+ 缠论结论 + 布局状态 + 三刀筛辅助数据。
 
 ### 统一推荐（全市场扫描）
 

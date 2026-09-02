@@ -189,6 +189,35 @@ def intraday_segment_score(intraday: List[Dict]) -> Dict[str, Any]:
             "reason": f"最近30分钟线段{direction or '未知'} {last.get('start_date','')}~{last.get('end_date','')}"}
 
 
+def swing_sl_tp(price: float, daily: List[Dict], stroke_low: float = 0.0) -> Dict[str, Any]:
+    """ATR 动态止损/目标（方案A，2026-09-01 替代固定 -8%/+10%）。
+
+    低波动票（如工行 2ATR≈4%）止损自动收窄，高波动票（如康希诺 2ATR≈27%）自动放宽，
+    不再一刀切。规则：
+      - 止损 = max(现价 - 2×ATR, 日线笔低点×0.985)，百分比 clamp 到 [5%, 11%]
+      - 目标 = 现价 + 3×ATR，百分比 clamp 到 [8%, 25%]，且目标比例 ≥ 止损比例×1.5（RR≥1.5:1）
+      - ATR 缺失（日K不足15根）时回退固定 -8%/+10%
+    """
+    from scripts.quantrisk.indicators import calc_stop_loss_take_profit
+    atr_raw = 0.0
+    if price > 0 and daily and len(daily) > 14:
+        r = calc_stop_loss_take_profit(price, klines=daily)
+        atr_raw = float(r.get("atr") or 0.0)
+    if atr_raw <= 0:
+        stop = round(max(price * 0.92, stroke_low * 0.985), 2)
+        target = round(price * 1.10, 2)
+        return {"stop_loss": stop, "take_profit": target, "atr": None,
+                "stop_pct": 8.0, "target_pct": 10.0}
+    stop_pct = min(max(2 * atr_raw / price * 100, 5.0), 11.0)
+    target_pct = min(max(3 * atr_raw / price * 100, stop_pct * 1.5, 8.0), 25.0)
+    stop = max(price * (1 - stop_pct / 100), stroke_low * 0.985)
+    target = price * (1 + target_pct / 100)
+    return {"stop_loss": round(stop, 2), "take_profit": round(target, 2),
+            "atr": round(atr_raw, 4),
+            "stop_pct": round((price - stop) / price * 100, 1),
+            "target_pct": round((target - price) / price * 100, 1)}
+
+
 def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dict],
                     flow: Optional[Dict] = None) -> Dict[str, Any]:
     ok, error = swing_liquidity_filter(stock, daily)
@@ -214,13 +243,14 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
         status = "观望：等待日线笔与30分钟线段共振"
     price = _num(stock.get("p") or stock.get("price"))
     stop_base = _num(stroke.get("low")) if stroke.get("direction") == "up" else 0
-    stop = round(max(price * 0.92, stop_base * 0.985) if price > 0 else 0, 2)
-    target = round(price * 1.10, 2) if price > 0 else 0
+    sl_tp = swing_sl_tp(price, daily, stop_base)
+    stop, target = sl_tp["stop_loss"], sl_tp["take_profit"]
     return {"code": stock.get("c") or stock.get("code", ""), "name": stock.get("n") or stock.get("name", ""),
             "sector": stock.get("s") or stock.get("sector", "其他"), "price": price, "total": total,
             "trend": trend, "flow": flow_score, "stroke": stroke, "segment": segment,
             "tradable": tradable, "status": status, "error": error, "direction_conflict": direction_conflict,
-            "stop_loss": stop, "take_profit": target}
+            "stop_loss": stop, "take_profit": target, "atr": sl_tp.get("atr"),
+            "stop_pct": sl_tp.get("stop_pct"), "target_pct": sl_tp.get("target_pct")}
 
 
 def rank_swing_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -277,7 +307,8 @@ def render_swing_report(data: Dict[str, Any], market: str) -> str:
     for r in data.get("details", []):
         trend, flow, stroke, segment = r["trend"], r["flow"], r["stroke"], r["segment"]
         lines += [f"#### {r['rank']}. {r['name']}（{r['code']}）— {r['status']}",
-                  f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | **止损**：{r['stop_loss']:.2f} | **目标**：{r['take_profit']:.2f}",
+                  f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | **止损**：{r['stop_loss']:.2f}（-{r.get('stop_pct', 8.0):.1f}%）| **目标**：{r['take_profit']:.2f}（+{r.get('target_pct', 10.0):.1f}%）" +
+                  (f"，ATR{r.get('atr')}" if r.get('atr') else ""),
                   f"- 日线趋势（30）：{trend['reason']}", f"- 日线量价/资金（25）：{flow['reason']}",
                   f"- 日线笔（20）：{stroke['reason']}", f"- 30分钟线段（25）：{segment['reason']}",
                   f"- 日线缠论：{stroke.get('chan_conclusion', '数据缺失')}",
@@ -332,8 +363,9 @@ def swing_validate(data: Dict[str, Any]) -> None:
 
 
 __all__ = ["swing_liquidity_filter", "daily_trend_score", "daily_flow_score", "daily_stroke_score",
-           "intraday_segment_score", "swing_score_one", "swing_score_with_intraday", "rank_swing_results",
-           "build_swing_report", "render_swing_report", "run_swing_pipeline", "intraday_from_result", "swing_validate"]
+           "intraday_segment_score", "swing_sl_tp", "swing_score_one", "swing_score_with_intraday",
+           "rank_swing_results", "build_swing_report", "render_swing_report", "run_swing_pipeline",
+           "intraday_from_result", "swing_validate"]
 
 
 async def run_swing_pipeline_with_intraday(stocks: List[Dict[str, Any]], market: str,

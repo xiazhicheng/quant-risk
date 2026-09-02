@@ -141,7 +141,8 @@ def render_one(r: dict) -> str:
     lines = [
         f"#### {r['name']}（{r['code']}）— {r['status']}",
         f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | "
-        f"**止损**：{r['stop_loss']:.2f} | **目标**：{r['take_profit']:.2f}",
+        f"**止损**：{r['stop_loss']:.2f}（-{r.get('stop_pct', 8.0):.1f}%）| **目标**：{r['take_profit']:.2f}（+{r.get('target_pct', 10.0):.1f}%）" +
+        (f"，ATR{r.get('atr')}" if r.get('atr') else ""),
         f"- 日线趋势（30）：{t['reason']}",
         f"- 日线量价/资金（25）：{f['reason']}",
         f"- 日线笔（20）：{st['reason']}",

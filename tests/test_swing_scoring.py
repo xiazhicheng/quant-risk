@@ -5,6 +5,7 @@ from scripts.quantrisk.swing import (
     daily_trend_score,
     intraday_segment_score,
     swing_score_one,
+    swing_sl_tp,
     swing_validate,
 )
 
@@ -113,3 +114,66 @@ def test_intraday_segment_score_direction_matches_segment_not_stroke():
 
     asyncio.run(_run())
     asyncio.run(close_async_session())
+
+
+def _bars_with_amplitude(count=90, start=10.0, amp=0.005, prefix="2026-01-01"):
+    """构造指定单日振幅的日K（用于 ATR/止损止盈测试）。amp 为相对昨收的波幅比例。"""
+    base = date.fromisoformat(prefix)
+    rows = []
+    close = start
+    for i in range(count):
+        high = close * (1 + amp)
+        low = close * (1 - amp)
+        rows.append({
+            "date": (base + timedelta(days=i)).isoformat(),
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close + (high - low) * 0.4,
+            "volume": 1000 + i * 20,
+        })
+        close = rows[-1]["close"]
+    return rows
+
+
+def test_swing_sl_tp_atr_dynamic_range():
+    """方案A（2026-09-01）：止损/目标按 ATR 动态，不再固定 -8%/+10%。
+
+    低波动票（日振幅0.5%）：2ATR% 远低于 8%，止损 clamp 到 5% 下限；
+    目标至少 8%，且 RR>=1.5（目标比例 >= 止损比例*1.5）。
+    """
+    low_vol = _bars_with_amplitude(amp=0.005)   # 日振幅 0.5%
+    r = swing_sl_tp(10.0, low_vol, stroke_low=0.0)
+    assert r["atr"] is not None
+    assert 5.0 <= r["stop_pct"] <= 11.0
+    assert r["target_pct"] >= r["stop_pct"] * 1.5
+    assert r["target_pct"] >= 8.0
+    assert r["target_pct"] <= 25.0
+    assert r["stop_loss"] < 10.0 < r["take_profit"]
+
+
+def test_swing_sl_tp_atr_high_volatility_capped():
+    """高波动票（日振幅4%）：2ATR% 远超 8%，止损 clamp 到 11% 上限，目标上限 25%。"""
+    high_vol = _bars_with_amplitude(amp=0.04)
+    r = swing_sl_tp(10.0, high_vol, stroke_low=0.0)
+    assert r["atr"] is not None
+    assert 5.0 <= r["stop_pct"] <= 11.0
+    assert r["target_pct"] <= 25.0
+    assert r["take_profit"] > 10.0
+    assert r["stop_loss"] < 10.0
+
+
+def test_swing_sl_tp_fallback_without_atr():
+    """ATR 缺失（日K不足）时回退固定 -8%/+10%（旧逻辑兜底）。"""
+    r = swing_sl_tp(10.0, [], stroke_low=9.0)
+    assert r["atr"] is None
+    assert r["stop_loss"] == round(max(10 * 0.92, 9 * 0.985), 2)
+    assert r["take_profit"] == 11.0
+
+
+def test_swing_sl_tp_stroke_low_raises_stop():
+    """日线笔低点高于 ATR 止损时，止损抬到笔低点×0.985（结构位兜底）。"""
+    low_vol = _bars_with_amplitude(amp=0.005)
+    r_near = swing_sl_tp(10.0, low_vol, stroke_low=9.8)   # 笔低点贴近现价
+    assert r_near["stop_loss"] == round(9.8 * 0.985, 2)
+    assert r_near["stop_pct"] <= 5.0 + 1e-9

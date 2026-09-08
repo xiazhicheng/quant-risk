@@ -69,25 +69,22 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
     try:
         import json, asyncio, math
 
-        # 生成所有可能的 A 股代码
-        # 按优先级排序：上海主板(600000-605199) → 深圳主板(000000-003999) → 创业板(300000-301999)
+        # 生成所有可能的 A 股代码（2026-09-08 扩池：补齐科创板 688 段，
+        # 否则中芯/海光等主线龙头永远进不了池）
         all_codes = []
-        # 上海: 600000-605199
-        for i in range(600000, 605200):
+        for i in range(600000, 606000):      # 沪市主板 600/601/603/605
             all_codes.append(f"sh{i}")
-        # 深圳主板: 000000-003999
-        for i in range(0, 4000):
+        for i in range(688000, 690000):      # 科创板 688（新增，主线半导体/算力所在）
+            all_codes.append(f"sh{i}")
+        for i in range(0, 4000):             # 深市主板 000/001/002/003
             all_codes.append(f"sz{i:06d}")
-        # 深圳创业板: 300000-301999
-        for i in range(300000, 302000):
+        for i in range(300000, 302000):      # 创业板 300/301
             all_codes.append(f"sz{i}")
 
         candidates = []
         batch_size = 200  # 腾讯 API 支持 200 个/批，实测可用
 
         for batch_start in range(0, len(all_codes), batch_size):
-            if len(candidates) >= min_stocks:
-                break
             batch = all_codes[batch_start:batch_start + batch_size]
             url = "http://qt.gtimg.cn/q=" + ",".join(batch)
 
@@ -134,7 +131,7 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
                 # 过滤 ETF/衍生品/ST
                 if any(kw in name for kw in ["ETF", "LOF", "REIT", "购", "沽", "牛", "熊"]):
                     continue
-                if name.startswith("ST"):
+                if "ST" in name.upper() or "退" in name:
                     continue
                 if price <= 0:
                     continue
@@ -150,7 +147,9 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
                     "sector": "其他",
                 })
 
-        return candidates
+        # 按市值降序取前 min_stocks：主线龙头（半导体/算力/银行等大市值）优先入池
+        candidates.sort(key=lambda x: x.get("mcap", 0), reverse=True)
+        return candidates[:min_stocks]
 
     except Exception as e:
         print(f"[WARN] 候选池获取失败: {e}")

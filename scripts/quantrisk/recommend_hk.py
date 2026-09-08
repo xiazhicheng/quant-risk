@@ -267,6 +267,8 @@ async def fetch_dynamic_pool(min_stocks: int = 300) -> list[dict]:
                 continue
             if _is_derivative_or_etf(name, code):
                 continue
+            if "退" in name or "ST" in name.upper():  # 退市风险/ST 硬过滤（2026-09-08 Q9）
+                continue
 
             seen_codes.add(code)
             sector = classify_hk_stock(code, name)

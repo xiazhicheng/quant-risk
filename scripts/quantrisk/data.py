@@ -607,6 +607,148 @@ async def stock_kline_30m_mootdx_async(code: str, market: str = "cn") -> list[di
     return rows
 
 
+async def company_survey_async(code: str, market: str) -> dict:
+    """公司资料（主营业务/行业/法人等），用于波段报告每只标的附基本面简介。
+    A股：东财 F10 CompanySurveyAjax（行业+公司简介+法人+总经理+官网+注册资本）；
+    港股：腾讯78字段财务（PE/ROE/负债率/股息率/市值）——东财港股F10接口不可用，无主营业务文字。
+    失败返回 {"error": ...}，不抛异常。"""
+    market = market.lower()
+    try:
+        if market == "cn":
+            prefix = "SH" if code.startswith(("6", "9")) else "SZ"
+            d = await _get_json("https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/CompanySurveyAjax",
+                                params={"code": f"{prefix}{code}"})
+            jb = (d or {}).get("jbzl", {})
+            if not jb:
+                return {"error": "F10资料为空"}
+            return {"industry": str(jb.get("sshy", "")).strip(),
+                    "brief": str(jb.get("gsjj", "")).strip(),
+                    "chairman": str(jb.get("frdb", "")).strip(),
+                    "gm": str(jb.get("zjl", "")).strip(),
+                    "website": str(jb.get("gswz", "")).strip(),
+                    "reg_capital": str(jb.get("zczb", "")).strip()}
+        if market == "hk":
+            q = await hk_stock_quote_tencent_async(code)
+            if not q or not q.get("name"):
+                return {"error": "腾讯行情为空"}
+            return {"name": q.get("name"), "pe_ttm": q.get("pe_ttm"), "roe": q.get("roe"),
+                    "debt_ratio": q.get("debt_ratio"), "dividend_yield": q.get("dividend_yield"),
+                    "market_cap_100m": q.get("market_cap_100m")}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc)[:60]}"}
+    return {"error": f"不支持的市场: {market}"}
+
+
+async def cn_announcements_async(code: str, top: int = 4) -> list[dict]:
+    """东财A股近期公告，优先展示重组/收购/中标等重大事项，无命中则取最新。返回 [{date, title}]。"""
+    d = await _get_json("https://np-anotice-stock.eastmoney.com/api/security/ann",
+                        params={"sr": "-1", "page_size": "20", "page_index": "1",
+                                "ann_type": "A", "client_source": "web", "stock_list": code})
+    items = (d.get("data") or {}).get("list") or []
+    kw_major = re.compile(r"收购|重组|资产|中标|算力|增发|回购|股权|转让|停牌|合作|投资")
+    kw_minor = re.compile(r"业绩|分红|发行")
+    hits = [it for it in items if kw_major.search(it.get("title", ""))]
+    if not hits:
+        hits = [it for it in items if kw_minor.search(it.get("title", ""))]
+    chosen = hits or items
+    out = []
+    for it in chosen[:top]:
+        title = it.get("title", "").split(":")[-1].strip()
+        if title:
+            out.append({"date": it.get("notice_date", "")[:10], "title": title[:60]})
+    return out
+
+
+async def hk_announcements_async(code: str, top: int = 4) -> list[dict]:
+    """港股公告。港交所披露易接口不稳定（高频即限流返回空），返回空列表由渲染层标注数据缺失。"""
+    return []
+
+
+async def business_mix_async(code: str, market: str, top: int = 3) -> list[dict]:
+    """主营构成（同花顺『简况』tab）：东财F10 BusinessAnalysis zygcfx 最新报告期按产品/行业拆分。
+    返回 [{item, ratio, gross_margin}]，港股不可用返回 []。"""
+    if market.lower() != "cn":
+        return []
+    prefix = "SH" if code.startswith(("6", "9")) else "SZ"
+    d = await _get_json("https://emweb.securities.eastmoney.com/PC_HSF10/BusinessAnalysis/PageAjax",
+                        params={"code": f"{prefix}{code}"})
+    zg = d.get("zygcfx") or []
+    if not zg:
+        return []
+    latest = zg[0].get("REPORT_DATE", "")  # 接口已按报告期排序
+    seen, out = set(), []
+    for it in zg:
+        if it.get("REPORT_DATE") != latest:
+            continue
+        name = str(it.get("ITEM_NAME", "")).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({"item": name,
+                    "ratio": round(float(it.get("MBI_RATIO") or 0) * 100, 1),
+                    "gross_margin": round(float(it.get("GROSS_RPOFIT_RATIO") or 0) * 100, 1)})
+        if len(out) >= top:
+            break
+    return out
+
+
+async def finance_brief_async(code: str, market: str) -> dict:
+    """主要财务指标（同花顺『财务』tab）：东财数据中台 MAINFINADATA 最新报告期。
+    A股返回 {report_date, revenue, revenue_yoy, profit, profit_yoy, eps, roe, gross_margin, net_margin, debt_ratio}，
+    港股不可用返回 {}。"""
+    if market.lower() != "cn":
+        return {}
+    suffix = "SH" if code.startswith(("6", "9")) else "SZ"
+    secucode = f"{code}.{suffix}"
+    d = await _get_json("https://datacenter-web.eastmoney.com/api/data/v1/get",
+                        params={"reportName": "RPT_F10_FINANCE_MAINFINADATA", "columns": "ALL",
+                                "filter": f'(SECUCODE="{secucode}")',
+                                "sortColumns": "REPORT_DATE", "sortTypes": "-1", "pageSize": "1"})
+    data = ((d.get("result") or {}).get("data") or [])
+    if not data:
+        return {}
+    it = data[0]
+    return {"report_date": str(it.get("REPORT_DATE", ""))[:10],
+            "revenue": round(float(it.get("TOTALOPERATEREVE") or 0) / 1e8, 2),
+            "revenue_yoy": round(float(it.get("TOTALOPERATEREVETZ") or 0), 1),
+            "profit": round(float(it.get("PARENTNETPROFIT") or 0) / 1e8, 2),
+            "profit_yoy": round(float(it.get("PARENTNETPROFITTZ") or 0), 1),
+            "eps": it.get("EPSJB"), "roe": it.get("ROEJQ"),
+            "gross_margin": round(float(it.get("XSMLL") or 0), 1),
+            "net_margin": round(float(it.get("XSJLL") or 0), 1),
+            "debt_ratio": round(float(it.get("ZCFZL") or 0), 1)}
+
+
+async def core_conception_async(code: str, market: str) -> dict:
+    """核心题材（同花顺『看点』tab）：东财F10 CoreConception 所属板块 + 题材要点。
+    A股返回 {boards: [...], themes: [{keyword, content}]}，港股不可用返回 {}。"""
+    if market.lower() != "cn":
+        return {}
+    prefix = "SH" if code.startswith(("6", "9")) else "SZ"
+    d = await _get_json("https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax",
+                        params={"code": f"{prefix}{code}"})
+    boards = [str(b.get("BOARD_NAME", "")).strip() for b in (d.get("ssbk") or []) if b.get("BOARD_NAME")]
+    themes = []
+    for t in (d.get("hxtc") or [])[:3]:
+        content = str(t.get("MAINPOINT_CONTENT", "")).strip()
+        if content:
+            themes.append({"keyword": str(t.get("KEYWORD", "")).strip(), "content": content})
+    return {"boards": boards, "themes": themes}
+
+
+async def recent_announcements_async(code: str, market: str, top: int = 4) -> list[dict]:
+    """近期公告统一入口：A股东财公告，港股暂不可用（披露易限流）。失败返回 [] 不抛异常。"""
+    market = market.lower()
+    try:
+        if market == "cn":
+            return await cn_announcements_async(code, top)
+        if market == "hk":
+            return await hk_announcements_async(code, top)
+    except Exception:
+        pass
+    return []
+
+
 async def stock_kline_30m_async(code: str, market: str, range_: str = "60d") -> dict:
     """A股/港股统一30分钟K线入口，源链按序取数，绝不伪造周期。
     A股：Yahoo → 东财 → 新浪 → 腾讯mkline → mootdx；港股：Yahoo → 东财。

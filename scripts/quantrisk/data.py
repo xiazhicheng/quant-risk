@@ -480,27 +480,170 @@ def _normalize_intraday_bars(rows: list[dict]) -> list[dict]:
     return ordered
 
 
+async def stock_kline_30m_eastmoney_async(code: str, market: str) -> list[dict]:
+    """东财30分钟K线（A股+港股，klt=30 前复权）。Yahoo 限流/403/429 时的回退源。
+    注意：东财分钟K仅保留最近约250根（约31个交易日），满足40根门槛即可。"""
+    market = market.lower()
+    if market == "hk":
+        secid = f"116.{int(code):05d}"
+    elif market == "cn":
+        secid = f"1.{code}" if code.startswith(("6", "9")) else f"0.{code}"
+    else:
+        return []
+    # 东财 push2his 对 keep-alive 复用连接不友好（ServerDisconnectedError），强制短连接
+    d = await _get_json("https://push2his.eastmoney.com/api/qt/stock/kline/get",
+                        params={"secid": secid, "fields1": "f1,f2,f3,f4,f5,f6",
+                                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                                "klt": "30", "fqt": "1", "beg": "0", "end": "20500101", "lmt": "1000"},
+                        headers={"Connection": "close"})
+    klines = (d.get("data") or {}).get("klines") or []
+    rows = []
+    for line in klines:
+        p = line.split(",")
+        if len(p) < 6:
+            continue
+        try:
+            # 字段顺序: 时间,开,收,高,低,量,额,振幅
+            rows.append({"date": p[0], "open": float(p[1]), "high": float(p[3]),
+                         "low": float(p[4]), "close": float(p[2]), "volume": int(float(p[5]))})
+        except (ValueError, IndexError):
+            continue
+    return rows
+
+
+def _parse_sina_30m_jsonp(text: str) -> list[dict]:
+    """解析新浪K线JSONP: var=([{day,open,high,low,close,volume},...])"""
+    m = re.search(r"var=\s*\((\[.*\])\)", text, re.S)
+    if not m:
+        return []
+    try:
+        items = json.loads(m.group(1))
+    except (ValueError, TypeError):
+        return []
+    rows = []
+    for i in items:
+        try:
+            rows.append({"date": i["day"], "open": float(i["open"]), "high": float(i["high"]),
+                         "low": float(i["low"]), "close": float(i["close"]),
+                         "volume": int(float(i.get("volume", 0) or 0))})
+        except (ValueError, KeyError, TypeError):
+            continue
+    return rows
+
+
+async def stock_kline_30m_sina_async(code: str, market: str = "cn") -> list[dict]:
+    """新浪A股30分钟K线（scale=30）。A股专属备用源。"""
+    market = market.lower()
+    if market != "cn":
+        return []
+    sym = f"sh{code}" if code.startswith(("6", "9")) else f"sz{code}"
+    s = await get_async_session()
+    async with s.get("https://quotes.sina.cn/cn/api/jsonp_v2.php/var=/CN_MarketDataService.getKLineData",
+                     params={"symbol": sym, "scale": "30", "ma": "no", "datalen": "1023"},
+                     timeout=aiohttp.ClientTimeout(total=15)) as r:
+        return _parse_sina_30m_jsonp(await r.text())
+
+
+async def stock_kline_30m_tencent_async(code: str, market: str = "cn") -> list[dict]:
+    """腾讯A股30分钟K线（mkline m30，约320根）。A股专属备用源。"""
+    market = market.lower()
+    if market != "cn":
+        return []
+    prefix = "sh" if code.startswith(("6", "9")) else "sz"
+    d = await _get_json("https://ifzq.gtimg.cn/appstock/app/kline/mkline",
+                        params={"param": f"{prefix}{code},m30,,320"},
+                        timeout=aiohttp.ClientTimeout(total=15))
+    rows = []
+    for bar in (d.get("data", {}).get(f"{prefix}{code}", {}).get("m30", []) or []):
+        if not isinstance(bar, list) or len(bar) < 6:
+            continue
+        try:
+            t = str(bar[0])
+            rows.append({"date": f"{t[:4]}-{t[4:6]}-{t[6:8]} {t[8:10]}:{t[10:12]}",
+                         "open": float(bar[1]), "high": float(bar[3]), "low": float(bar[4]),
+                         "close": float(bar[2]), "volume": int(float(bar[5]))})
+        except (ValueError, IndexError, TypeError):
+            continue
+    return rows
+
+
+_MOOTDX_SERVERS = [("119.147.212.81", 7709), ("218.75.126.9", 7709), ("123.125.108.14", 7709)]
+
+
+async def stock_kline_30m_mootdx_async(code: str, market: str = "cn") -> list[dict]:
+    """mootdx（通达信TCP）A股30分钟K线（frequency=2）。A股最末兜底源，同步调用放线程池。"""
+    market = market.lower()
+    if market != "cn":
+        return []
+
+    def _sync():
+        from mootdx.quotes import Quotes
+        for ip, port in _MOOTDX_SERVERS:
+            try:
+                c = Quotes.factory(market="std", server=(ip, port), timeout=8)
+                df = c.bars(symbol=code, frequency=2, offset=800)
+                if df is not None and len(df):
+                    return df
+            except Exception:
+                continue
+        return None
+
+    df = await asyncio.to_thread(_sync)
+    if df is None or not len(df):
+        return []
+    rows = []
+    for _, row in df.iterrows():
+        try:
+            dt = str(row["datetime"])
+            if len(dt) == 16:
+                pass
+            elif len(dt) == 19:
+                dt = dt[:16]
+            rows.append({"date": dt, "open": float(row["open"]), "high": float(row["high"]),
+                         "low": float(row["low"]), "close": float(row["close"]),
+                         "volume": int(float(row.get("vol", 0) or 0))})
+        except (ValueError, KeyError, TypeError):
+            continue
+    return rows
+
+
 async def stock_kline_30m_async(code: str, market: str, range_: str = "60d") -> dict:
-    """A股/港股统一30分钟K线入口，仅使用Yahoo，绝不伪造周期。"""
+    """A股/港股统一30分钟K线入口，源链按序取数，绝不伪造周期。
+    A股：Yahoo → 东财 → 新浪 → 腾讯mkline → mootdx；港股：Yahoo → 东财。
+    任一源拿到 ≥40 根即停，source 字段如实标注实际数据源。"""
     market = market.lower()
     if market == "hk":
         symbol = f"{int(code)}.HK"
+        sources = [("Yahoo", lambda: stock_kline_yahoo_async(symbol, interval="30m", range_=range_)),
+                   ("东财", lambda: stock_kline_30m_eastmoney_async(code, market))]
     elif market == "cn":
         symbol = f"{code}.SS" if code.startswith(("6", "9")) else f"{code}.SZ"
+        sources = [("Yahoo", lambda: stock_kline_yahoo_async(symbol, interval="30m", range_=range_)),
+                   ("东财", lambda: stock_kline_30m_eastmoney_async(code, market)),
+                   ("新浪", lambda: stock_kline_30m_sina_async(code, market)),
+                   ("腾讯", lambda: stock_kline_30m_tencent_async(code, market)),
+                   ("mootdx", lambda: stock_kline_30m_mootdx_async(code, market))]
     else:
         return {"available": False, "source": "", "interval": "30m", "bars": [], "bar_count": 0,
                 "error": f"不支持的市场: {market}"}
-    try:
-        rows = await stock_kline_yahoo_async(symbol, interval="30m", range_=range_)
-        bars = _normalize_intraday_bars(rows)
-        if len(bars) < 40:
-            return {"available": False, "source": "Yahoo", "interval": "30m", "bars": bars,
-                    "bar_count": len(bars), "error": "30分钟K线数据不足"}
-        return {"available": True, "source": "Yahoo", "interval": "30m", "bars": bars,
-                "bar_count": len(bars), "error": ""}
-    except Exception as exc:
-        return {"available": False, "source": "Yahoo", "interval": "30m", "bars": [], "bar_count": 0,
-                "error": f"30分钟K线获取失败: {exc}"}
+    bars: list[dict] = []
+    source = ""
+    err = ""
+    for name, fn in sources:
+        try:
+            b = _normalize_intraday_bars(await fn())
+            if len(b) >= 40:
+                bars, source = b, name
+                break
+            if len(b) > len(bars):
+                bars = b
+        except Exception as exc:
+            err = f"{err}; {name}: {str(exc)[:60]}".strip("; ")
+    if len(bars) < 40:
+        return {"available": False, "source": source, "interval": "30m", "bars": bars,
+                "bar_count": len(bars), "error": err or "30分钟K线数据不足"}
+    return {"available": True, "source": source, "interval": "30m", "bars": bars,
+            "bar_count": len(bars), "error": ""}
 
 
 async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 120) -> list[dict]:

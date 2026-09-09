@@ -631,9 +631,10 @@ async def company_survey_async(code: str, market: str) -> dict:
             q = await hk_stock_quote_tencent_async(code)
             if not q or not q.get("name"):
                 return {"error": "腾讯行情为空"}
+            industry = await hk_industry_async(code)
             return {"name": q.get("name"), "pe_ttm": q.get("pe_ttm"), "roe": q.get("roe"),
                     "debt_ratio": q.get("debt_ratio"), "dividend_yield": q.get("dividend_yield"),
-                    "market_cap_100m": q.get("market_cap_100m")}
+                    "market_cap_100m": q.get("market_cap_100m"), "industry": industry}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {str(exc)[:60]}"}
     return {"error": f"不支持的市场: {market}"}
@@ -659,9 +660,80 @@ async def cn_announcements_async(code: str, top: int = 4) -> list[dict]:
     return out
 
 
+async def hk_industry_async(code: str) -> str:
+    """港股行业（东财 push2 secid=116，免费）。失败返回空字符串，不抛异常。"""
+    code5 = code.zfill(5)
+    try:
+        d = await _get_json("https://push2.eastmoney.com/api/qt/stock/get",
+                            params={"secid": f"116.{code5}", "fields": "f57,f127"},
+                            headers={"Referer": "https://quote.eastmoney.com/"})
+        return str(((d or {}).get("data") or {}).get("f127", "")).strip()
+    except Exception:
+        return ""
+
+
+async def hk_plate_async(code: str) -> str:
+    """港股所属板块（腾讯自选股 plate 接口，免费）。失败返回空字符串，不抛异常。"""
+    code5 = code.zfill(5)
+    try:
+        d = await _get_json("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/stockinfo/plate",
+                            params={"code": f"hk{code5}"})
+        return str(((d or {}).get("data") or {}).get("name", "")).strip()
+    except Exception:
+        return ""
+
+
+async def cn_index_quotes_async() -> dict:
+    """主要指数行情（腾讯 qt.gtimg.cn，免费，2026-09-08 道氏原则3「指数相互验证」接入）。
+
+    返回 {代码: {name, price, change_pct}}，代码：sh000001 上证/sz399001 深证/sz399006 创业板/hkHSI 恒生。
+    失败返回 {} 不抛异常（指数缺失时健康度检查只跳过指数部分，不误伤）。"""
+    try:
+        text = await _get_gbk("https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,hkHSI")
+        out = {}
+        for line in text.strip().split(";"):
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            # 腾讯格式: v_sh000001="..."（键名即指数代码）
+            key, val = line.split("=", 1)
+            key = key.strip().lstrip("v_").strip()
+            val = val.strip().strip('"')
+            f = val.split("~")
+            if len(f) < 33 or key not in ("sh000001", "sz399001", "sz399006", "hkHSI"):
+                continue
+            out[key] = {"name": f[1], "price": _sf(f[3]), "change_pct": _sf(f[32])}
+        return out
+    except Exception:
+        return {}
+
+
 async def hk_announcements_async(code: str, top: int = 4) -> list[dict]:
-    """港股公告。港交所披露易接口不稳定（高频即限流返回空），返回空列表由渲染层标注数据缺失。"""
-    return []
+    """港股近期公告（腾讯自选股 noticeList 接口，免费）。
+
+    港交所披露易高频即限流不可用；腾讯 ifzqgtimg noticeList 稳定可用。
+    重大事项关键词（重组/收购/回购/股权等）优先，无命中取最新。返回 [{date, title}]。
+    """
+    code5 = code.zfill(5)
+    try:
+        d = await _get_json("https://proxy.finance.qq.com/ifzqgtimg/appstock/news/noticeList/searchByType",
+                            params={"symbol": f"hk{code5}", "page": "1", "n": "20", "noticeType": "0"})
+        items = ((d or {}).get("data") or {}).get("data") or []
+        kw_major = re.compile(r"收购|重组|资产|中标|算力|增发|回购|股权|转让|停牌|合作|投资|分拆|配售")
+        kw_minor = re.compile(r"业绩|分红|年报|中期|季度|委任|辞任")
+        hits = [it for it in items if kw_major.search(str(it.get("title", "")))]
+        if not hits:
+            hits = [it for it in items if kw_minor.search(str(it.get("title", "")))]
+        chosen = hits or items
+        out = []
+        for it in chosen[:top]:
+            title = str(it.get("title", "")).strip()
+            date = str(it.get("time", ""))[:10]
+            if title:
+                out.append({"date": date, "title": title[:60]})
+        return out
+    except Exception:
+        return []
 
 
 async def business_mix_async(code: str, market: str, top: int = 3) -> list[dict]:
@@ -721,7 +793,10 @@ async def finance_brief_async(code: str, market: str) -> dict:
 
 async def core_conception_async(code: str, market: str) -> dict:
     """核心题材（同花顺『看点』tab）：东财F10 CoreConception 所属板块 + 题材要点。
-    A股返回 {boards: [...], themes: [{keyword, content}]}，港股不可用返回 {}。"""
+    A股返回 {boards: [...], themes: [...]}；港股降级返回腾讯 plate 所属板块 {boards: [板块], themes: []}。"""
+    if market.lower() == "hk":
+        plate = await hk_plate_async(code)
+        return {"boards": [plate] if plate else [], "themes": []}
     if market.lower() != "cn":
         return {}
     prefix = "SH" if code.startswith(("6", "9")) else "SZ"

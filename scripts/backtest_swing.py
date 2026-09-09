@@ -2,15 +2,16 @@
 """波段推荐回测闭环（2026-09-08 新增，Q5）。
 
 用途：记录每次推荐的 TOP10，T+5/T+10 事后统计胜率与平均收益，1-2 个月后
-回头验证 30/25/20/25 评分体系和"可布局/谨慎/观望"三档是否有效，
-避免无数据支撑的调参。
+回头验证评分体系和布局状态是否有效，避免无数据支撑的调参。`--engine-report` 读取
+新的paper回放结果，输出扣成本收益、最大回撤、Profit Factor和未成交率。
 
 用法：
-  uv run scripts/backtest_swing.py --record report/recommend-cn-20260908.md   # 记录一份报告的 TOP10
-  uv run scripts/backtest_swing.py --report                                   # 对已记录标的统计 T+5/T+10 收益
-  uv run scripts/backtest_swing.py --report --days 5,10,20                     # 自定义观察窗口
+  uv run scripts/backtest_swing.py --record report/recommend-cn-20260908.md
+  uv run scripts/backtest_swing.py --report --days 5,10,20
+  uv run scripts/backtest_swing.py --engine-report report/paper_trades.jsonl
 
-记录文件：report/swing_backtest.jsonl（每行一个标的）
+注意：从当前候选池回填历史时存在生存者偏差，只能用于研究；每日冻结快照的
+forward paper/walk-forward 才是策略上线的主验证链。
 """
 from __future__ import annotations
 
@@ -166,14 +167,60 @@ async def _record(path: str) -> None:
     print(f"已记录 {len(records)} 只标的 → {BACKTEST_FILE}")
 
 
+def _engine_report(path: str) -> None:
+    """Report deterministic paper trades produced by the shared execution model."""
+    if not os.path.exists(path):
+        print(f"回放文件不存在：{path}")
+        return
+    rows = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+    if not rows:
+        print("回放记录为空")
+        return
+    from scripts.quantrisk.backtest_engine import TradeEvent, performance_metrics
+    curve = [float(rows[0].get("starting_equity") or 0)]
+    trades = []
+    rejected = 0
+    survivorship_bias = False
+    for row in rows:
+        curve.append(float(row.get("equity") or curve[-1]))
+        rejected += int(not row.get("accepted", True))
+        survivorship_bias = survivorship_bias or bool(row.get("survivorship_bias", False))
+        if row.get("accepted", True):
+            trades.append(TradeEvent(str(row.get("date", "")), str(row.get("side", "")),
+                                     float(row.get("price") or 0), int(row.get("quantity") or 0),
+                                     float(row.get("fees") or 0), float(row.get("slippage") or 0),
+                                     str(row.get("reason", ""))))
+    metrics = performance_metrics(curve, trades)
+    total_orders = len(rows)
+    print("=== 事件驱动paper回放（扣成本）===")
+    print(f"净收益: {metrics['net_return_pct']:.2f}%")
+    print(f"最大回撤: {metrics['max_drawdown_pct']:.2f}%")
+    print(f"Profit Factor: {metrics['profit_factor']}")
+    print(f"事件数: {int(metrics['trade_count'])} | 未成交率: {(rejected / total_orders * 100 if total_orders else 0):.1f}%")
+    print(f"生存者偏差: {'是（仅研究，不得作为live依据）' if survivorship_bias else '否（冻结快照forward链）'}")
+    print("持有天数分布（高抛低吸：时间由离场信号决定，按实际持有分组）:")
+    from scripts.quantrisk.backtest_engine import ClosedTrade, holding_period_stats
+    closed = [ClosedTrade(str(r.get("entry_date", "")), str(r.get("date", "")),
+                          int(r.get("holding_days") or 1), float(r.get("entry_price") or 0),
+                          float(r.get("price") or 0), int(r.get("quantity") or 0),
+                          float(r.get("fees") or 0), float(r.get("return_pct") or 0),
+                          str(r.get("exit_reason") or "")) for r in rows if r.get("side") == "SELL"]
+    for label, stats in holding_period_stats(closed).items():
+        if stats["count"]:
+            print(f"  {label}: {int(stats['count'])}笔 胜率{stats['win_rate_pct']:.0f}% 均收益{stats['avg_return_pct']:.2f}% 合计{stats['total_return_pct']:.2f}%")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="波段推荐回测闭环")
     ap.add_argument("--record", metavar="REPORT", help="记录一份推荐报告的 TOP10")
     ap.add_argument("--report", action="store_true", help="统计已记录标的的 T+N 收益")
+    ap.add_argument("--engine-report", metavar="PAPER_TRADES", help="统计事件驱动paper回放（扣成本）")
     ap.add_argument("--days", default="5,10,20", help="观察窗口，逗号分隔")
     args = ap.parse_args()
     if args.record:
         asyncio.run(_record(args.record))
+    elif args.engine_report:
+        _engine_report(args.engine_report)
     elif args.report:
         days = [int(x) for x in args.days.split(",") if x.strip().isdigit()]
         asyncio.run(_report(days))

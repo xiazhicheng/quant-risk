@@ -32,9 +32,15 @@ def test_company_survey_hk(monkeypatch):
                 "debt_ratio": -11.88, "dividend_yield": -0.14, "market_cap_100m": 120}
 
     monkeypatch.setattr(data, "hk_stock_quote_tencent_async", fake_quote)
+
+    async def fake_industry(code):
+        return "软件服务"
+
+    monkeypatch.setattr(data, "hk_industry_async", fake_industry)
     p = asyncio.run(data.company_survey_async("03888", "hk"))
     assert p["pe_ttm"] == 10.5
     assert p["roe"] == 10.3
+    assert p["industry"] == "软件服务"
 
 
 def test_attach_company_profiles(monkeypatch):
@@ -176,9 +182,45 @@ def test_cn_announcements_filter(monkeypatch):
     assert "收购易信科技" in ann[0]["title"]
 
 
-def test_hk_announcements_unavailable():
+def test_hk_announcements_filter(monkeypatch):
+    """港股公告：腾讯 noticeList 接口，重大事项（回购/重组等）优先。"""
+    async def fake_get_json(url, **kw):
+        return {"code": 0, "data": {"data": [
+            {"title": "翌日披露报表 - 回购股份", "time": "2026-09-07 18:00:45"},
+            {"title": "委任执行董事", "time": "2026-09-01 09:00:00"},
+            {"title": "年度业绩公告", "time": "2026-08-30 12:00:00"},
+        ]}}
+
+    monkeypatch.setattr(data, "_get_json", fake_get_json)
     ann = asyncio.run(data.hk_announcements_async("00386"))
-    assert ann == []
+    assert ann and "回购" in ann[0]["title"]
+    assert ann[0]["date"] == "2026-09-07"
+
+
+def test_hk_industry_async(monkeypatch):
+    """港股行业：东财 push2 secid=116 f127 字段。"""
+    async def fake(url, **kw):
+        return {"data": {"f127": "软件服务"}}
+
+    monkeypatch.setattr(data, "_get_json", fake)
+    assert asyncio.run(data.hk_industry_async("00700")) == "软件服务"
+
+
+def test_hk_plate_async(monkeypatch):
+    """港股所属板块：腾讯自选股 plate 接口。"""
+    async def fake(url, **kw):
+        return {"data": {"name": "数码解决方案服务"}}
+
+    monkeypatch.setattr(data, "_get_json", fake)
+    assert asyncio.run(data.hk_plate_async("00700")) == "数码解决方案服务"
+
+
+def test_hk_plate_async_error_safe(monkeypatch):
+    async def fake(url, **kw):
+        raise RuntimeError("接口失败")
+
+    monkeypatch.setattr(data, "_get_json", fake)
+    assert asyncio.run(data.hk_plate_async("00700")) == ""
 
 
 def test_render_announcements_line():
@@ -200,3 +242,14 @@ def test_render_swing_report_score_legend():
               "top10": [], "details": [], "summary": [], "sectors": []}
     text = swing.render_swing_report(report, "cn")
     assert "评分说明" in text and "日线趋势30分" in text and "30分钟道氏25分" in text
+
+
+def test_render_profile_line_hk_plate_announcement():
+    """港股看点（腾讯板块）与近期动态（腾讯公告）免费源接入后的渲染。"""
+    r = {"profile": {"pe_ttm": 14.51, "roe": 4.18, "industry": "软件服务"},
+         "profile_extra": {"conception": {"boards": ["数码解决方案服务"], "themes": []}},
+         "announcements": [{"date": "2026-09-07", "title": "翌日披露报表 - 回购股份"}]}
+    line = swing._render_profile_line(r, "hk")
+    assert "行业：软件服务" in line
+    assert "数码解决方案服务" in line
+    assert "回购股份" in line and "近期动态" in line

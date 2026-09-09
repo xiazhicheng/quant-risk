@@ -1,0 +1,33 @@
+strategy_id: swing_band
+version: 1.0.0
+# 持有时间不预设：由道氏破前低 / 自入场峰值移动止盈 离场信号自然决定（2026-09-09 用户确认）
+max_holding_days: 60
+intraday_confirmation_required: false
+atr_stop_multiple: 2.0
+atr_trail_multiple: 2.0
+stop_pct_min: 5.0
+stop_pct_max: 11.0
+trail_pct_min: 5.0
+trail_pct_max: 11.0
+max_total_exposure: 0.80
+min_cash_ratio: 0.20
+max_stock_exposure: 0.15
+max_sector_exposure: 0.30
+max_market_exposure: 0.60
+index_divergence_exposure_factor: 0.50
+max_quote_age_seconds: 900
+max_intraday_age_seconds: 2400
+max_daily_age_seconds: 172800
+costs:
+  cn:
+    commission_rate: 0.0003
+    minimum_commission: 5.0
+    stamp_duty_sell_rate: 0.0005
+    slippage_bps: 8.0
+  hk:
+    commission_rate: 0.0003
+    minimum_commission: 3.0
+    stamp_duty_rate: 0.001
+    trading_levy_rate: 0.000027
+    transaction_fee_rate: 0.0000565
+    slippage_bps: 12.0

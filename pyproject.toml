@@ -10,9 +10,15 @@ dependencies = [
     "pandas>=3.0.3",
     "pydantic>=2.13.4",
     "python-pptx>=1.0.2",
+    "pyyaml>=6.0.3",
     "quantdash>=0.1.0",
     "requests>=2.34.2",
     "tickflow==0.1.24",
+]
+
+[project.optional-dependencies]
+decision = [
+    "semantica==0.6.8",
 ]
 
 [dependency-groups]

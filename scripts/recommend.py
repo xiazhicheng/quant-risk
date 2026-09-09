@@ -16,13 +16,15 @@
     - 📋 巴菲特买入前 Checklist（六关评分）
     - 定价建议 + 择时判断
     - 筛选过程 + ③ 关键数据多源交叉验证
-    - 波段模式（默认）：日线趋势/量价/笔 + 30分钟线段
+    - 波段模式（默认）：道氏三步 + 日线趋势/量价 + 30分钟确认 + 移动止盈
+    - 单一波段策略：--strategy band（历史别名 tactical|trend 均归一）；持有时间由离场信号自然决定
+    - 规则引擎：--rule-engine python|shadow|semantica；运行模式：--run-mode research|paper|live
     - 价值模式（--mode value）：兼容旧版基本面评分链
 
 波段流程（A股/港股默认）:
   ① 全市场扫描与日线技术粗筛
-  ② 日线趋势、量价资金、日线笔评分
-  ③ 30分钟线段确认 → TOP10
+  ② 日线趋势、量价资金、日线道氏评分
+  ③ 30分钟道氏确认 → 规则裁决/审计凭证 → TOP10
 """
 from __future__ import annotations
 
@@ -41,20 +43,21 @@ from scripts.quantrisk.data import close_async_session, close_tickflow
 # 市场适配器路由
 # ═══════════════════════════════════════════════════════════════
 
-async def run_hk_recommendation(min_stocks: int = 300, industry: str = "", mode: str = "swing") -> dict:
+async def run_hk_recommendation(min_stocks: int = 300, industry: str = "", mode: str = "swing", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
     """港股推荐流程。"""
     from scripts.quantrisk.recommend_hk import hk_recommend_pipeline
-    return await hk_recommend_pipeline(min_stocks=min_stocks, industry=industry, mode=mode)
+    return await hk_recommend_pipeline(min_stocks=min_stocks, industry=industry, mode=mode,
+                                       strategy=strategy, run_mode=run_mode, rule_engine=rule_engine, snapshot=snapshot)
 
 
-async def run_cn_recommendation(min_stocks: int = 200, industry: str = "", mode: str = "swing") -> dict:
+async def run_cn_recommendation(min_stocks: int = 200, industry: str = "", mode: str = "swing", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
     """A股推荐流程。"""
     from scripts.quantrisk.recommend_cn import fetch_cn_candidate_pool, cn_recommend_pipeline
     candidates = await fetch_cn_candidate_pool(min_stocks=min_stocks)
     if not candidates:
         print("❌ A 股候选池获取失败")
         return {}
-    return await cn_recommend_pipeline(candidates, mode=mode)
+    return await cn_recommend_pipeline(candidates, mode=mode, strategy=strategy, run_mode=run_mode, rule_engine=rule_engine, snapshot=snapshot)
 
 
 async def run_us_recommendation(industry: str = "") -> dict:
@@ -77,6 +80,10 @@ def parse_args():
     min_stocks = 200
     industry = ""
     mode = "swing"
+    strategy = "tactical"
+    run_mode = "research"
+    rule_engine = "shadow"
+    snapshot = ""
 
     args = sys.argv[1:]
     i = 0
@@ -97,6 +104,18 @@ def parse_args():
         elif arg == "--mode" and i + 1 < len(args):
             mode = args[i + 1].lower()
             i += 2
+        elif arg == "--strategy" and i + 1 < len(args):
+            strategy = args[i + 1].lower()
+            i += 2
+        elif arg == "--run-mode" and i + 1 < len(args):
+            run_mode = args[i + 1].lower()
+            i += 2
+        elif arg == "--rule-engine" and i + 1 < len(args):
+            rule_engine = args[i + 1].lower()
+            i += 2
+        elif arg == "--snapshot" and i + 1 < len(args):
+            snapshot = args[i + 1]
+            i += 2
         elif arg == "--help":
             print(__doc__)
             sys.exit(0)
@@ -109,22 +128,34 @@ def parse_args():
     if mode not in ("swing", "value"):
         print(f"❌ 未知模式: {mode}（可选: swing, value）")
         sys.exit(1)
+    if strategy not in ("band", "tactical", "trend"):
+        print(f"❌ 未知策略: {strategy}（可选: band，历史别名 tactical|trend）")
+        sys.exit(1)
+    # 单一波段策略：tactical/trend 归一为 swing_band（持有时间由离场信号自然决定）
+    from scripts.quantrisk.strategy_config import normalize_strategy_id
+    strategy = normalize_strategy_id(strategy)
+    if run_mode not in ("research", "paper", "live"):
+        print(f"❌ 未知运行模式: {run_mode}（可选: research, paper, live）")
+        sys.exit(1)
+    if rule_engine not in ("python", "shadow", "semantica"):
+        print(f"❌ 未知规则引擎: {rule_engine}（可选: python, shadow, semantica）")
+        sys.exit(1)
 
-    return market, json_mode, min_stocks, industry, mode
+    return market, json_mode, min_stocks, industry, mode, strategy, run_mode, rule_engine, snapshot
 
 
 async def main():
-    market, json_mode, min_stocks, industry, mode = parse_args()
+    market, json_mode, min_stocks, industry, mode, strategy, run_mode, rule_engine, snapshot = parse_args()
 
     # 路由到对应市场
     if market == "hk":
         label = f"港股{'(' + industry + ')' if industry else ''}"
-        print(f"🔍 {label}{'波段' if mode == 'swing' else '价值'}推荐（候选池 {min_stocks}+ 只）...")
-        raw_data = await run_hk_recommendation(min_stocks, industry, mode)
+        print(f"🔍 {label}{'波段' if mode == 'swing' else '价值'}推荐（候选池 {min_stocks}+ 只，策略 {strategy}，模式 {run_mode}，规则 {rule_engine}）...")
+        raw_data = await run_hk_recommendation(min_stocks, industry, mode, strategy, run_mode, rule_engine, snapshot)
 
     elif market == "cn":
-        print(f"🔍 A 股{'波段' if mode == 'swing' else '价值'}推荐（候选池 {min_stocks}+ 只）...")
-        raw_data = await run_cn_recommendation(min_stocks, industry, mode)
+        print(f"🔍 A 股{'波段' if mode == 'swing' else '价值'}推荐（候选池 {min_stocks}+ 只，策略 {strategy}，模式 {run_mode}，规则 {rule_engine}）...")
+        raw_data = await run_cn_recommendation(min_stocks, industry, mode, strategy, run_mode, rule_engine, snapshot)
 
     elif market == "us":
         print("🔍 美股推荐（S&P 500 核心，兼容价值模式）...")

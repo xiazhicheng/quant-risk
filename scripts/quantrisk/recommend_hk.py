@@ -263,6 +263,10 @@ async def fetch_dynamic_pool(min_stocks: int = 300) -> list[dict]:
 
             if price <= 0:
                 continue
+            # 停牌/无成交拦截（2026-09-08 与A股一致）：东财成交额翻页下停牌股成交额为 0
+            amt = s.get("amount") or 0
+            if amt <= 0:
+                continue
             if code in seen_codes:
                 continue
             if _is_derivative_or_etf(name, code):
@@ -838,10 +842,13 @@ async def score_all_passed(
 # 港股推荐 Pipeline（可被 recommend.py 统一调用）
 # ═══════════════════════════════════════════════════════════════
 
-async def hk_swing_recommend_pipeline(min_stocks: int = 300, industry: str = "") -> dict:
+async def hk_swing_recommend_pipeline(min_stocks: int = 300, industry: str = "", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
     """港股纯技术波段流程：日线笔 + 30分钟线段。"""
-    from scripts.quantrisk.swing import run_swing_pipeline_with_intraday
-    from scripts.quantrisk.data import stock_kline_30m_async
+    from scripts.quantrisk.swing import run_swing_pipeline_with_intraday, build_index_sync
+    from scripts.quantrisk.data import stock_kline_30m_async, cn_index_quotes_async
+
+    # 道氏原则3·指数验证：港股单指数（恒指）只作环境展示，不参与降级
+    index_sync = build_index_sync(await cn_index_quotes_async(), "hk")
 
     dynamic_pool = await fetch_dynamic_pool(min_stocks=min_stocks)
     if not dynamic_pool:
@@ -858,7 +865,9 @@ async def hk_swing_recommend_pipeline(min_stocks: int = 300, industry: str = "")
         if not q.get("name") or sf(q.get("price")) <= 0:
             continue
         stocks.append({"c": code, "n": q.get("name", ""), "s": next((sec for sec, codes in sectors.items() if code in codes), "其他"),
-                       "p": sf(q.get("price")), "q": q})
+                       "p": sf(q.get("price")), "q": q, "index_sync": index_sync,
+                       "market": "hk", "strategy_id": strategy, "run_mode": run_mode,
+                       "rule_engine": rule_engine})
 
     async def daily_fetch(code: str):
         rows = await hk_kline_tencent_async(code, "day", 365)
@@ -877,10 +886,10 @@ async def hk_swing_recommend_pipeline(min_stocks: int = 300, industry: str = "")
     async def intraday_fetch(code: str):
         return await stock_kline_30m_async(code, "hk", range_="60d")
 
-    return await run_swing_pipeline_with_intraday(stocks, "hk", daily_fetch, flow_fetch, intraday_fetch)
+    return await run_swing_pipeline_with_intraday(stocks, "hk", daily_fetch, flow_fetch, intraday_fetch, snapshot_path=snapshot)
 
 
-async def hk_recommend_pipeline(min_stocks: int = 300, industry: str = "", mode: str = "value") -> dict:
+async def hk_recommend_pipeline(min_stocks: int = 300, industry: str = "", mode: str = "value", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
     """港股推荐流程；mode=swing时只走纯技术波段链路。
 
     三步强制流程:
@@ -896,7 +905,7 @@ async def hk_recommend_pipeline(min_stocks: int = 300, industry: str = "", mode:
         {date, sectors[], eliminated[], vetoed[], passed_count, top10[], details[], summary[], funnel?}
     """
     if mode == "swing":
-        return await hk_swing_recommend_pipeline(min_stocks=min_stocks, industry=industry)
+        return await hk_swing_recommend_pipeline(min_stocks=min_stocks, industry=industry, strategy=strategy, run_mode=run_mode, rule_engine=rule_engine, snapshot=snapshot)
     ds = datetime.now().strftime("%Y-%m-%d")
 
 

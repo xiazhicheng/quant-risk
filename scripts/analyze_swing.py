@@ -91,13 +91,53 @@ def _fmt_flow(v: float) -> str:
     return f"{v / 1e8:+.2f}亿" if abs(v) >= 1e6 else f"{v / 1e4:+.2f}万" if abs(v) >= 1e2 else f"{v:+.0f}"
 
 
-async def analyze_one(code: str, market: str, name_hint: str = "") -> dict:
+def parse_args() -> tuple[list[str], str, str, str]:
+    codes: list[str] = []
+    strategy = "tactical"
+    run_mode = "research"
+    rule_engine = "shadow"
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--strategy" and i + 1 < len(args):
+            strategy = args[i + 1].lower()
+            i += 2
+        elif arg == "--run-mode" and i + 1 < len(args):
+            run_mode = args[i + 1].lower()
+            i += 2
+        elif arg == "--rule-engine" and i + 1 < len(args):
+            rule_engine = args[i + 1].lower()
+            i += 2
+        elif arg.startswith("--"):
+            i += 1
+        else:
+            codes.append(arg)
+            i += 1
+    if strategy not in ("band", "tactical", "trend"):
+        raise ValueError("--strategy 支持 band（历史别名 tactical|trend）")
+    from scripts.quantrisk.strategy_config import normalize_strategy_id
+    strategy = normalize_strategy_id(strategy)
+    if run_mode not in ("research", "paper", "live"):
+        raise ValueError("--run-mode 仅支持 research|paper|live")
+    if rule_engine not in ("python", "shadow", "semantica"):
+        raise ValueError("--rule-engine 仅支持 python|shadow|semantica")
+    return codes, strategy, run_mode, rule_engine
+
+
+async def analyze_one(code: str, market: str, name_hint: str = "", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow") -> dict:
     from scripts.quantrisk.data import (company_survey_async, recent_announcements_async,
-                                        business_mix_async, finance_brief_async, core_conception_async)
+                                        business_mix_async, finance_brief_async, core_conception_async,
+                                        cn_index_quotes_async)
+    from scripts.quantrisk.swing import build_index_sync
     q = await _fetch_quote(code, market)
     price = float(q.get("price") or 0)
     name = name_hint or q.get("name") or code
-    stock = {"c": code, "n": name, "s": "个股", "p": price, "q": q}
+    stock = {"c": code, "n": name, "s": "个股", "p": price, "q": q,
+             "market": market, "strategy_id": strategy, "run_mode": run_mode,
+             "rule_engine": rule_engine}
+    # 道氏原则3·指数相互验证（单股分析同样注入：A股三指数，港股恒指环境）
+    stock["index_sync"] = build_index_sync(await cn_index_quotes_async(), market)
 
     daily, flow, intraday = await asyncio.gather(
         _fetch_daily(code, market), _fetch_flow(code, market), _fetch_intraday(code, market))
@@ -150,18 +190,22 @@ def render_one(r: dict) -> str:
     from scripts.quantrisk.swing import _render_profile_line
     market_label = "A股" if r["market"] == "cn" else "港股"
     t, f, st, sg = r["trend"], r["flow"], r["stroke"], r["segment"]
+    health = r.get("health") or {}
+    idx = r.get("index_sync") or {}
     lines = [
         f"#### {r['name']}（{r['code']}）— {r['status']}",
         f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | "
-        f"**止损**：{r['stop_loss']:.2f}（-{r.get('stop_pct', 8.0):.1f}%）| **目标**：{r['take_profit']:.2f}（+{r.get('target_pct', 10.0):.1f}%）" +
+        f"**止损**：{r['stop_loss']:.2f}（-{r.get('stop_pct', 8.0):.1f}%）| **{r.get('exit_rule', '移动止盈')}**" +
         (f"，ATR{r.get('atr')}" if r.get('atr') else ""),
         _render_profile_line(r, r["market"]),
         f"- 日线趋势（30）：{t['reason']}",
         f"- 日线量价/资金（25）：{f['reason']}",
         f"- 日线道氏（20）：{st['reason']}",
         f"- 30分钟道氏（25）：{sg['reason']}（30m K线 {r['intraday_count']} 根）",
-        f"- 日线道氏：{st.get('conclusion', '数据缺失')}",
-        f"- 30分钟道氏：{sg.get('conclusion', '数据缺失')}",
+        f"- 道氏①定方向：{st.get('conclusion', '数据缺失')}",
+        f"- 道氏②验健康：{health.get('note', '数据缺失')}（量比{f.get('vol_ratio', 0)}x）｜指数：{idx.get('note', '数据缺失')}",
+        f"- 道氏③找信号：{r.get('dow_step3', '数据缺失')}",
+        f"- 三阶段：{r.get('stage', '未知')}｜{r.get('stage_note', '')}",
     ]
     if r.get("direction_conflict"):
         lines.append("- ⚠️ 日线趋势与30分钟道氏趋势方向冲突，禁止当前布局。")
@@ -175,14 +219,19 @@ def render_one(r: dict) -> str:
 
 
 async def main() -> None:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    try:
+        args, strategy, run_mode, rule_engine = parse_args()
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        sys.exit(1)
     if not args:
         print(__doc__)
         sys.exit(1)
 
     ds = datetime.now().strftime("%Y-%m-%d")
     print(f"## 个股波段分析 | {ds}")
-    print(f"> 持有周期：几天至 1-2 周；纯技术筛选（日线趋势30+量价资金25+日线道氏20+30分钟道氏25），不使用基本面评分。")
+    print(f"> 策略：{strategy} | 运行模式：{run_mode} | 规则引擎：{rule_engine}")
+    print(f"> 持有周期不预设（高抛低吸，由道氏破前低/移动止盈离场信号自然决定）；纯技术筛选（日线趋势30+量价资金25+日线道氏20+30分钟道氏25），不使用基本面评分。")
     print(f"> 评分说明（满分100）：日线趋势30分=均线多头排列+MACD；日线量价资金25分=量比放量+主力净流入；日线道氏20分=日线摆动点趋势方向（道氏三句话）；30分钟道氏25分=30m摆动点趋势确认短线入场（缺失或与日线趋势冲突则观望）。")
     print(f"> 美股已移出维护范围，本脚本仅支持 A 股（6位）与港股（5位）。")
 
@@ -194,7 +243,7 @@ async def main() -> None:
             print(f"\n## ❌ {code} — {e}")
             continue
         print(f"\n🔍 分析 {code}（{market_label(market)}）...")
-        r = await analyze_one(clean, market)
+        r = await analyze_one(clean, market, strategy=strategy, run_mode=run_mode, rule_engine=rule_engine)
         results.append(r)
         print(f"✅ {r['name']} {r['code']} — {r['total']}/100 | {r['status']}")
 

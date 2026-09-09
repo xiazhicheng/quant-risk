@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+from scripts.quantrisk import swing
 from scripts.quantrisk.swing import (
     daily_flow_score,
     daily_trend_score,
@@ -43,7 +44,9 @@ def test_intraday_missing_data_cannot_be_tradable():
     daily = bars()
     result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, [], {})
     assert result["tradable"] is False
-    assert result["status"] == "观望：等待日线趋势与30分钟小趋势共振"
+    assert result["verdict"] == "BLOCK"
+    assert result["entry_eligible"] is False
+    assert "数据质量" in result["status"]
     assert result["segment"]["available"] is False
 
 
@@ -56,7 +59,8 @@ def test_intraday_direction_conflict_blocks_entry(monkeypatch):
     result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
     assert result["direction_conflict"] is True
     assert result["tradable"] is False
-    assert "冲突" in result["status"]
+    assert result["verdict"] == "BLOCK"
+    assert "数据质量" in result["status"]
 
 
 def test_swing_score_components_sum_to_100():
@@ -87,8 +91,9 @@ def test_chan_downtrend_flags_cautious_layout(monkeypatch):
     monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
     result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
     assert result["tradable"] is True
-    assert result["status"].startswith("谨慎布局")
-    assert "道氏整体偏空" in result["status"]
+    assert result["verdict"] == "BLOCK"
+    assert result["entry_eligible"] is False
+    assert "数据质量" in result["status"]
 
 
 def test_intraday_dow_conclusion_matches_direction():
@@ -141,38 +146,40 @@ def _bars_with_amplitude(count=90, start=10.0, amp=0.005, prefix="2026-01-01"):
 
 
 def test_swing_sl_tp_atr_dynamic_range():
-    """方案A（2026-09-01）：止损/目标按 ATR 动态，不再固定 -8%/+10%。
+    """方案A止损（2026-09-01）+ 移动止盈替代固定目标（2026-09-08 用户明确：道氏不预测目标）。
 
     低波动票（日振幅0.5%）：2ATR% 远低于 8%，止损 clamp 到 5% 下限；
-    目标至少 8%，且 RR>=1.5（目标比例 >= 止损比例*1.5）。
+    移动止盈=自近期最高收盘价回撤 2ATR%（clamp 5%-11%），不输出固定目标价。
     """
     low_vol = _bars_with_amplitude(amp=0.005)   # 日振幅 0.5%
     r = swing_sl_tp(10.0, low_vol, stroke_low=0.0)
     assert r["atr"] is not None
     assert 5.0 <= r["stop_pct"] <= 11.0
-    assert r["target_pct"] >= r["stop_pct"] * 1.5
-    assert r["target_pct"] >= 8.0
-    assert r["target_pct"] <= 25.0
-    assert r["stop_loss"] < 10.0 < r["take_profit"]
+    assert 5.0 <= r["trail_pct"] <= 11.0
+    assert "take_profit" not in r and "target_pct" not in r   # 移动止盈无固定目标
+    assert r["trail_stop"] < r["peak"]
+    assert "移动止盈" in r["exit_rule"]
+    assert r["stop_loss"] < 10.0
 
 
 def test_swing_sl_tp_atr_high_volatility_capped():
-    """高波动票（日振幅4%）：2ATR% 远超 8%，止损 clamp 到 11% 上限，目标上限 25%。"""
+    """高波动票（日振幅4%）：2ATR% 远超 8%，止损 clamp 到 11% 上限，移动止盈回撤同样 clamp。"""
     high_vol = _bars_with_amplitude(amp=0.04)
     r = swing_sl_tp(10.0, high_vol, stroke_low=0.0)
     assert r["atr"] is not None
     assert 5.0 <= r["stop_pct"] <= 11.0
-    assert r["target_pct"] <= 25.0
-    assert r["take_profit"] > 10.0
+    assert r["trail_pct"] <= 11.0
+    assert r["trail_stop"] < r["peak"]    # 移动止盈=自最高收盘价回撤，必低于高点
     assert r["stop_loss"] < 10.0
 
 
 def test_swing_sl_tp_fallback_without_atr():
-    """ATR 缺失（日K不足）时回退固定 -8%/+10%（旧逻辑兜底）。"""
+    """ATR 缺失（日K不足）时止损回退固定 -8%，移动止盈回撤 8% 兜底。"""
     r = swing_sl_tp(10.0, [], stroke_low=9.0)
     assert r["atr"] is None
     assert r["stop_loss"] == round(max(10 * 0.92, 9 * 0.985), 2)
-    assert r["take_profit"] == 11.0
+    assert r["trail_pct"] == 8.0
+    assert "移动止盈" in r["exit_rule"]
 
 
 def test_swing_sl_tp_stroke_low_raises_stop():
@@ -230,7 +237,7 @@ def test_daily_dow_score_conclusion_format():
     score = daily_dow_score(rows)
     assert 0 <= score["score"] <= 20
     assert "道氏结论" in score["conclusion"]
-    assert "支撑" in score["conclusion"] and "压力" in score["conclusion"]
+    assert "状态：" in score["conclusion"] and "边界：" in score["conclusion"]
     assert "方向未定" in score["conclusion"] or "抬高" in score["conclusion"] or "走低" in score["conclusion"]
 
 
@@ -253,8 +260,9 @@ def test_status_wording_is_dow(monkeypatch):
     monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score", lambda _: up_stroke)
     monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
     result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
-    assert result["status"].startswith("谨慎布局")
-    assert "道氏整体偏空" in result["status"]
+    assert result["verdict"] == "BLOCK"
+    assert result["entry_eligible"] is False
+    assert "数据质量" in result["status"]
     assert "缠论" not in result["status"]
 
 
@@ -284,8 +292,9 @@ def test_momentum_weak_force_cautious(monkeypatch):
     monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
     result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
     assert result["tradable"] is True
-    assert result["status"].startswith("谨慎布局")
-    assert "动能走弱" in result["status"]
+    assert result["verdict"] == "BLOCK"
+    assert result["entry_eligible"] is False
+    assert "数据质量" in result["status"]
 
 
 def test_st_stock_blocked():
@@ -297,6 +306,50 @@ def test_st_stock_blocked():
     assert ok_st is False
     ok_retire, msg_retire = swing_liquidity_filter({"c": "600000", "n": "某某退", "s": "其他", "p": 6.0}, daily)
     assert ok_retire is False and "退" in msg_retire
+
+
+def test_suspended_stock_blocked():
+    """2026-09-08 宏源证券000562案例：实时成交量为 0 的停牌/退市残留代码不进波段。"""
+    daily = bars()
+    ok, msg = swing_liquidity_filter(
+        {"c": "000562", "n": "宏源证券", "s": "其他", "p": 30.5, "q": {"volume": 0}}, daily)
+    assert ok is False and "停牌" in msg
+
+
+def test_suspended_hk_stock_blocked():
+    """港股 quote 字段 volume_shares=0 同样拦截。"""
+    daily = bars()
+    ok, msg = swing_liquidity_filter(
+        {"c": "00700", "n": "测试", "s": "其他", "p": 300, "q": {"volume_shares": 0}}, daily)
+    assert ok is False and "停牌" in msg
+
+
+def test_suspended_detection_ignores_missing_quote():
+    """quote 缺失或字段缺失时不拦截（防御误杀：停牌判定依赖行情数据）。"""
+    daily = bars()
+    ok, _ = swing_liquidity_filter({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily)
+    assert ok is True
+    ok2, _ = swing_liquidity_filter(
+        {"c": "600000", "n": "测试", "s": "其他", "p": 28, "q": {"change_pct": 1.2}}, daily)
+    assert ok2 is True
+
+
+def test_suspended_stock_status_data_missing(monkeypatch):
+    """停牌股在评分层面 tradable=False、status=数据缺失（不进入可布局语义）。"""
+    daily = bars()
+    up_stroke = {"score": 20.0, "direction": "up", "trend_direction": "up",
+                 "reason": "up", "conclusion": "道氏结论：🟢上升趋势"}
+    up_segment = {"score": 25.0, "direction": "up", "available": True,
+                  "reason": "up", "conclusion": "道氏结论：🟢上升趋势"}
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score", lambda _: up_stroke)
+    monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_flow_score",
+                        lambda _d, _f: {"score": 10.0, "vol_ratio": 1.5, "pct_5d": 3.0, "flow_5d": 1e8})
+    result = swing_score_one({"c": "000562", "n": "宏源证券", "s": "其他", "p": 30.5, "q": {"volume": 0}},
+                             daily, daily, {})
+    assert result["tradable"] is False
+    assert result["verdict"] == "BLOCK"
+    assert "停牌" in result["status"]
 
 
 def test_new_stock_warns_but_not_blocked():
@@ -338,3 +391,134 @@ def test_overheated_downgrade(monkeypatch):
     result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28}, daily, daily, {})
     assert result["status"].startswith("谨慎布局")
     assert "透支" in result["status"]
+
+
+def test_dow_conclusion_boundary_format():
+    """用户原则（2026-09-08）：道氏结论=定性方向+状态描述+明确边界（前低/前高切换条件），不预测价格。"""
+    pivots = [{"type": "high", "price": 14.26, "date": "d1"}, {"type": "low", "price": 12.14, "date": "d2"}]
+    c = _dow_conclusion("up", "高点、低点连续抬高", pivots, price=13.93)
+    assert "🟢上升趋势" in c
+    assert "状态：高点、低点连续抬高" in c
+    assert "边界：" in c
+    assert "跌破前低12.14转空" in c and "突破前高14.26延续" in c
+
+
+def test_score_brief_extraction():
+    """推荐结论表「评分要点」列：从各维度 reason 提取简短要点。"""
+    from scripts.quantrisk.swing import _score_brief
+    t = _score_brief({"reason": "MA5/10/20/60=13.14/12.81/12.43/12.28，4条均线之上，MACD柱+0.3439"}, "trend")
+    assert t == "4线之上MACD+0.34"
+    f = _score_brief({"reason": "5日涨跌+12.61%，量比2.78x，主力5日+0.23亿"}, "flow")
+    assert f == "量比2.78/主力+0.23亿"
+    s = _score_brief({"reason": "最近日线趋势up（摆动点：高点/低点序列）", "direction": "up"}, "stroke")
+    assert s == "up"
+
+
+def test_render_swing_report_score_brief_column():
+    """推荐结论表必须带「评分要点」列，分数可溯源。"""
+    report = {"date": "2026-09-08", "market": "hk", "selection_mode": "swing",
+              "top10": [{"rank": 1, "code": "00317", "name": "中船防务", "trend_score": 27.0, "flow_score": 20.0,
+                         "stroke_score": 20.0, "segment_score": 25.0, "total": 92.0, "advice": "🟡谨慎布局"}],
+              "details": [{"code": "00317", "name": "中船防务", "rank": 1, "status": "谨慎布局：上升趋势但动能走弱",
+                           "price": 13.93, "total": 92.0, "stop_loss": 13.21, "take_profit": 15.19,
+                           "stop_pct": 5.2, "target_pct": 9.0, "atr": 0.42,
+                           "trend": {"reason": "MA5/10/20/60=13.14/12.81/12.43/12.28，4条均线之上，MACD柱+0.3439"},
+                           "flow": {"reason": "5日涨跌+12.61%，量比2.78x，主力5日+0.23亿"},
+                           "stroke": {"reason": "最近日线趋势up（摆动点：高点/低点序列）", "direction": "up"},
+                           "segment": {"reason": "最近30分钟趋势up（摆动点：高点/低点序列）", "direction": "up"}}],
+              "summary": [], "sectors": []}
+    text = swing.render_swing_report(report, "hk")
+    assert "评分要点" in text
+    assert "4线之上MACD+0.34" in text and "量比2.78/主力+0.23亿" in text
+
+
+# ────────────────────────────────────────────────────────────────
+# 道氏三步框架测试（2026-09-08 用户框架：定方向→验健康→找信号 + 移动止盈 + 指数同步）
+# ────────────────────────────────────────────────────────────────
+
+def test_dow_health_up_wins_volume():
+    """第二步·验健康：上涨放量=健康；上涨缩量=隐患（原则4 成交量确认趋势）。"""
+    from scripts.quantrisk.swing import _dow_health
+    base = [{"date": f"d{i}", "close": 10.0, "volume": 1000} for i in range(7)]
+    up_vol = base + [{"date": f"d{i}", "close": 10.5 + i * 0.1, "volume": 2000} for i in range(5)]
+    assert _dow_health(up_vol)["healthy"] is True
+    shrink_vol = base + [{"date": f"d{i}", "close": 10.5 + i * 0.1, "volume": 300} for i in range(5)]
+    h = _dow_health(shrink_vol)
+    assert h["healthy"] is False and "缩量" in h["note"]
+
+
+def test_dow_health_pullback_shrink():
+    """回调缩量=健康回调；回调放量=警惕（原则4）。"""
+    from scripts.quantrisk.swing import _dow_health
+    up = [{"date": f"d{i}", "close": 10.0 + i * 0.2, "volume": 2000} for i in range(7)]
+    pullback_shrink = up + [{"date": f"d{i}", "close": 11.2 - i * 0.1, "volume": 400} for i in range(5)]
+    assert _dow_health(pullback_shrink)["healthy"] is True
+    pullback_surge = up + [{"date": f"d{i}", "close": 11.2 - i * 0.1, "volume": 3000} for i in range(5)]
+    h = _dow_health(pullback_surge)
+    assert h["healthy"] is False and "放量" in h["note"]
+
+
+def test_dow_stage_distribution_warns():
+    """三阶段：缩量新高=派发迹象（强弩之末），不提示可重仓。"""
+    from scripts.quantrisk.swing import _dow_stage
+    closes = [10 + i * 0.05 for i in range(60)]
+    closes[-1] = max(closes) + 0.5            # 收盘创新高
+    daily = [{"date": f"d{i}", "close": c, "volume": 1000} for i, c in enumerate(closes)]
+    stage, note = _dow_stage(daily, vol_ratio=0.5, price=closes[-1])
+    assert stage == "派发" and "缩量新高" in note
+
+
+def test_dow_stage_accumulation_bottom():
+    """三阶段：高位回落后在底部区间放量启动=吸筹阶段。"""
+    from scripts.quantrisk.swing import _dow_stage
+    closes = [15.0] * 30 + [10 + i * 0.02 for i in range(30)]   # 高位回落后底部爬升（close 距60日最低近）
+    daily = [{"date": f"d{i}", "close": c, "volume": 1000} for i, c in enumerate(closes)]
+    stage, _ = _dow_stage(daily, vol_ratio=1.5, price=closes[-1])
+    assert stage == "吸筹"
+
+
+def test_build_index_sync_cn_divergence():
+    """原则3·指数相互验证：上证涨深证跌=背离（sync False）；同向=同步。"""
+    from scripts.quantrisk.swing import build_index_sync
+    diverge = {"sh000001": {"change_pct": 0.5}, "sz399001": {"change_pct": -0.6}, "sz399006": {"change_pct": 1.2}}
+    assert build_index_sync(diverge, "cn")["sync"] is False
+    align = {"sh000001": {"change_pct": 0.5}, "sz399001": {"change_pct": 0.8}, "sz399006": {"change_pct": 1.2}}
+    assert build_index_sync(align, "cn")["sync"] is True
+    assert build_index_sync({}, "cn")["sync"] is None          # 指数缺失不降级
+    hk = {"hkHSI": {"change_pct": -0.4}}
+    assert build_index_sync(hk, "hk")["sync"] is None          # 港股恒指只展示
+
+
+def test_index_divergence_downgrade(monkeypatch):
+    """道氏原则3：指数背离→双周期共振也强制降级为谨慎布局。"""
+    daily = bars()
+    up_stroke = {"score": 20.0, "direction": "up", "trend_direction": "up", "low": 9.5,
+                 "reason": "up", "conclusion": "道氏结论：🟢上升趋势"}
+    up_segment = {"score": 25.0, "direction": "up", "available": True,
+                  "reason": "up", "conclusion": "道氏结论：🟢上升趋势"}
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score", lambda _: up_stroke)
+    monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_flow_score",
+                        lambda _d, _f: {"score": 15.0, "vol_ratio": 1.5, "pct_5d": 3.0, "flow_5d": 1e8})
+    stock = {"c": "600000", "n": "测试", "s": "其他", "p": 28, "q": {"volume": 1e7},
+             "index_sync": {"sync": False, "note": "上证+0.5% 深证-0.6% 创业板+1.2%（背离⚠️）"}}
+    result = swing_score_one(stock, daily, daily, {})
+    assert result["tradable"] is True
+    assert result["status"].startswith("谨慎布局")
+    assert "指数不同步" in result["status"]
+
+
+def test_dow_step3_breakout_check(monkeypatch):
+    """第三步·找信号：以收盘价确认是否跌破前低（原则6 收盘价最重要）。"""
+    daily = bars()
+    up_stroke = {"score": 20.0, "direction": "up", "trend_direction": "up", "low": 9.0,
+                 "reason": "up", "conclusion": "道氏结论：🟢上升趋势"}
+    up_segment = {"score": 25.0, "direction": "up", "available": True,
+                  "reason": "up", "conclusion": "道氏结论：🟢上升趋势"}
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score", lambda _: up_stroke)
+    monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score", lambda _: up_segment)
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_flow_score",
+                        lambda _d, _f: {"score": 15.0, "vol_ratio": 1.5, "pct_5d": 3.0, "flow_5d": 1e8})
+    # 现价 28 > 前低 9.0：未跌破，趋势延续
+    r_hold = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28, "q": {"volume": 1e7}}, daily, daily, {})
+    assert "趋势延续" in r_hold["dow_step3"]

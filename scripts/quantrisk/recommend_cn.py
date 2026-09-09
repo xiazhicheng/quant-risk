@@ -135,6 +135,11 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
                     continue
                 if price <= 0:
                     continue
+                # 停牌/退市残留拦截（2026-09-08 宏源证券000562案例）：成交量(手)为 0 即停牌，
+                # 行情冻结在停牌日（价格/市值是历史快照），不进候选池
+                vol_hand = float(fields[36]) if len(fields) > 36 and fields[36] else 0
+                if vol_hand <= 0:
+                    continue
 
                 candidates.append({
                     "code": code,
@@ -219,18 +224,23 @@ async def cn_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]
 # A股主流程
 # ═══════════════════════════════════════════════════════════════
 
-async def cn_swing_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
+async def cn_swing_recommend_pipeline(candidates: List[Dict[str, str]], strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
     """A股纯技术波段流程：日线笔 + 30分钟线段。"""
-    from scripts.quantrisk.data import stock_kline_30m_async
-    from scripts.quantrisk.swing import run_swing_pipeline_with_intraday
+    from scripts.quantrisk.data import stock_kline_30m_async, cn_index_quotes_async
+    from scripts.quantrisk.swing import run_swing_pipeline_with_intraday, build_index_sync
 
+    # 道氏原则3·指数相互验证：上证/深证/创业板需形成合力（2026-09-08 用户框架第二步）
+    index_sync = build_index_sync(await cn_index_quotes_async(), "cn")
     quote_results = await asyncio.gather(*[cn_stock_quote_tencent_async(c["code"]) for c in candidates], return_exceptions=True)
     stocks = []
     for c, quote in zip(candidates, quote_results):
         q = quote if isinstance(quote, dict) else {}
         code = c["code"]
         stocks.append({"c": code, "n": c.get("name") or q.get("name", ""),
-                       "s": c.get("sector", "其他"), "p": q.get("price") or c.get("price", 0), "q": q})
+                       "s": c.get("sector", "其他"), "p": q.get("price") or c.get("price", 0),
+                       "q": q, "index_sync": index_sync,
+                       "market": "cn", "strategy_id": strategy, "run_mode": run_mode,
+                       "rule_engine": rule_engine})
 
     async def daily_fetch(code: str):
         return await cn_stock_kline_fallback(code, days=365)
@@ -245,13 +255,13 @@ async def cn_swing_recommend_pipeline(candidates: List[Dict[str, str]]) -> dict:
     async def intraday_fetch(code: str):
         return await stock_kline_30m_async(code, "cn", range_="60d")
 
-    return await run_swing_pipeline_with_intraday(stocks, "cn", daily_fetch, flow_fetch, intraday_fetch)
+    return await run_swing_pipeline_with_intraday(stocks, "cn", daily_fetch, flow_fetch, intraday_fetch, snapshot_path=snapshot)
 
 
-async def cn_recommend_pipeline(candidates: List[Dict[str, str]], mode: str = "value") -> dict:
+async def cn_recommend_pipeline(candidates: List[Dict[str, str]], mode: str = "value", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
     """A股推荐流程；mode=swing时只走纯技术波段链路。"""
     if mode == "swing":
-        return await cn_swing_recommend_pipeline(candidates)
+        return await cn_swing_recommend_pipeline(candidates, strategy=strategy, run_mode=run_mode, rule_engine=rule_engine, snapshot=snapshot)
     ds = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
 
     # Step 1: 构建板块映射

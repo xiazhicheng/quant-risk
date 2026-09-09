@@ -4,6 +4,7 @@ from scripts.quantrisk.rule_engine import (
     ShadowRuleEngine,
 )
 from scripts.quantrisk.strategy_models import DataQuality, FeatureSnapshot, Verdict
+import pytest
 
 
 def features(**overrides):
@@ -62,6 +63,7 @@ def test_reference_exit_beats_watch():
 
 
 def test_semantica_rete_matches_reference():
+    pytest.importorskip("semantica")  # decision extra 未装时跳过，保证默认环境全量测试可过
     semantica = SemanticaReteRuleEngine()
     reference = PythonReferenceRuleEngine()
     cases = [
@@ -80,6 +82,23 @@ def test_shadow_reference_remains_authoritative():
     assert result.verdict == Verdict.WATCH
     assert result.entry_eligible is False
     assert result.shadow_match is True
+
+
+def test_shadow_degrades_without_semantica(monkeypatch):
+    """未安装 Semantica（可选依赖）时 ShadowRuleEngine 降级为纯 Python 参考引擎，功能完整。"""
+    import sys
+    # 模拟未安装：先清空 semantica 全部模块缓存（子模块缓存会绕过顶层拦截），再置 None 阻止重新导入
+    for name in [n for n in list(sys.modules) if n == "semantica" or n.startswith("semantica.")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "semantica", None)
+    engine = ShadowRuleEngine()
+    assert engine.semantica is None
+    result = engine.evaluate(features())
+    assert result.engine == "python"
+    assert result.shadow_match is None
+    assert result.shadow_verdict == "UNAVAILABLE"
+    assert result.verdict == Verdict.ALLOW
+    assert result.entry_eligible is True
 
 
 def test_intraday_missing_does_not_block_when_optional():

@@ -600,7 +600,7 @@ def _render_profile_line(r: Dict[str, Any], market: str) -> str:
         if mix:
             line += f"\n  - 主营构成：{mix}"
         lines.append(line)
-    else:
+    elif market == "hk":
         fin = []
         if isinstance(prof.get("pe_ttm"), (int, float)) and prof.get("pe_ttm", 0) > 0:
             fin.append(f"PE(TTM) {prof['pe_ttm']}")
@@ -611,6 +611,8 @@ def _render_profile_line(r: Dict[str, Any], market: str) -> str:
         body = " | ".join(fin) if fin else "数据缺失"
         meta = f"行业：{prof['industry']} | " if prof.get("industry") else ""
         lines.append(f"- 📋 **简况**：{body}（{meta}主营业务文字数据缺失：港股F10无免费源，LLM联网补）")
+    else:
+        lines.append("- 📋 **简况**：数据缺失")
     # ---- 📊 财务 ----
     fin_b = extra.get("finance") or {}
     if market == "cn" and fin_b:
@@ -660,8 +662,10 @@ def _render_profile_line(r: Dict[str, Any], market: str) -> str:
         lines.append(f"- 📌 近期动态：{ann_text}")
     elif market == "cn":
         lines.append("- 📌 近期动态：数据缺失")
-    else:
+    elif market == "hk":
         lines.append("- 📌 近期动态：数据缺失（港股公告接口不可用）")
+    else:
+        lines.append("- 📌 近期动态：数据缺失")
     return "\n".join(lines)
 
 

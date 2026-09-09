@@ -167,6 +167,14 @@ def test_render_profile_line_error():
     assert "数据缺失" in swing._render_profile_line(r, "cn")
 
 
+def test_render_profile_line_unknown_market_no_hk_text():
+    """未知市场（非 cn/hk，如 legacy us）不套用港股降级文案，显示通用数据缺失。"""
+    r = {"profile": {"pe_ttm": 10.5, "roe": 10.3}, "profile_extra": {}, "announcements": []}
+    line = swing._render_profile_line(r, "us")
+    assert "港股F10" not in line and "港股公告" not in line
+    assert "数据缺失" in line
+
+
 def test_cn_announcements_filter(monkeypatch):
     """重组/收购类公告优先于常规公告。"""
     async def fake_get_json(url, **kw):

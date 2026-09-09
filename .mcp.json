@@ -1,5 +1,15 @@
 {
   "mcpServers": {
+    "quant-risk": {
+      "command": "uv",
+      "args": [
+        "run",
+        "scripts/mcp_server.py"
+      ],
+      "env": {
+        "TZ": "Asia/Shanghai"
+      }
+    },
     "open-knowledge": {
       "command": "/bin/sh",
       "args": [

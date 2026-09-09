@@ -1,0 +1,17 @@
+{
+  "mcp": {
+    "servers": {
+      "quant-risk": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+          "run",
+          "scripts/mcp_server.py"
+        ],
+        "env": {
+          "TZ": "Asia/Shanghai"
+        }
+      }
+    }
+  }
+}

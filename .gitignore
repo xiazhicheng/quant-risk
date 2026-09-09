@@ -8,8 +8,9 @@ __pycache__/
 *.swp
 *.swo
 
-# ZCode 本地状态
-.zcode/
+# ZCode 本地状态（config.json 为共享的 MCP 配置，需入库）
+.zcode/*
+!.zcode/config.json
 
 # 设计文档（非项目文件）
 design.md

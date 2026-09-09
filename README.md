@@ -49,14 +49,34 @@
 
 ## 快速开始
 
-**1 行命令即可使用：**
+**方式一：Docker 一键运行（推荐，零环境要求）**
+
+```bash
+docker pull ghcr.io/xiazhicheng/quant-risk:latest
+docker run --rm -v $(pwd)/report:/app/report quant-risk daily --markets cn,hk   # 每日信号
+docker run --rm -v $(pwd)/report:/app/report quant-risk analyze 600388          # 单股分析
+```
+
+> 镜像内置 Python 3.12 + uv + 全部依赖（含 Semantica），数据源为免费公开接口无需任何 Key。`report/` 挂载到宿主机即可持久化报告/回测记录/决策凭证。
+
+**方式二：本机一键安装（macOS / Linux / Windows）**
 
 ```bash
 git clone https://github.com/xiazhicheng/quant-risk.git
 cd quant-risk
-uv sync                                         # 安装依赖（pyproject.toml 自动读取）
+bash install.sh                      # macOS/Linux：自动装 uv + Python 3.12 + 依赖
+# Windows: powershell -ExecutionPolicy Bypass -File install.ps1
 uv run scripts/analyze.py 03690 00268       # 分析美团+金蝶
 ```
+
+**方式三：手动安装（已有 uv）**
+
+```bash
+uv sync                                         # 安装全部依赖（含 Semantica）
+uv run scripts/analyze.py 03690 00268       # 分析美团+金蝶
+```
+
+> 💡 **依赖说明**：`uv sync` 安装**全部依赖**（行情/K线/评分/回测/规则引擎，含 Semantica 官方包及其 AI 推理库，首次下载约 **2.5GB**，请耐心等待）。Semantica 是**必须依赖**（Python 主裁决 + Semantica 影子对比 + 审计溯源）；万一缺失系统自动降级为纯 Python 参考引擎（容错，不影响功能）。无需任何 API Key。要求 Python 3.12+（安装脚本自动托管）。
 
 或者作为 Claude Code Skill 使用：
 
@@ -71,6 +91,49 @@ rm -rf /tmp/_qr
 ```
 
 启动 Claude Code，说一句「帮我分析美团股票」，自动激活。
+
+## MCP 接入（AI 工具调用，2026-09-09 新增）
+
+quant-risk 提供 **MCP server**（`scripts/mcp_server.py`），把确定性操作暴露为 AI 工具（Codex / Claude Code / ZCode 直接调用，返回结构化 JSON），LLM 解读层（三tab 解读/舆情交叉验证/买卖逻辑翻译）仍由 skill 负责。**5 个工具**（全部固定 research 模式，不接实盘）：
+
+| 工具 | 说明 | 耗时 |
+|:----|:----|:----|
+| `analyze_stock(code)` | 单股波段分析：四维评分/规则裁决/三档状态/止损/三tab | 30s-2min |
+| `run_daily(market)` | 每日收盘工作流（单市场）：扫池→裁决→outbox→快照→报告 | 2-3min |
+| `run_recommend(market)` | 波段推荐 TOP10 | 3-5min |
+| `backtest_stats(days)` | 回测累计统计：胜率/分数段/状态分组 | 秒级 |
+| `get_daily_report(market, date)` | 读取已生成 daily 报告全文 | 秒级 |
+
+**接入方式一：本地 stdio（默认，推荐）**
+
+仓库已内置配置，AI 工具自动发现：
+- **ZCode**：`.zcode/config.json` 已配置（`uv run scripts/mcp_server.py`），重启 ZCode 生效
+- **Claude Code**：`.mcp.json` 已配置
+- **Codex**：`~/.codex/config.toml` 加 `[mcp_servers.quant-risk] command="uv" args=["run","scripts/mcp_server.py"]`
+
+**接入方式二：Streamable HTTP（远程 / Docker / 局域网）**
+
+```bash
+uv run scripts/mcp_server.py --transport http --host 0.0.0.0 --port 8765   # 服务端
+# Docker 场景（镜像已内置）：
+docker run -d --name quant-risk-mcp -p 8765:8765 \
+  -v $(pwd)/report:/app/report quant-risk:latest \
+  scripts/mcp_server.py --transport http --host 0.0.0.0 --port 8765
+```
+
+客户端接入（`.mcp.json` / ZCode / Codex，任选其一）：
+
+```json
+{ "mcpServers": { "quant-risk": { "type": "http", "url": "http://127.0.0.1:8765/mcp" } } }
+```
+
+不支持原生 http 的客户端用 `mcp-remote` 桥（与 anysearch 同模式）：
+
+```json
+{ "mcpServers": { "quant-risk": { "command": "npx", "args": ["-y", "mcp-remote", "http://127.0.0.1:8765/mcp"] } } }
+```
+
+> ⚠️ 远程部署注意：streamable-http 端点在局域网/公网暴露时需自行加鉴权（token/防火墙），默认只建议 `127.0.0.1` 或内网。
 
 ## 项目结构
 
@@ -181,12 +244,14 @@ A股与港股默认运行**纯技术波段模式**，单一策略 `swing_band`�
 **风控过滤（自动）：** ST/*ST/退市股硬拦截；次新股（日K<250根）警示；候选池覆盖全市场代码段（含科创板688），按市值取前300。
 
 ```bash
-uv sync                                              # 核心行情/回测环境（轻量）
-uv sync --extra decision                             # 启用 Semantica 0.6.8 RETE + provenance
+uv sync                                              # 安装全部依赖（含 Semantica 官方包）
 uv run scripts/recommend.py --market hk --strategy band --rule-engine shadow  # 港股波段
 uv run scripts/recommend.py --market cn --rule-engine shadow                   # A股波段（默认band）
+uv run scripts/daily_run.py                          # 每日收盘工作流（A股+港股，无 LLM 依赖）
 uv run scripts/recommend.py --market hk --mode value  # 旧价值评分兼容模式
 ```
+
+**Semantica 是必须依赖**（2026-09-09 起）：`uv sync` 默认安装官方 semantica==0.6.8（Python 主裁决 + Semantica RETE 影子交叉验证 + 审计溯源），首次下载约 **2.5GB**（含 torch/transformers/faiss 等 AI 推理库）。万一缺失（如 pip 只装核心），系统自动降级为纯 Python 参考引擎（报告头部显示 `规则：python`），评分/裁决/回测/落库不受影响——容错设计，不是可选项。⚠️ 未装 Semantica 时请勿使用 `--rule-engine semantica`——系统会 fail-closed 全部 BLOCK（故意的安全行为）。
 
 ## 价值评分体系（legacy）
 
@@ -392,7 +457,9 @@ git pull origin main
 
 ## FAQ
 
-- **需要安装什么依赖？** 用 `uv sync` 一键安装，依赖清单在 `pyproject.toml`（aiohttp / pydantic / tickflow / mootdx / requests）。
+- **需要安装什么依赖？** 一键完成：`bash install.sh`（macOS/Linux）或 `powershell -ExecutionPolicy Bypass -File install.ps1`（Windows）——自动装 uv + Python 3.12 + 全部依赖（含 Semantica，首次约 2.5GB）。已有 uv 则 `uv sync` 即可，依赖清单在 `pyproject.toml`（aiohttp / pydantic / tickflow / mootdx / requests / semantica / …）。
+- **Semantica 必须装吗？** 是必须依赖，`uv sync`/安装脚本自动安装（官方 semantica==0.6.8，Python 主裁决 + Semantica RETE 影子对比 + 审计溯源）。万一缺失系统自动降级为纯 Python 参考引擎，功能不受影响（容错）。装不上/不想装 AI 推理库？用 Docker 镜像（已内置）。
+- **不用 uv 怎么装？** `pip install -e .`（需 Python 3.12+，自动解析含 Semantica 的全部依赖）。所有数据源为免费公开 HTTP 接口，无需注册、无需 API Key。
 - **不用 Claude Code 能用吗？** 能，`uv run scripts/analyze.py 03690` 直接运行。
 - **和 a-stock-data 有什么关系？** 本项目 V1.1.0 将 a-stock-data 的 A 股接口封装融入风控框架。
 - **和 global-stock-data 有什么关系？** 本项目 fork 自 global-stock-data，在其数据层基础上扩展了风控框架和缠论模块。

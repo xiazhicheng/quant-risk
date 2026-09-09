@@ -40,7 +40,7 @@ Codex Skill，覆盖 **A 股 + 港股** 全生命周期风控：投前审查 →
 - **道氏三步框架（2026-09-08 用户明确，完整落地道氏理论）**：①**定方向**=日线**收盘价**摆动点判趋势（`_find_pivots` 以 close 为基准，原则6"日内高低点是噪音，收盘价最重要"），高点/低点连续抬高=上升趋势只做多，否则空仓/观望；②**验健康**=`_dow_health`（原则4 成交量确认趋势：上涨放量/回调缩量=健康，价涨量缩=强弩之末）+ `build_index_sync`（原则3 指数相互验证：上证/深证/创业板须同步，背离⚠️即降级"谨慎布局：指数不同步"；港股恒指只作环境展示）——健康隐患/派发迹象/指数背离均强制降级；③**找信号**=`dow_step3`（原则5/6：以收盘价确认未跌破前低=趋势延续持有，跌破=离场）。另含 `_dow_stage` 三阶段（原则2：吸筹/公众参与/派发，缩量新高=派发迹象降级，第二阶段可重仓、第三阶段准备跑）。**降级链优先级**：数据缺失>双周期冲突>动能走弱预警>道氏整体偏空>缩量上涨>5日透支>派发迹象>健康度隐患>指数不同步>当前可布局。逐只信号渲染 `道氏①定方向/道氏②验健康(含指数)/道氏③找信号/三阶段` 四行 + 移动止盈。指数数据源：腾讯 `qt.gtimg.cn/q=sh000001,sz399001,sz399006,hkHSI`（`data.py cn_index_quotes_async`）；测试 `test_dow_health_*/test_dow_stage_*/test_build_index_sync_*/test_index_divergence_downgrade/test_dow_step3_breakout_check` 等，63 测试全过。
 - **波段道氏结论输出（2026-09-08 替代缠论；09-08 按用户原则改「定性+状态+明确边界」）**：`swing.py` 的 `daily_dow_score`/`intraday_dow_score`（旧名 `daily_stroke_score`/`intraday_segment_score` 为兼容别名）输出 `conclusion` 道氏一句话结论，格式 = **定性（🟢上升趋势/🟡震荡/🔴下降趋势）+ 状态（高点、低点连续抬高/走低/交错，基于摆动点序列道氏三句话）+ 明确边界（跌破前低X转空、突破前高Y延续——前低/前高取就近现价的摆动点，是状态切换条件，不是价格预测）+ 操作含义**。**用户原则（必须遵守）**：道氏理论结论永远是定性的、状态的、带有明确边界的——不预测目标价，只描述当前趋势状态与状态切换边界。**摆动点以收盘价为基准**（原则6：日内高低点是噪音）。动能预警用 MACD 动能背离检查（价创新高但 MACD 柱收缩=⚠️动能走弱预警）。
 - **波段布局状态三档（2026-08-31 新增）**：`swing_score_one` 的 status 判定加入道氏整体趋势：短线日线趋势+30分钟小趋势共振 up 但道氏整体趋势 down 时，标 **🟡谨慎布局：短线共振但道氏整体偏空**（而非"当前可布局"），杜绝"报告说可布局、道氏说观望"的自相矛盾。`build_swing_report` 的 advice 映射同步：`谨慎布局`→🟡谨慎布局。
-- **量化波段 V2.1 混合规则架构（2026-09-09 用户确认实施；本条覆盖此前相冲突的波段细节）**：目标为 A股+港股只做多、**高抛低吸、持有时间不确定**的可复现波段系统，**Python 是数值/时序/执行唯一真相，Semantica 是可选声明式 RETE 裁决+决策溯源层，LLM只能解释不得覆盖硬规则**。依赖用 `uv sync --extra decision` 安装精确 `semantica==0.6.8`（不可放核心依赖，包会引入Torch/FAISS等重型栈）；默认 `research + band + shadow`，Semantica/Python影子比对，Python主裁决；Semantica异常 `BLOCK`，live 无 receipt/provenance_id fail-closed，首轮不接券商。
+- **量化波段 V2.1 混合规则架构（2026-09-09 用户确认实施；本条覆盖此前相冲突的波段细节）**：目标为 A股+港股只做多、**高抛低吸、持有时间不确定**的可复现波段系统，**Python 是数值/时序/执行唯一真相，Semantica 是声明式 RETE 裁决+决策溯源层（2026-09-09 起为必须依赖，LLM只能解释不得覆盖硬规则）**。依赖：`semantica==0.6.8` 已移入 pyproject **核心依赖**（2026-09-09 用户确认，面向公开分发；官方包声明依赖含 Torch/FAISS/opencv 等 AI 重型栈约 2.5GB，本项目实际只用 `semantica.reasoning` 纯标准库 RETE——已实测 vendor 5 文件可零依赖独立运行，仅因用户选择官方包原生升级而保留全量安装）；分发通道：Docker 镜像（`Dockerfile`，python:3.12-slim + uv 全量，`docker run -v $(pwd)/report:/app/report quant-risk daily`）+ 本地一键安装（`install.sh`/`install.ps1` 自动装 uv + Python 3.12 + uv sync，2026-09-09 新增）；万一 Semantica 缺失系统自动降级纯 Python 参考引擎（容错，测试 `test_shadow_degrades_without_semantica` 覆盖）；默认 `research + band + shadow`，Semantica/Python影子比对，Python主裁决；Semantica异常 `BLOCK`，live 无 receipt/provenance_id fail-closed，首轮不接券商。
   - **单策略 `swing_band`（2026-09-09 用户确认：不做1-2周/1-2月双策略拆分）**：持有周期不预设，由道氏破前低（收盘确认）与自入场峰值移动止盈离场信号自然决定；`max_holding_days=60` 仅作风控上界。tactical/trend/1w2w/1m2m 均为历史别名，`normalize_strategy_id` 统一归一为 swing_band；配置在 `config/strategies/swing_band.yaml`（含 version/ruleset_hash/ATR移动止盈/组合与成本参数）。
   - **30m 为入场优化非硬门槛（2026-09-09）**：有已确认30m且方向up→参与segment评分优化入场；30m缺失→不BLOCK（segment 0分，日线裁决）；30m与日线方向冲突→仍WATCH观望（道氏双周期纪律保留）。`intraday_confirmation_required=false`。
   - **P0 事实规则**：摆动点以收盘价计算并带 `pivot_at/confirmed_at`，仅确认后下一根可交易K线使用；道氏结论/第三步/初始止损统一最近已确认 `previous_low/previous_high`；A股上证/深证/创业板**任一方向不一致即背离**，任一关键指数缺失即禁新仓；资金流空数组=`MISSING`而非+0，价格/量能/指数/资金任一关键数据 MISSING/STALE=`BLOCK`；次新股仅警示不阻断；停牌/退市=`BLOCK`。
@@ -49,6 +49,8 @@ Codex Skill，覆盖 **A 股 + 港股** 全生命周期风控：投前审查 →
   - **回测纪律**：旧`--record/--report`只作兼容T+N研究统计；`backtest_engine.py` 事件回放按**实际持有天数分布**统计（<5天/5-20天/20-60天/>60天的胜率/均收益/合计收益，`--engine-report` 输出），回答"策略实际持有多久、哪个持有段赚钱"；当前股票池历史回填必须标 `survivorship_bias=true`，每日冻结快照 forward paper/walk-forward 才可作为live验证。验收：冻结快照/receipt重复hash一致、Semantica/Python核心裁决一致、LLM不可改裁决、关键数据缺失不ALLOW、扣成本样本外看净收益/最大回撤/PF而不是只看胜率。
 
 
+- **MCP server（2026-09-09 新增，AI 工具接入层）**：`scripts/mcp_server.py` 用 mcp 2.x `MCPServer` 暴露 5 个确定性工具（全部复用现有模块，固定 research 不接 live）：`analyze_stock`（单股，复用 analyze_swing.analyze_one）/`run_daily`（单市场收盘工作流，复用 daily.run_daily）/`run_recommend`（TOP10，复用 recommend pipeline）/`backtest_stats`（回测统计，复用 backtest_swing 逻辑）/`get_daily_report`（读报告）。**双 transport**：`--transport stdio`（默认本地）+ `--transport http --host --port`（Streamable HTTP，uvicorn，远程/容器；Docker 用 `-p 8765:8765 quant-risk scripts/mcp_server.py --transport http --host 0.0.0.0`）。**ZCode 适配**：`.zcode/config.json` 的 `mcp.servers.quant-risk` = stdio `uv run scripts/mcp_server.py`（重启 ZCode 生效）；`.mcp.json` 同款（Claude Code）；README 含 http + mcp-remote 桥两种远程接入。依赖 `mcp>=1.14` + `uvicorn` 已入核心。测试 `tests/test_mcp_server.py` 4 用例（工具注册/mocked 单股/缺失报告/无记录错误），客户端 streamable-http 连接验证通过。
+- **每日收盘工作流 daily（2026-09-09 Phase 1，无 LLM 依赖）**：`uv run scripts/daily_run.py` 一条命令跑完 **A股+港股** 的「扫池 → swing_band 裁决 → outbox 落库 → 冻结快照 → 报告落盘 → 回测记录」，skill 只负责解读产物。核心编排在 `quantrisk/daily.py`（`run_daily`/`render_daily_summary`），入口 `scripts/daily_run.py`（argparse：`--markets cn,hk`/`--min-stocks 300`/`--rule-engine shadow|python|semantica`/`--no-backtest`/`--snapshot-dir`）。产物：`report/recommend-{cn,hk}-YYYYMMDD-daily.md`（信号报告）+ `report/snapshots/{cn,hk}-YYYYMMDD.json`（冻结快照，walk-forward 基建）+ `report/decision_outbox.sqlite3`（决策凭证）+ `report/swing_backtest.jsonl`（TOP10 回测记录，复用 backtest_swing `_record_from_report` 解析）。**边界**：①固定 `run_mode=research`，不暴露 `--run-mode`，live 需专门流程（fail-closed 精神）；②**串行跑两市场**（双市场并行会再触发东财资金流限流，eastmoney-fflow 已知坑）；③单市场失败不中断另一市场；④engine 级持有天数回放（run_swing_replay）依赖 walk-forward 基建，属 Phase 2，daily 目前只记录 jsonl 供 `--report` T+N 统计。测试 `tests/test_daily.py` 8 用例离线 mock（pipeline/渲染注入），97 测试全过。
 - **舆情与资金热点辅助（2026-08-31 集成，08-31 升级为强制流程）**：集成外部技能 [last30days-skill](https://github.com/mvanhorn/last30days-skill)（v3.21.1）作为 ZCode 用户级技能（`~/.agents/skills/last30days/`），跨 Reddit/X/YouTube/StockTwits/Polymarket 等平台按真实参与度评分合成舆情简报。**每次找标的（`recommend.py` 输出 TOP10 后）必须用 `/last30days` 舆情辅助判断市场热点板块，并用资金进入情况（主力5日/量比）交叉验证——这是强制流程，不得跳过**。交叉验证逻辑：舆情确认板块是真共识还是游资讲故事（看 Reddit/社区讨论深度与参与度），资金面确认是否有真金白银跟进（主力5日净流入+量比>1 为量价齐升）。两者同向才可介入，背离则观望。技能源仓库缓存在 `~/.zcode/cli/skills-cache/last30days-skill/`，`git pull` 即可更新。免费源（Reddit/HN/Polymarket/GitHub/Web）零配置可用；yt-dlp（YouTube 字幕）可选；X/Twitter 需浏览器 cookie，TikTok/Instagram 需 ScrapeCreators。
 - **价值评分链（legacy）**：六维基本面、5:3:2、基本面一票否决、周线定势/日线定点保留在 `--mode value` 兼容路径，不属于 A股/港股默认波段推荐逻辑。
 - **📊 一图胜千言（2026-07-23 新增）**：所有分析报告优先使用 Mermaid 图而非纯表格。目前包含 4 种 Mermaid 图类型：
@@ -406,6 +408,7 @@ graph TB
 scripts/
 ├── analyze.py               统一多市场分析脚本
 ├── analyze_swing.py         单股波段分析（A股/港股，复用 swing 评分核心）🎯
+├── daily_run.py             每日收盘工作流（Phase 1，无 LLM 依赖）🎯
 ├── recommend.py             统一推荐脚本入口
 ├── portfolio.py             持仓诊断工具
 ├── portfolio_report.py      持仓完整报告（产业链Mermaid+投委会辩论+缠论+情绪面）🔥
@@ -550,6 +553,11 @@ scripts/
 | AGENTS.md | 本文件（项目约定和设计决策）|
 | scripts/analyze.py | 统一多市场分析脚本（港股/A股/美股）|
 | scripts/analyze_swing.py | 🎯 单股波段分析（A股/港股，复用 swing.py 评分核心 + data.py 数据层，输出四维评分+缠论结论+三刀筛辅助）|
+| scripts/daily_run.py | 🎯 每日收盘工作流 CLI 入口（A股+港股，无 LLM 依赖：扫池→裁决→outbox→快照→报告→回测记录）|
+| scripts/mcp_server.py | 🎯 MCP server（MCPServer 2.x，stdio + Streamable HTTP 双 transport，5 工具供 AI 工具调用）|
+| .zcode/config.json | ZCode 工作区 MCP 配置（quant-risk stdio 直连，重启 ZCode 生效）|
+| Dockerfile | 🎯 镜像构建（python:3.12-slim + uv 全量依赖含 Semantica，2026-09-09 公开分发）|
+| install.sh / install.ps1 | 🎯 本地一键安装（自动装 uv + Python 3.12 + uv sync，macOS/Linux + Windows）|
 | scripts/recommend.py | 统一推荐入口脚本 |
 | scripts/portfolio.py | 持仓诊断工具 |
 | scripts/portfolio_report.py | 🔥 持仓完整报告（产业链Mermaid+投委会辩论+缠论+情绪面）|
@@ -558,6 +566,7 @@ scripts/
 | scripts/formatter.py | 选股推荐格式化器 |
 | scripts/formatters/ | 四阶段风控格式化器 |
 | scripts/quantrisk/data.py | 数据层：行情/K线/基本面/资金面/信号/公告/期权/SEC/工具 + TickFlow |
+| scripts/quantrisk/daily.py | 每日编排：run_daily 串行跑市场（单市场失败隔离）+ render_daily_summary 摘要 |
 | scripts/quantrisk/chan.py | 缠论：分型→笔→线段→中枢→背驰→买卖点 |
 | scripts/quantrisk/indicators.py | 技术指标：MA/MACD/RSI/KDJ/BOLL/支撑压力/止损止盈 |
 | scripts/quantrisk/chain_renderer.py | 产业链渲染器：Mermaid 图文本生成（纯渲染，无文件依赖） |

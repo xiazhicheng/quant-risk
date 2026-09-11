@@ -432,6 +432,64 @@ def test_render_swing_report_score_brief_column():
     assert "4线之上MACD+0.34" in text and "量比2.78/主力+0.23亿" in text
 
 
+def test_entry_exit_conditions_cautious():
+    """上车/离场条件（2026-09-10 用户确认）：谨慎布局必须翻译成触发价清单，卖出条件完整列出。"""
+    from scripts.quantrisk.swing import _entry_exit_conditions
+    r = {"price": 220.78, "status": "谨慎布局：上升趋势但动能走弱",
+         "trend": {"ma5": 211.49, "ma10": 198.78},
+         "stroke": {"low": 179.91, "direction": "up"},
+         "peak": 222.30, "stop_loss": 196.49, "stop_pct": 11.0,
+         "exit_rule": "移动止盈：跌破前低179.91或自高点222.30回撤11.0%离场"}
+    entry, exit_line = _entry_exit_conditions(r)
+    assert "回踩 198.78-211.49（MA5/MA10）" in entry      # 回踩带
+    assert "现价220.78勿追" in entry                       # 勿追警示
+    assert "放量突破 222.30 介入" in entry                 # 突破确认
+    assert "跌破止损 196.49（-11.0%）无条件离场" in exit_line  # 止损
+    assert "跌破前低179.91" in exit_line                    # 移动止盈·破前低
+    assert "自高点222.30回撤11.0%" in exit_line             # 移动止盈·回撤
+    assert "持仓3-5日缩量滞涨减仓" in exit_line             # 缩量滞涨纪律
+
+
+def test_entry_exit_conditions_watch_and_allow():
+    """观望=突破确认再介入；当前可布局=现价分批介入。"""
+    from scripts.quantrisk.swing import _entry_exit_conditions
+    watch = {"price": 14.51, "status": "观望：日线趋势与30分钟趋势冲突",
+             "trend": {"ma5": 14.13, "ma10": 13.27}, "stroke": {"low": 11.54},
+             "peak": 14.62, "stop_loss": 12.91, "stop_pct": 11.0, "exit_rule": "移动止盈"}
+    e, x = _entry_exit_conditions(watch)
+    assert e.startswith("放量突破 14.62 确认后再介入")
+    assert "现价14.51勿追" in e
+    allow = {"price": 13.93, "status": "当前可布局", "trend": {"ma5": 13.5, "ma10": 13.2},
+             "stroke": {"low": 12.9}, "peak": 14.0, "stop_loss": 13.21, "stop_pct": 5.2, "exit_rule": "移动止盈"}
+    e2, _ = _entry_exit_conditions(allow)
+    assert "现价 13.93 附近分批介入" in e2
+    assert "回踩 13.20-13.50（MA5/MA10）" in e2
+
+
+def test_render_swing_report_entry_exit_lines():
+    """每日报告逐只信号必须含上车/离场两行（2026-09-10 用户确认：状态要可执行）。"""
+    report = {"date": "2026-09-10", "market": "cn", "selection_mode": "swing",
+              "top10": [{"rank": 1, "code": "603083", "name": "剑桥科技", "trend_score": 27.0, "flow_score": 17.0,
+                         "stroke_score": 20.0, "segment_score": 25.0, "total": 89.0, "advice": "🟡谨慎布局"}],
+              "details": [{"code": "603083", "name": "剑桥科技", "rank": 1,
+                           "status": "谨慎布局：上升趋势但动能走弱",
+                           "price": 220.78, "total": 89.0, "stop_loss": 196.49, "stop_pct": 11.0,
+                           "atr": 13.12, "peak": 222.30, "exit_rule": "移动止盈：跌破前低179.91或自高点222.30回撤11.0%离场",
+                           "trend": {"reason": "MA5/10/20/60=211.49/198.78/190.70/188.82，4条均线之上，MACD柱+8.5762",
+                                     "ma5": 211.49, "ma10": 198.78},
+                           "flow": {"reason": "5日涨跌+18.56%，量比1.22x，主力5日+9.49亿", "vol_ratio": 1.22},
+                           "stroke": {"reason": "最近日线趋势up（收盘价摆动点，高点/低点序列）", "direction": "up",
+                                      "low": 179.91, "conclusion": "道氏结论：🟢上升趋势"},
+                           "segment": {"reason": "最近30分钟趋势up（收盘价摆动点，高点/低点序列）", "direction": "up"},
+                           "health": {"note": "上涨量能持平"}, "stage": "公众参与", "stage_note": "趋势中段",
+                           "dow_step3": "未跌破前低179.91（收盘价确认），趋势延续", "index_sync": {"note": "方向同步✅"}}],
+              "summary": [], "sectors": []}
+    text = swing.render_swing_report(report, "cn")
+    assert "📌 **上车条件**：回踩 198.78-211.49（MA5/MA10） 企稳（现价220.78勿追）｜放量突破 222.30 介入" in text
+    assert "🚪 **离场条件**：跌破止损 196.49（-11.0%）无条件离场" in text
+    assert "跌破前低179.91" in text and "持仓3-5日缩量滞涨减仓" in text
+
+
 # ────────────────────────────────────────────────────────────────
 # 道氏三步框架测试（2026-09-08 用户框架：定方向→验健康→找信号 + 移动止盈 + 指数同步）
 # ────────────────────────────────────────────────────────────────

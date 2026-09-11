@@ -187,16 +187,19 @@ def _knife_checks(r: dict) -> list[str]:
 
 
 def render_one(r: dict) -> str:
-    from scripts.quantrisk.swing import _render_profile_line
+    from scripts.quantrisk.swing import _render_profile_line, _entry_exit_conditions
     market_label = "A股" if r["market"] == "cn" else "港股"
     t, f, st, sg = r["trend"], r["flow"], r["stroke"], r["segment"]
     health = r.get("health") or {}
     idx = r.get("index_sync") or {}
+    entry_line, exit_line = _entry_exit_conditions(r)
     lines = [
         f"#### {r['name']}（{r['code']}）— {r['status']}",
         f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | "
         f"**止损**：{r['stop_loss']:.2f}（-{r.get('stop_pct', 8.0):.1f}%）| **{r.get('exit_rule', '移动止盈')}**" +
         (f"，ATR{r.get('atr')}" if r.get('atr') else ""),
+        f"- 📌 **上车条件**：{entry_line}",
+        f"- 🚪 **离场条件**：{exit_line}",
         _render_profile_line(r, r["market"]),
         f"- 日线趋势（30）：{t['reason']}",
         f"- 日线量价/资金（25）：{f['reason']}",

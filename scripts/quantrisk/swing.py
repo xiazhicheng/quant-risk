@@ -476,7 +476,7 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
             "tradable": tradable, "status": status, "error": error, "direction_conflict": direction_conflict,
             "stop_loss": sl_tp["stop_loss"], "trail_stop": sl_tp["trail_stop"],
             "trail_pct": sl_tp["trail_pct"], "exit_rule": sl_tp["exit_rule"],
-            "atr": sl_tp.get("atr"), "stop_pct": sl_tp.get("stop_pct"),
+            "peak": sl_tp.get("peak"), "atr": sl_tp.get("atr"), "stop_pct": sl_tp.get("stop_pct"),
             "health": health, "stage": stage, "stage_note": stage_note,
             "dow_step3": dow_step3, "index_sync": idx_sync}
     # Structured decision facade. The Python reference remains authoritative in shadow mode.
@@ -697,6 +697,48 @@ def _score_brief(section: Dict[str, Any], kind: str) -> str:
     return str(section.get("direction") or (reason[:12] if reason else "无"))
 
 
+def _entry_exit_conditions(r: Dict[str, Any]) -> tuple[str, str]:
+    """每只标的上车/离场条件固化（2026-09-10 用户确认：操作状态必须翻译成触发价清单，否则"谨慎布局/观望"不可执行）。
+
+    上车（按状态分支）：
+      - 当前可布局 → 现价附近可分批介入，回踩支撑企稳加仓；
+      - 观望（双周期冲突/方向未定）→ 放量突破阶段高点确认后再介入（现价勿追）；
+      - 谨慎布局 → 回踩支撑企稳（现价勿追）｜放量突破阶段高点介入。
+    回踩带 = MA5~MA10 区间（短线支撑），支撑 = 道氏前低（上升趋势）优先；突破参考 = 近20日最高收盘（阶段高点，道氏不预测目标，只给确认条件）。
+    离场（固定结构，全部标的）：止损无条件走 + 移动止盈（跌破前低/自高点回撤，来自 exit_rule）+ 缩量滞涨纪律。"""
+    price = float(r.get("price") or 0)
+    status = str(r.get("status") or "")
+    trend = r.get("trend") or {}
+    stroke = r.get("stroke") or {}
+    ma5 = float(trend.get("ma5") or 0)
+    ma10 = float(trend.get("ma10") or 0)
+    stroke_low = float(stroke.get("low") or 0)
+    support = stroke_low if 0 < stroke_low < price else (
+        ma10 if 0 < ma10 < price else (ma5 if 0 < ma5 < price else price * 0.95))
+    peak = float(r.get("peak") or 0)
+    breakout = peak if peak > 0 else price
+    if 0 < ma5 < price and 0 < ma10 < price:
+        lo, hi = min(ma5, ma10), max(ma5, ma10)
+        pullback = f"回踩 {lo:.2f}-{hi:.2f}（MA5/MA10）"
+    else:
+        pullback = f"回踩 {support:.2f} 企稳"
+    if status.startswith("谨慎布局"):
+        entry = f"{pullback} 企稳（现价{price:.2f}勿追）｜放量突破 {breakout:.2f} 介入"
+    elif status.startswith("观望"):
+        entry = f"放量突破 {breakout:.2f} 确认后再介入（现价{price:.2f}勿追）"
+    elif status == "当前可布局":
+        entry = f"现价 {price:.2f} 附近分批介入｜{pullback} 企稳加仓"
+    else:
+        entry = f"{pullback} 或放量突破 {breakout:.2f} 再介入（现价{price:.2f}）"
+    stop = float(r.get("stop_loss") or 0)
+    stop_pct = float(r.get("stop_pct") or 0)
+    parts = [f"跌破止损 {stop:.2f}（-{stop_pct:.1f}%）无条件离场"]
+    if r.get("exit_rule"):
+        parts.append(str(r["exit_rule"]))
+    parts.append("持仓3-5日缩量滞涨减仓")
+    return entry, "｜".join(parts)
+
+
 def render_swing_report(data: Dict[str, Any], market: str) -> str:
     """波段模式独立渲染器：只展示日线趋势/量价/道氏趋势方向。"""
     label = "A股" if market == "cn" else "港股"
@@ -725,7 +767,9 @@ def render_swing_report(data: Dict[str, Any], market: str) -> str:
         vol_ratio = (flow or {}).get("vol_ratio") or 0
         lines += [f"#### {r['rank']}. {r['name']}（{r['code']}）— {r['status']}",
                   f"**现价**：{r['price']:.2f} | **总分**：{r['total']}/100 | **止损**：{r['stop_loss']:.2f}（-{r.get('stop_pct', 8.0):.1f}%）| {r.get('exit_rule', '移动止盈')}" +
-                  (f"，ATR{r.get('atr')}" if r.get('atr') else ""),
+                  (f"，ATR{r.get('atr')}" if r.get('atr') else "")]
+        _entry_line, _exit_line = _entry_exit_conditions(r)
+        lines += [f"- 📌 **上车条件**：{_entry_line}", f"- 🚪 **离场条件**：{_exit_line}",
                   _render_profile_line(r, market),
                   f"- 日线趋势（30）：{trend['reason']}", f"- 日线量价/资金（25）：{flow['reason']}",
                   f"- 日线道氏（20）：{stroke['reason']}", f"- 30分钟道氏（25）：{segment['reason']}",

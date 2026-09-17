@@ -263,9 +263,11 @@ async def fetch_dynamic_pool(min_stocks: int = 300) -> list[dict]:
 
             if price <= 0:
                 continue
-            # 停牌/无成交拦截（2026-09-08 与A股一致）：东财成交额翻页下停牌股成交额为 0
+            # 停牌/无成交拦截（2026-09-08 与A股一致）：东财成交额翻页下停牌股成交额为 0；
+            # 2026-09-17 加流动性护栏：日成交额 <500 万元（港币≈人民币）的极微盘剔除，
+            # 波段止损 -5%~-11% 在无量微盘上根本出不了货
             amt = s.get("amount") or 0
-            if amt <= 0:
+            if amt < 5_000_000:
                 continue
             if code in seen_codes:
                 continue

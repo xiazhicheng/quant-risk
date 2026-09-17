@@ -14,12 +14,32 @@ Transport（2026-09-09 用户确认 streamable http + ZCode 适配）：
 from __future__ import annotations
 
 import argparse
+import builtins
 import json
+import os
+import sys
 from datetime import date as _date
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+
+# --- MCP stdio 协议护栏（2026-09-17 修复 run_daily Error executing tool）---
+# stdio transport 下 stdout 只能承载 JSON-RPC 帧；data.py 满屏 [WARN] print 会污染
+# 协议导致客户端解析失败/断连。把进程内所有 print 定向 stderr，并固定 cwd 到项目根
+# （daily/data 内部均为相对路径 report/...，cwd 不对时写文件抛错）。
+_ROOT = Path(__file__).resolve().parent.parent
+os.chdir(_ROOT)
+
+_builtin_print = builtins.print
+
+
+def _print_to_stderr(*args: Any, **kwargs: Any) -> None:
+    kwargs.setdefault("file", sys.stderr)
+    _builtin_print(*args, **kwargs)
+
+
+builtins.print = _print_to_stderr
 
 mcp = MCPServer(
     "quant-risk",

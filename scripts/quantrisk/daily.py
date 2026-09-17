@@ -61,10 +61,18 @@ async def _run_one_market(
     snapshot_file = snapshot_dir / f"{market}-{stamp}.json"
 
     if market == "cn":
-        from .recommend_cn import cn_recommend_pipeline, fetch_cn_candidate_pool
+        from .recommend_cn import (cn_recommend_pipeline, fetch_cn_candidate_pool,
+                                   fetch_hot_boards, merge_pools)
         candidates = await fetch_cn_candidate_pool(min_stocks=min_stocks)
         if not candidates:
             raise RuntimeError("A股候选池获取失败")
+        # 2026-09-17 板块池：热门板块（主力净流入前10×top3）补充合并，失败不阻断主池
+        try:
+            board = await fetch_hot_boards()
+            if board:
+                candidates = merge_pools(candidates, board)
+        except Exception as exc:
+            print(f"[WARN] 热门板块池获取失败（跳过）: {exc}")
         data = await cn_recommend_pipeline(
             candidates, mode="swing", strategy="band", run_mode="research",
             rule_engine=rule_engine, snapshot=str(snapshot_file))
@@ -75,6 +83,15 @@ async def _run_one_market(
             rule_engine=rule_engine, snapshot=str(snapshot_file))
     else:
         raise ValueError(f"未知市场: {market}（可选: cn, hk）")
+
+    # 2026-09-17：快照补 pool_mode（A1 按池版本分组统计；历史快照无此字段归 mcap-only）
+    if snapshot_file.exists():
+        try:
+            snap = json.loads(snapshot_file.read_text(encoding="utf-8"))
+            snap["pool_mode"] = "amount+board" if market == "cn" else "amount"
+            snapshot_file.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            print(f"[WARN] 快照 pool_mode 补写失败: {exc}")
 
     swing_validate(data)
     markdown = render_swing_report(data, market)

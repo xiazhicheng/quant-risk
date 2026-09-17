@@ -125,6 +125,15 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
                 price = float(fields[3]) if fields[3] else 0
                 pe = float(fields[39]) if fields[39] and fields[39] != "0.00" else 0
                 mcap = float(fields[44]) if fields[44] and fields[44] != "0.00" else 0
+                # 当日成交额（元）：字段[35] 格式 "最新价/成交量(手)/成交额(元)"
+                amount = 0.0
+                if len(fields) > 35 and fields[35] and "/" in fields[35]:
+                    _parts = fields[35].split("/")
+                    if len(_parts) >= 3:
+                        try:
+                            amount = float(_parts[2])
+                        except ValueError:
+                            amount = 0.0
 
                 if not code or not name:
                     continue
@@ -140,6 +149,10 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
                 vol_hand = float(fields[36]) if len(fields) > 36 and fields[36] else 0
                 if vol_hand <= 0:
                     continue
+                # 流动性护栏（2026-09-17 池改造）：市值≥30亿 或 当日成交额≥1亿 才入池，
+                # 剔除微盘垃圾票；配合下方成交额排序，兼顾主线龙头与活跃小盘弹性
+                if mcap < 30 and amount < 1e8:
+                    continue
 
                 candidates.append({
                     "code": code,
@@ -147,18 +160,113 @@ async def fetch_cn_candidate_pool(min_stocks: int = 300) -> List[Dict[str, str]]
                     "industry": "其他",
                     "market": "",
                     "mcap": mcap,
+                    "amount": amount,
                     "price": price,
                     "pe": pe,
                     "sector": "其他",
                 })
 
-        # 按市值降序取前 min_stocks：主线龙头（半导体/算力/银行等大市值）优先入池
-        candidates.sort(key=lambda x: x.get("mcap", 0), reverse=True)
+        # 按当日成交额降序取前 min_stocks（2026-09-17 池改造：由市值改为成交额，
+        # 波段要的是活跃+动量，成交额与策略目标同构；原市值排序把 300 亿以下小盘
+        # 弹性票全部挡在池外——诺德/华升这类题材股系统性漏选）
+        candidates.sort(key=lambda x: x.get("amount", 0), reverse=True)
         return candidates[:min_stocks]
 
     except Exception as e:
         print(f"[WARN] 候选池获取失败: {e}")
         return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 热门板块补充池（2026-09-17 新增，用户思路落地）
+#   先选热门板块（资金 5 日/当日大量净流入），再取每板块主力净流入 top3 入池，
+#   与全市场成交额池补充合并。舆情交叉验证仍留 skill 层（daily 保持无 LLM）。
+#   数据源：东财板块 clist 接口，push2delay 主用 + push2 兜底（2026-09-17 实测
+#   push2 高频即断连，delay 域名稳定）。
+# ═══════════════════════════════════════════════════════════════
+
+# 非题材类板块噪音（风格/交易行为指数，不是可交易主线）：命中即跳过
+_BOARD_NOISE_KEYWORDS = (
+    "AB股", "融资融券", "深股通", "沪股通", "标普", "MSCI", "富时", "AH股",
+    "QFII", "RQFII", "机构重仓", "基金重仓", "社保重仓", "百元股", "微盘股",
+    "破净股", "低价股", "高价股", "昨日涨停", "昨日连板", "昨日触板", "次新股",
+    "科创次新", "转融券", "转债", "可转债", "ST", "预盈预增", "送转填权",
+)
+
+_BOARD_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
+
+
+async def _em_board_clist(fs: str, pz: int = 20) -> list[dict]:
+    """东财板块/成分 clist 请求（按主力净流入 fid=f62 排序），多域名重试。"""
+    headers = {"Referer": "https://quote.eastmoney.com/", "User-Agent": "Mozilla/5.0"}
+    for host in _BOARD_HOSTS:
+        try:
+            connector = aiohttp.TCPConnector(force_close=True, limit=1)
+            async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+                async with session.get(
+                    f"https://{host}/api/qt/clist/get",
+                    params={"pn": 1, "pz": pz, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+                            "fid": "f62", "fs": fs, "fields": "f12,f14,f2,f3,f62"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    data = (await resp.json(content_type=None)).get("data") or {}
+                    return data.get("diff") or []
+        except Exception:
+            continue
+    return []
+
+
+async def fetch_hot_boards(max_boards: int = 10, per_board: int = 3) -> List[Dict[str, Any]]:
+    """热门板块 top3 补充池：行业+概念板块按主力净流入各取前 max_boards，去重后
+    每板块内按主力净流入取 top3 个股。返回 [{code,name,industry,sector,board_hot,...}]，
+    失败返回 [] 不阻断主池（板块池是锦上添花）。"""
+    boards: list[dict] = []
+    for fs in ("m:90+t:2+f:!50", "m:90+t:3+f:!50"):  # 行业板块 + 概念板块
+        rows = await _em_board_clist(fs, pz=max_boards + 20)
+        kept = []
+        for b in rows:
+            name = b.get("f14") or ""
+            if not name or any(kw in name for kw in _BOARD_NOISE_KEYWORDS):
+                continue
+            kept.append({"bk": b.get("f12"), "name": name,
+                         "inflow": float(b.get("f62") or 0)})
+        boards.extend(kept[:max_boards])  # 每类只取资金净流入前 max_boards 个板块（热门板块语义）
+        await asyncio.sleep(0.2)
+    seen_names, out = set(), []
+    for b in boards:
+        if b["name"] in seen_names:  # 行业/概念可能重名，去重
+            continue
+        seen_names.add(b["name"])
+        rows = await _em_board_clist(f"b:{b['bk']}+f:!50", pz=per_board)
+        for s in rows:
+            code = str(s.get("f12") or "")
+            sname = s.get("f14") or ""
+            if not code or not sname:
+                continue
+            # 板块成分股 ST/退 过滤（2026-09-17 实测 ST合力泰混入电子纸概念 top3）
+            if "ST" in sname.upper() or "退" in sname:
+                continue
+            out.append({
+                "code": code, "name": s.get("f14"), "industry": b["name"],
+                "market": "", "mcap": 0.0,
+                "amount": float(s.get("f62") or 0),
+                "price": float(s.get("f2") or 0), "pe": 0,
+                "sector": b["name"], "board_hot": b["name"],
+            })
+        await asyncio.sleep(0.2)
+    return out
+
+
+def merge_pools(main_pool: List[Dict[str, Any]], board_pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """主池（成交额前300）与板块池按 code 去重合并；板块池标的带 board_hot 标记。"""
+    seen = {c["code"] for c in main_pool}
+    merged = list(main_pool)
+    for c in board_pool:
+        if c["code"] in seen:
+            continue
+        seen.add(c["code"])
+        merged.append(c)
+    return merged
 
 
 async def fetch_cn_industry_ranking(top_n: int = 20) -> List[Dict[str, Any]]:
@@ -240,7 +348,8 @@ async def cn_swing_recommend_pipeline(candidates: List[Dict[str, str]], strategy
                        "s": c.get("sector", "其他"), "p": q.get("price") or c.get("price", 0),
                        "q": q, "index_sync": index_sync,
                        "market": "cn", "strategy_id": strategy, "run_mode": run_mode,
-                       "rule_engine": rule_engine})
+                       "rule_engine": rule_engine,
+                       "board_hot": c.get("board_hot", "")})
 
     async def daily_fetch(code: str):
         return await cn_stock_kline_fallback(code, days=365)

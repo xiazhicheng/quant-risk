@@ -920,7 +920,20 @@ async def run_swing_pipeline_with_intraday(stocks: List[Dict[str, Any]], market:
         quick = daily_trend_score(daily)
         candidates.append((quick["score"] + daily_flow_score(daily, flow)["score"], stock, daily, flow))
     candidates.sort(key=lambda x: x[0], reverse=True)
-    shortlist = candidates[:min(len(candidates), 80)]
+    # 2026-09-17 板块池保底：热门板块 top3 标的常因 fflow 高并发静默空/趋势未确认被粗筛
+    # 挡在 80 外（实测 60 只 0 入选）。先取粗筛前 80-quota 只，再从落选板块池标的中按
+    # **日线趋势分**（腾讯日K稳定源，不依赖东财 fflow）捞回最多 quota 只进完整评分，
+    # 最后补足 80。保底≠放行，是否可布局仍由规则裁决（数据缺失照样 BLOCK）。
+    board_quota = 5
+    shortlist = candidates[:min(len(candidates), 80 - board_quota)]
+    taken = {c[1].get("c") for c in shortlist}
+    fallback = [c for c in candidates if c[1].get("board_hot") and c[1].get("c") not in taken]
+    fallback.sort(key=lambda c: daily_trend_score(c[2])["score"], reverse=True)
+    shortlist.extend(fallback[:board_quota])
+    if len(shortlist) < 80:
+        taken = {c[1].get("c") for c in shortlist}
+        rest = [c for c in candidates if c[1].get("c") not in taken]
+        shortlist.extend(rest[:80 - len(shortlist)])
     # 30m 为入场优化（有则用、缺失不阻断）：统一尝试拉取，缺失由规则层按非硬门槛处理
     intraday_results = await asyncio.gather(*[intraday_fetch(s["c"]) for _, s, _, _ in shortlist], return_exceptions=True)
     results, normalized = [], []

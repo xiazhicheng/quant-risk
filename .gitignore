@@ -1,7 +1,6 @@
 # 缓存/构建文件
 __pycache__/
 *.egg-info/
-.ok/
 
 # 编辑器/系统文件
 .DS_Store

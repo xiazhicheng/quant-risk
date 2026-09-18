@@ -162,7 +162,7 @@ uv run scripts/portfolio.py diagnose                         # 持仓诊断
 uv run scripts/mcp_server.py                                 # MCP server（stdio，供 AI 客户端）
 ```
 
-> MCP 接入细节（stdio / Streamable HTTP / Docker 远程）与项目结构见 [openwiki/quickstart.md](openwiki/quickstart.md) 和仓库内 `AGENTS.md`。
+> MCP 接入细节（stdio / Streamable HTTP / Docker 远程）与项目结构见仓库内 `AGENTS.md`。
 
 ---
 

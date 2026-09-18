@@ -630,13 +630,3 @@ scripts/
 - 第三步：**择时** — 四大师裁决摘要 → MA排列 → MACD → 资金流向 → 买卖时机建议
 - 各股详情块末尾包含**镜子测试**：5句话说清楚为什么买，说不清楚不买
 
-## OpenWiki
-
-This repository has documentation located in the /openwiki directory.
-
-Start here:
-- [OpenWiki quickstart](openwiki/quickstart.md)
-
-OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
-
-When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.

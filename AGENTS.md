@@ -566,6 +566,7 @@ scripts/
 | Dockerfile | 🎯 镜像构建（python:3.12-slim + uv，`--extra semantica` 全量，2026-09-09 公开分发）|
 | install.sh / install.ps1 | 🎯 本地一键安装（自动装 uv + Python 3.12 + 轻量依赖 + 冒烟自检，macOS/Linux + Windows）|
 | scripts/install_skill.sh / install_skill.ps1 | 🎯 **Skill 一键安装（下载即用，分发第一顺位）**：装到 `~/.claude/skills/quant-risk` 或 `--dest` 指定 Codex/ZCode，支持 curl 远程执行 + 本地仓库两种模式，排除 `__pycache__` |
+| .kimi-code/mcp.json | 🎯 Kimi Code MCP 接入（2026-09-18）：open-knowledge stdio server（`ok mcp`，继承项目根 cwd 找 `.ok/`，跨机器可移植），Kimi Code 新会话自动注册 `mcp__open-knowledge__exec/search/write/edit`；`ok init` 重装项目级 skill（.claude/.cursor/.agents/skills/open-knowledge/）与 `.ok/`（config.yml 入库，local/ 等运行时状态由 .ok/.gitignore 排除） |
 | scripts/recommend.py | 统一推荐入口脚本 |
 | scripts/portfolio.py | 持仓诊断工具 |
 | scripts/portfolio_report.py | 🔥 持仓完整报告（产业链Mermaid+投委会辩论+缠论+情绪面）|

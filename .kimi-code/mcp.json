@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "open-knowledge": {
+      "command": "ok",
+      "args": ["mcp"],
+      "env": {
+        "TZ": "Asia/Shanghai"
+      }
+    }
+  }
+}

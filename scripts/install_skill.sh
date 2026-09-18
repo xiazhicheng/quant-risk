@@ -7,7 +7,15 @@
 # 其他客户端：--dest ~/.codex/skills/quant-risk（Codex）| --dest ~/.agents/skills/quant-risk（ZCode）
 set -euo pipefail
 
-DEST="${1:-$HOME/.claude/skills/quant-risk}"
+DEST="$HOME/.claude/skills/quant-risk"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dest) DEST="${2:?--dest 需要指定目标目录路径}"; shift 2 ;;
+        -h|--help) echo "用法: install_skill.sh [--dest 路径]"; echo "默认安装到 ~/.claude/skills/quant-risk（Claude Code）"; exit 0 ;;
+        *) echo "未知参数: $1（用法: install_skill.sh [--dest 路径]）"; exit 1 ;;
+    esac
+done
+
 REPO_URL="https://github.com/xiazhicheng/quant-risk.git"
 TMP_DIR=""
 

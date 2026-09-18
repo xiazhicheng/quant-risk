@@ -2,7 +2,7 @@
 name: quant-risk
 description: 【A股+港股波段风控】纯技术波段选股（swing_band：道氏理论四维评分100分制）+ 每日收盘工作流（扫池→规则裁决→快照→报告）+ 单股波段分析 + MCP 工具接入。A股/港股日K、30m、资金流、三tab基本面简介（东财/腾讯免费源）。基于行情/成交量/资金/道氏摆动点输出：可布局/谨慎布局/观望三档状态 + 触发价/止损/移动止盈，不预测目标价。覆盖投前审查/持仓监控/预警触发/处置决策四阶段。
 origin: custom
-version: 2.0.0
+version: 1.9.0
 ---
 > 📦 https://github.com/xiazhicheng/quant-risk — Star ⭐ 是最好的支持
 # A股+港股波段风控 Skill V2.0.0（swing_band 纯技术波段）
@@ -371,7 +371,7 @@ async def hk_stock_quote_tencent_async(code: str) -> dict:
     }
 ```
 
-### 1.2 腾讯美股行情
+### 1.2 腾讯美股行情 ⚠️ DEPRECATED（2026-08-31 美股已移出维护范围，仅 legacy 兼容）
 
 ```python
 async def us_stock_quote_tencent_async(ticker: str) -> dict:
@@ -396,7 +396,7 @@ async def us_stock_quote_tencent_async(ticker: str) -> dict:
     }
 ```
 
-### 1.3 新浪美股行情
+### 1.3 新浪美股行情 ⚠️ DEPRECATED（2026-08-31 美股已移出维护范围，仅 legacy 兼容）
 
 ```python
 async def us_stock_quote_sina_async(ticker: str) -> dict:
@@ -550,7 +550,7 @@ async def cn_stock_basic_info_async(code: str) -> dict:
 
 ## Layer 2: K线层
 
-### 2.1 美股日K — 新浪
+### 2.1 美股日K — 新浪 ⚠️ DEPRECATED（2026-08-31 美股已移出维护范围，仅 legacy 兼容）
 
 ```python
 async def us_stock_kline_sina_async(ticker: str, num: int = 120) -> list[dict]:
@@ -600,7 +600,7 @@ async def stock_kline_yahoo_async(symbol: str, interval: str = "1d", range_: str
 async def cn_stock_kline_tencent_async(code: str, days: int = 120) -> list[dict]:
     """A股日K线，腾讯源，前复权。code: 6位代码，自动识别市场。
     返回 date/open/high/low/close/volume，适合回测和估值分析。"""
-    url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},m,,{days}"
+    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={cn_market_prefix(code)}{code},m,,{days}"
     d = await _aio_get_json(url, headers={"Referer": "https://finance.qq.com/"})
     data = d.get("data", {})
     key = f"{cn_market_prefix(code)}{code}"
@@ -808,7 +808,7 @@ def calc_boll(klines: list[dict], period: int = 20, num_std: float = 2.0) -> lis
 
 ---
 
-## Layer 3.5: 缠论层（Chan Theory — 纯 Python 计算）
+## Layer 3.5: 缠论层（Chan Theory — 纯 Python 计算）⚠️ DEPRECATED（2026-09-08 起波段方向判定已由道氏理论替代，本层仅供 value/portfolio legacy 模式；新波段代码请用 swing.py 道氏实现）
 
 缠论（缠中说禅理论）是国内技术分析领域最系统的理论框架之一。本层实现核心组件：分型 → 包含处理 → 笔 → 线段 → 中枢 → 背驰 → 买卖点。
 
@@ -1952,7 +1952,7 @@ async def cninfo_announcements_async(code: str, page_size: int = 30) -> list[dic
 
 ---
 
-## Layer 9: 期权层（仅美股）
+## Layer 9: 期权层（仅美股）⚠️ DEPRECATED（2026-08-31 美股已移出维护范围，仅 legacy 兼容）
 
 ```python
 async def options_chain_async(symbol: str, expiration: int = None) -> dict:
@@ -1977,7 +1977,7 @@ async def options_chain_async(symbol: str, expiration: int = None) -> dict:
 
 ---
 
-## Layer 10: SEC Filing 层（仅美股）
+## Layer 10: SEC Filing 层（仅美股）⚠️ DEPRECATED（2026-08-31 美股已移出维护范围，仅 legacy 兼容）
 
 ```python
 async def sec_filings_async(cik: str, form_type: str = None) -> dict:
@@ -2176,7 +2176,9 @@ def calc_support_resistance(klines: list[dict], lookback: int = 60) -> dict:
 
 def calc_stop_loss_take_profit(entry_price: float, atr: float = None, klines: list[dict] = None) -> dict:
     """
-    止损/止盈触发条件。
+    止损/止盈触发条件（⚠️ legacy 兼容，2026-09-08 起波段系统改移动止盈）。
+    注意：新波段逻辑（swing.py swing_sl_tp）已不再输出 take_profit/target_pct，
+    改为「跌破道氏前低或自高点回撤 2×ATR 离场」。此处仅保留旧调用方兼容。
     如果提供了 ATR，按 ATR 倍数计算；否则按最近 N 日最低/最高计算。
     """
     if atr is None and klines and len(klines) > 14:
@@ -2191,7 +2193,7 @@ def calc_stop_loss_take_profit(entry_price: float, atr: float = None, klines: li
         return {
             "stop_loss": round(entry_price - 2 * atr, 2),
             "stop_loss_trigger": f"收盘价跌破 {round(entry_price - 2 * atr, 2)}（-{round(2 * atr / entry_price * 100, 1)}%）",
-            "take_profit": round(entry_price + 3 * atr, 2),
+            "take_profit": round(entry_price + 3 * atr, 2),  # ⚠️ deprecated：波段已改移动止盈，勿用于新代码
             "take_profit_trigger": f"收盘价突破 {round(entry_price + 3 * atr, 2)}（+{round(3 * atr / entry_price * 100, 1)}%）",
             "atr": round(atr, 2),
         }

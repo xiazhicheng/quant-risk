@@ -36,8 +36,8 @@ SECTOR_PE_THRESHOLD = {
     "其他": 60,
 }
 
-from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tencent_async,
-                                     stock_kline_yahoo_async, kline_tickflow_async,
+from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_async,
+                                     kline_tickflow_async,
                                      parallel_map, key_indicators_eastmoney_async,
                                      fund_flow_daily_async,
                                      close_async_session, close_tickflow)
@@ -675,20 +675,13 @@ async def _fetch_klines(c: str) -> Tuple[str, List[Dict], List[Dict]]:
     Returns: (code, kl_daily, kl_weekly)
     """
     kl = None
-    # 日K
+    # 日K（统一入口：腾讯 → Yahoo；不足则 TickFlow 最终兜底）
     try:
-        kl = await hk_kline_tencent_async(c, "day", 365)
-        if kl and len(kl) < 20:
+        kl = await hk_kline_async(c, "day", 365)
+        if not kl or len(kl) < 20:
             kl = None
     except Exception:
         kl = None
-    if not kl:
-        try:
-            kl = await stock_kline_yahoo_async(f"{int(c)}.HK", "1d", "1y")
-            if kl and len(kl) < 20:
-                kl = None
-        except Exception:
-            kl = None
     if not kl:
         try:
             kl = await kline_tickflow_async(f"{c}.HK", "1d", 365)
@@ -872,11 +865,7 @@ async def hk_swing_recommend_pipeline(min_stocks: int = 300, industry: str = "",
                        "rule_engine": rule_engine})
 
     async def daily_fetch(code: str):
-        rows = await hk_kline_tencent_async(code, "day", 365)
-        if len(rows) >= 60:
-            return rows
-        rows = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", "1y")
-        return rows
+        return await hk_kline_async(code, "day", 365)
 
     async def flow_fetch(code: str):
         rows = await fund_flow_daily_async(code, secid_prefix=116, limit=5)

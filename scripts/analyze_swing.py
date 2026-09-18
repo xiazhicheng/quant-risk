@@ -28,8 +28,7 @@ from scripts.quantrisk.data import (
     cn_stock_kline_fallback,
     cn_fund_flow_minute_async,
     hk_stock_quote_tencent_async,
-    hk_kline_tencent_async,
-    stock_kline_yahoo_async,
+    hk_kline_async,
     fund_flow_daily_async,
     stock_kline_30m_async,
 )
@@ -61,10 +60,7 @@ async def _fetch_quote(code: str, market: str) -> dict:
 
 async def _fetch_daily(code: str, market: str) -> list:
     if market == "hk":
-        rows = await hk_kline_tencent_async(code, "day", 365)
-        if len(rows) >= 60:
-            return rows
-        return await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", "1y")
+        return await hk_kline_async(code, "day", 365)
     return await cn_stock_kline_fallback(code, days=365)
 
 
@@ -110,7 +106,7 @@ def parse_args() -> tuple[list[str], str, str, str]:
             rule_engine = args[i + 1].lower()
             i += 2
         elif arg.startswith("--"):
-            i += 1
+            raise ValueError(f"未知参数: {arg}（支持 --strategy/--run-mode/--rule-engine）")
         else:
             codes.append(arg)
             i += 1

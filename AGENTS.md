@@ -356,7 +356,7 @@ graph TB
 - 保存本次持仓信息到 AgentMemory
 
 
-## 架构速览 (V1.8.0)
+## 架构速览 (V1.9.0)
 
 所有代码统一在 `scripts/` 目录下，`quantrisk` 作为 `scripts/quantrisk/` 子包存在。
 
@@ -394,7 +394,7 @@ scripts/
 | A股行情 | 腾讯(不封IP) | 东财 push2 | — |
 | A股日K | 腾讯(前复权) | 新浪 / 百度(带MA) / TickFlow(兜底) | 2026-08-31 新浪日K上线 |
 | 港股行情 | 腾讯(78字段) | 新浪(25字段) | — |
-| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 新浪港股日K已失效 |
+| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 统一入口 `hk_kline_async`（2026-09-18），新浪港股日K已失效 |
 | 基本面(港股A股) | 东财 datacenter | Yahoo(key stats) | — |
 | 缠论K线 | 腾讯 / Yahoo / 新浪 | TickFlow(兜底) | 支持前复权 |
 

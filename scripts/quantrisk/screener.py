@@ -3,7 +3,7 @@ quantrisk — 标的池三层筛选逻辑 + 批量查询
 """
 import asyncio
 from .data import (parallel_map, hk_stock_quote_tencent_async,
-                   stock_kline_yahoo_async, key_indicators_eastmoney_async,
+                   key_indicators_eastmoney_async,
                    key_statistics_async)
 
 

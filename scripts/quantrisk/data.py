@@ -109,12 +109,20 @@ async def close_async_session():
 async def _get(url: str, **kw) -> str:
     s = await get_async_session()
     async with s.get(url, **kw) as r:
+        if r.status >= 400:
+            return ""
         return await r.text()
 
 async def _get_json(url: str, **kw) -> dict:
     s = await get_async_session()
     async with s.get(url, **kw) as r:
-        t = await r.text(); return json.loads(t) if t.strip() else {}
+        if r.status >= 400:
+            return {}
+        t = await r.text()
+        try:
+            return json.loads(t) if t.strip() else {}
+        except (json.JSONDecodeError, ValueError):
+            return {}
 
 
 # 腾讯K线可用域名（2026-08-12 修复：原 http://web.ifzq.gtimg.cn 已不可用返回501）
@@ -895,6 +903,29 @@ async def hk_kline_tencent_async(code: str, period: str = "day", count: int = 12
     return result
 
 
+async def hk_kline_async(code: str, period: str = "day", count: int = 120) -> list[dict]:
+    """港股K线统一入口（腾讯 → Yahoo 两级兜底，fail-closed）。
+
+    日K：腾讯 ≥20 根即停；不足则 Yahoo（range 按 count 换算年数）兜底。
+    周K：腾讯单点（Yahoo 兜底仅对日K开放，周线属可选场景）。
+    两源全挂返回 [] 并打 WARN，绝不静默伪造；调用方按"数据不足"处理。
+    """
+    rows = await hk_kline_tencent_async(code, period, count)
+    min_bars = 20 if period == "day" else 10
+    if rows and len(rows) >= min_bars:
+        return rows
+    if period == "day":
+        try:
+            years = max(count // 5, 1)
+            yahoo_rows = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", f"{years}y")
+            if yahoo_rows and len(yahoo_rows) >= min_bars:
+                return yahoo_rows
+        except Exception as exc:
+            print(f"[WARN] 港股日K Yahoo 兜底失败({code}): {str(exc)[:100]}")
+    if not rows:
+        print(f"[WARN] 港股K线腾讯源无数据({code} {period})，返回空")
+    return rows
+
 
 async def cn_stock_kline_tencent_async(code: str, days: int = 120, period: str = "day") -> list[dict]:
     """A股K线（腾讯，前复权，不封IP）。period: day/week"""
@@ -1219,8 +1250,8 @@ async def hk_fundamentals_async(code: str) -> dict:
         if data and isinstance(data, list) and len(data) > 0:
             return {"secucode": secucode, "source": "eastmoney", "latest": data[0],
                     "history": data, "error": None}
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] 港股基本面 东财失败({secucode}): {str(e)[:100]}")
 
     # 2️⃣ 腾讯78字段（覆盖所有港股，含银行保险，有PE/ROE/毛利率/净利率/营收增速）
     try:
@@ -1238,8 +1269,8 @@ async def hk_fundamentals_async(code: str) -> dict:
                         "DIVIDEND_YIELD": q.get("dividend_yield"),
                         "MARKET_CAP": q.get("market_cap_100m"),
                     }, "error": None}
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] 港股基本面 腾讯78字段失败({secucode}): {str(e)[:100]}")
 
     # 3️⃣ Yahoo keyStatistics
     try:
@@ -1254,13 +1285,14 @@ async def hk_fundamentals_async(code: str) -> dict:
                                "earnings_growth": ydata.get("earnings_growth"),
                                "total_revenue": ydata.get("total_revenue")},
                     "error": None}
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] 港股基本面 Yahoo keyStatistics失败({secucode}): {str(e)[:100]}")
 
     # 4️⃣ Yahoo 三表计算
     try:
         fdata = await financial_statements_yahoo_async(secucode)
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] 港股基本面 Yahoo三表失败({secucode}): {str(e)[:100]}")
         fdata = {}
     if fdata and fdata.get("income"):
         inc = fdata["income"][0] if fdata["income"] else {}
@@ -1596,8 +1628,8 @@ async def cn_key_indicators_async(code:str, page_size:int=4) -> list[dict]:
                              ("PARENTNETPROFITTZ", "HOLDER_PROFIT_YOY")):
                 if m.get(src) is not None:
                     latest[dst] = round(float(m[src]), 2)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] A股基本面 F10主要指标补充失败({secucode}): {str(e)[:100]}")
     return result
 
 

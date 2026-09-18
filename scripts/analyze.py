@@ -10,6 +10,34 @@ from typing import Any, Dict, List, Tuple, Optional
 from scripts.quantrisk.report import StockAnalyzer
 from scripts.quantrisk.data import close_async_session, close_tickflow
 
+
+def _json_safe(obj: Any, _stack: Optional[set] = None) -> Any:
+    """JSON 安全转换：剪断循环引用（缠论对象图 KLine._elements 自引环），
+    任意对象转 {非私有属性} 摘要，保底 str()。"""
+    if _stack is None:
+        _stack = set()
+    oid = id(obj)
+    if oid in _stack:
+        return "<circular>"
+    if isinstance(obj, dict):
+        _stack.add(oid)
+        out = {k: _json_safe(v, _stack) for k, v in obj.items()}
+        _stack.remove(oid)
+        return out
+    if isinstance(obj, (list, tuple)):
+        _stack.add(oid)
+        out = [_json_safe(v, _stack) for v in obj]
+        _stack.remove(oid)
+        return out
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if hasattr(obj, "__dict__"):
+        _stack.add(oid)
+        out = {k: _json_safe(v, _stack) for k, v in vars(obj).items() if not k.startswith("_")}
+        _stack.remove(oid)
+        return out
+    return str(obj)
+
 # ── 用于 fetch 资金流向（在 main 中按需 import） ──
 
 # ═══════════════════════════════════════════════════════════════
@@ -605,7 +633,15 @@ async def _fetch_hot_sectors() -> Dict[str, List[Dict[str, Any]]]:
 # ═══════════════════════════════════════════════════════════════
 
 async def main():
+    import json
+    import os
+    import subprocess
+
     args = sys.argv[1:]
+    unknown = [a for a in args if a.startswith("--") and a != "--json"]
+    if unknown:
+        print(f"错误: 未知参数 {', '.join(unknown)}（仅支持 --json）")
+        sys.exit(1)
     codes = [a for a in args if not a.startswith("--")]
     json_mode = "--json" in args
 
@@ -624,10 +660,6 @@ async def main():
     # ── 非 JSON 模式：委托给 portfolio_report 统一渲染 ──
     # 所有分析（单只/批量）复用同一套模板（六维评分+产业链+漏斗+镜子测试+技术面）
     if not json_mode:
-        import subprocess
-        import json
-        import os
-
         # 先用 StockAnalyzer 获取真实名称（避免报告里出现 "00268" 而不是 "金蝶国际"）
         analyzer = StockAnalyzer()
         name_map = {}
@@ -748,7 +780,7 @@ async def main():
         output = {}
         for code, (r, market, _, _, _) in results.items():
             output[code] = format_json_result(code, r, market)
-        print(json.dumps(output, ensure_ascii=False, default=str, indent=2))
+        print(json.dumps(_json_safe(output), ensure_ascii=False, default=str, indent=2))
     else:
         for code, (r, market, cf, hs, derived) in results.items():
             if not r:

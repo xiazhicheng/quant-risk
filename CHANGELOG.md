@@ -1,5 +1,114 @@
 # Changelog
 
+## V1.9.0 (2026-09-18) — 数据可靠性加固 + CLI 硬化 + 文档一致性
+
+### 数据可靠性加固（切片1）
+
+- 新增港股日K统一入口 `hk_kline_async`（data.py）：腾讯 → Yahoo 两级兜底，fail-closed（两源全挂显式报错，绝不静默伪造）；收敛 5 处手写重复兜底（analyze_swing / backtest_swing / recommend_hk / portfolio）
+- 静默异常日志化：`hk_fundamentals_async` 3 处 + `cn_key_indicators_async` F10 段 `except: pass` 全部加 WARN 日志
+- `_get`/`_get_json` 检查 HTTP 状态码（≥400 返回空）+ JSON 解析失败不抛异常——上游限流页/HTML 不再炸调用方
+- 实测记录：Yahoo chart API 对本机出口 IP 429 限流（含 crumb 流程），Yahoo 兜底为"保险"性质，网络恢复即自动生效
+- 修复 `mcp_server.py` 模块级 `builtins.print` 劫持全局副作用（改为仅 stdio 运行时生效）
+
+### CLI 硬化（切片3）
+
+- **`analyze.py --json` 首次可用**：修复两个历史 bug——① `import json` 在 `if not json_mode` 分支内导致 UnboundLocalError；② 缠论对象图循环引用（`KLine._elements`）无法 json.dumps，新增 `_json_safe()` 通用剪环
+- 未知 `--` 参数从静默忽略改为报错退出（analyze_swing.py / analyze.py）
+
+### 文档一致性（A 层）
+
+- SKILL.md：美股 5 处章节（行情/K线/期权/SEC）+ 缠论层标 `⚠️ DEPRECATED`；take_profit 与移动止盈决策冲突标注；腾讯 URL 501 事故域名 http→https；frontmatter 版本统一 V1.9.0
+- AGENTS.md 架构速览版本号同步 V1.9.0
+- CHANGELOG 补记 V1.3~V2.0 六版欠账（git 历史归档）
+- 新增测试：test_hk_kline（8）/ test_fundamentals（3）/ test_cli_args（4），全量 123 用例通过
+
+---
+
+## V2.0.0 (2026-09-08) — 道氏波段体系
+
+> 补记（2026-09-18 从 git 历史归档 V1.3~V2.0 欠账记录，此前 CHANGELOG 仅到 V1.2.0）
+
+### 波段方向判定引擎换代（道氏替代缠论）
+
+- 缠论（笔/线段/中枢/背驰）→ **道氏理论**：摆动点检测（`_find_pivots`）+ 道氏三句话（`_dow_trend`）+ 明确边界结论（跌破前低转空/突破前高延续）
+- 评分框架（30/25/20/25）、三档状态、ATR 止损、三tab 简介全部不变
+- 旧函数名 `daily_stroke_score`/`intraday_segment_score` 保留兼容别名
+- `chan.py` 保留供 value/portfolio 模式使用
+
+### 数据链路修复
+
+- **30m K线源链化根治**：Yahoo/东财限流时 A股自动兜底 新浪/腾讯mkline/mootdx（5 源链），港股 Yahoo→东财
+- **东财 fflow 限流根治**：信号量并发 + 指数退避，静默空数组不再吞
+- 修复 30 分钟线段方向误判（strokes→segments 语义）
+
+### 风控与输出
+
+- ATR14 动态止损替代固定 -8%/+10%；**移动止盈替代预测目标**（跌破道氏前低或自高点回撤 2×ATR 离场），不再输出 take_profit/target_pct
+- 新增单股波段分析脚本 `analyze_swing.py`（A股/港股，复用 swing 评分核心）
+
+---
+
+## V1.7.0 (2026-09-18) — Skill 分发重构 + MCP + 混合规则架构
+
+> 注：本 tag 晚于 V2.0 补打（2026-09-18），含 09-08 之后至 09-18 的全部变更。
+
+### 分发形态
+
+- **Skill 分发重构**：`install_skill.sh`/`install_skill.ps1` 一键装为 AI Skill（下载即用），Docker 镜像（GHCR 多架构 amd64+arm64 CI）+ 本地一键安装为备选
+- 仓库清理：不携带用户本地数据（`data/`/`report/`/`ve.pptx` 全部 gitignore/出库）
+- README 重写为零成本 A股+港股 Skill 定位
+
+### 架构
+
+- **V2.1 混合规则架构**：单策略 `swing_band`（高抛低吸、持有时间由道氏+移动止盈自然决定）+ Semantica 影子裁决/决策溯源（Python 主裁决）+ 资金 MISSING fail-closed + 持有天数分布回测（`backtest_engine.py`）
+- **MCP server**（`mcp_server.py`）：5 工具（analyze_stock/run_daily/run_recommend/backtest_stats/get_daily_report），双 transport（stdio + Streamable HTTP），ZCode/Claude Code 适配
+- **每日收盘工作流** `daily_run.py`（无 LLM 依赖）：扫池→裁决→outbox 落库→冻结快照→报告→回测记录
+- 候选池改进：A股成交额降序取 300 + 热门板块池补充（`fetch_hot_boards` + board_hot 标记）
+
+### 修复与硬化
+
+- **港股 f[74] 负债率误映射修复**：实为杠杆率（映美 5965%/腾讯 -28.41/东亚 51.52 均失真）→ 移除映射 + fail-closed 标「数据缺失」+ 渲染 0-100% 护栏
+- 上车/离场条件固化：状态必须带触发价，禁止只输出"谨慎布局/观望"
+- 新增快照回测 `backtest_snapshot.py`（全量 80 只/天，无幸存者偏差）
+- 腾讯 78 字段负债率移除（f[74] 映射删除）
+
+---
+
+## V1.6.0 (2026-08-28) — 波段推荐 + 缠论评分体系
+
+- A股+港股**纯技术波段推荐模式**（`--mode swing`）首版
+- **腾讯 K 线域名 501 修复**：`web.ifzq.gtimg.cn` 失效 → `ifzq.gtimg.cn` 多域名降级（HTTPS 硬要求）
+- 三维评分 5:3:2 + 缠论周线定势日线定点
+- A股数据链路修复 + 近5日资金流热点评分
+- 结论先行输出模板（规则八）
+- 六维评分 Mermaid 图 + 产业链 YAML → `chain_renderer.py` 纯渲染
+- `analyze.py` 复用 `portfolio_report.py` 统一模板（六维+产业链+漏斗+镜子测试）
+
+---
+
+## V1.5.0 (2026-07-17)
+
+- 跨市场推荐引擎（A股+港股+美股统一架构）
+- TickFlow 初始化 banner 抑制
+- 表格数据来源标注 + LLM 补充分析来源标注铁律（规则四）
+
+---
+
+## V1.4.0 (2026-07-16)
+
+- 代码迁移至 `scripts/` 统一目录（analyze.py 等）
+- 输出格式铁律强化：脚本原样展示、禁止追加手写内容（规则一）
+
+---
+
+## V1.3.0 (2026-07-16)
+
+- 港股推荐候选池 114 → 300+ 动态扩充（`fetch_dynamic_pool`）
+- 港股资金流 API 限流修复 + 基本面评分逻辑
+- 资金流热点评分 + 港股 K 线优先级调整 + Layer 7 公告层
+
+---
+
 ## V1.2.0 (2026-07-08)
 
 ### 缠论层 (Chan Theory) — 新增 （V1.2.0-1）

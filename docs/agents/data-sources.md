@@ -10,7 +10,11 @@
 | A股行情 | 腾讯(不封IP) | 东财 push2 | — |
 | A股日K | 腾讯(前复权) | 新浪(免鉴权) / 百度(带MA) / TickFlow(兜底) | 2026-08-31 新浪日K上线，TickFlow 降级为最终兜底 |
 | 港股行情 | 腾讯(78字段) | 新浪(25字段) | — |
-| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 2026-08-12 修复：原 web.ifzq.gtimg.cn 已501，改用 ifzq.gtimg.cn；新浪港股日K接口已失效不可用 |
+| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 2026-09-18 收敛为统一入口 `hk_kline_async`（腾讯→Yahoo 两级，fail-closed）；原 web.ifzq.gtimg.cn 已501（2026-08-12 修复）；新浪港股日K接口已失效不可用 |
+
+**港股日K统一入口（2026-09-18 新增）**：`data.hk_kline_async(code, period="day", count)`——腾讯 ≥20 根即停；不足则 Yahoo（`stock_kline_yahoo_async`）兜底；两源全挂返回 `[]` 并打 WARN，绝不静默伪造。周K保持腾讯单点（Yahoo 兜底仅对日K开放）。原散落在 analyze_swing / backtest_swing / recommend_hk / portfolio 的手写"腾讯→Yahoo"兜底已全部收敛到该入口；report.py / portfolio_report.py（Yahoo 优先链）与 chan_mtf / tech_chan（缠论 Yahoo 优先）保持原样。
+**实测记录（2026-09-18）**：Yahoo chart API（query2.finance.yahoo.com）对本机出口 IP 返回 429，`fc.yahoo.com` crumb 初始化同样被限——当前网络下 Yahoo 兜底不会生效（fail-closed 空返回），属"保险"性质，网络恢复即自动生效。30m 链的 Yahoo 源同样受影响（由东财兜住）。
+**HTTP 状态码（2026-09-18）**：`_get`/`_get_json` 现在检查非 2xx 状态码（≥400 返回空）并捕获 JSON 解析失败——上游返回 HTML/限流页不再抛 JSONDecodeError 炸调用方。
 | 美股行情 | 腾讯(71字段) | 新浪(36字段) | — |
 | 美股日K | 新浪 / Yahoo | TickFlow(兜底) | — |
 | 基本面(港股A股) | 东财 datacenter | Yahoo(key stats) | — |

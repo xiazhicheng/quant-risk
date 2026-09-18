@@ -39,8 +39,6 @@ def _print_to_stderr(*args: Any, **kwargs: Any) -> None:
     _builtin_print(*args, **kwargs)
 
 
-builtins.print = _print_to_stderr
-
 mcp = MCPServer(
     "quant-risk",
     instructions=(
@@ -210,6 +208,9 @@ def main() -> None:
     if args.transport == "http":
         mcp.run(transport="streamable-http", host=args.host, port=args.port)
     else:
+        # stdio 模式下 stdout 只能承载 JSON-RPC 帧；data.py 的 [WARN] print 会污染
+        # 协议导致客户端解析失败/断连，故仅在此刻把进程内 print 定向 stderr。
+        builtins.print = _print_to_stderr
         mcp.run()
 
 

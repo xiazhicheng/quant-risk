@@ -51,11 +51,11 @@ def _record_from_report(path: str) -> list[dict]:
 
 async def _fetch_close(code: str, market: str) -> list[float]:
     """拉取日K收盘价序列（复用数据层源链）。"""
-    from scripts.quantrisk.data import cn_stock_kline_tencent_async, hk_kline_tencent_async, close_async_session
+    from scripts.quantrisk.data import cn_stock_kline_tencent_async, hk_kline_async, close_async_session
     if market == "cn":
         rows = await cn_stock_kline_tencent_async(code, days=300, period="day")
     else:
-        rows = await hk_kline_tencent_async(code, period="day", count=300)
+        rows = await hk_kline_async(code, period="day", count=300)
     pairs = []
     for r in rows:
         try:

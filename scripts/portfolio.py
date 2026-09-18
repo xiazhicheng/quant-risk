@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tencent_async,
-                                     stock_kline_yahoo_async, kline_tickflow_async,
+from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_async,
+                                     kline_tickflow_async,
                                      parallel_map, key_indicators_eastmoney_async,
                                      close_async_session, close_tickflow)
 from scripts.quantrisk.indicators import calc_ma, calc_macd, chan_risk_assessment, calc_stop_loss_take_profit
@@ -412,10 +412,7 @@ async def cmd_diagnose():
 
 async def _fetch_kline(code: str):
     try:
-        kl = await hk_kline_tencent_async(code, "day", 365)
-        if kl and len(kl) >= 20:
-            return kl
-        kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", "1y")
+        kl = await hk_kline_async(code, "day", 365)
         if kl and len(kl) >= 20:
             return kl
         kl = await kline_tickflow_async(f"{code}.HK", "1d", 365)

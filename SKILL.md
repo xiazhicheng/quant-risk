@@ -1,11 +1,22 @@
 ---
 name: quant-risk
-description: 【全生命周期风控+标的池筛选】美股+港股+A股数据+风控分析 — 三层标的池筛选（宏观全市场扫描→中观硬约束过滤→微观三维评分），覆盖投前审查/持仓监控/预警/处置四阶段。集成缠论（Chan Theory）分型/笔/线段/中枢/背驰/买卖点。基于行情、K线、基本面、资金面、期权、SEC等数据源，输出风险等级、风控结论、建议仓位上限、预警阈值、止损止盈条件。
+description: 【A股+港股波段风控】纯技术波段选股（swing_band：道氏理论四维评分100分制）+ 每日收盘工作流（扫池→规则裁决→快照→报告）+ 单股波段分析 + MCP 工具接入。A股/港股日K、30m、资金流、三tab基本面简介（东财/腾讯免费源）。基于行情/成交量/资金/道氏摆动点输出：可布局/谨慎布局/观望三档状态 + 触发价/止损/移动止盈，不预测目标价。覆盖投前审查/持仓监控/预警触发/处置决策四阶段。
 origin: custom
-version: 1.2.0
+version: 2.0.0
 ---
 > 📦 https://github.com/xiazhicheng/quant-risk — Star ⭐ 是最好的支持
-# 美股+A股+港股全栈数据工具包 V1.2.0（全异步）
+# A股+港股波段风控 Skill V2.0.0（swing_band 纯技术波段）
+
+**定位**：AI 选股/风控 Skill（Claude Code / Codex / ZCode 通用）。下载后放入 AI 客户端 skills 目录即可对话使用；脚本依赖由 AI 首次运行时自动安装（轻量，几十 MB）。
+
+**当前主流程（2026-09-01 起）**：A股+港股**纯技术波段筛选**（道氏理论，替代旧缠论/价值评分）——
+- 四维评分（100分）：日线趋势30 + 日线量价资金25 + 日线道氏20 + 30分钟道氏25
+- 三档状态：🟢可布局 / 🟡谨慎布局 / 🟡观望，每只带触发价/止损/移动止盈（不预测目标）
+- 每日工作流：`uv run scripts/daily_run.py`（A股+港股一条命令，无 LLM 依赖）
+- 单股分析：`uv run scripts/analyze_swing.py <code>`
+- MCP 工具：`scripts/mcp_server.py`（5 个确定性工具供 AI 客户端调用）
+
+> 美股已移出维护范围（2026-08-31）；旧价值评分/缠论为 legacy 兼容路径（`--mode value`），见文末标注。
 
 十一层数据架构，全部异步并行获取，零鉴权。
 
@@ -52,21 +63,31 @@ SEC Filing层：EDGAR submissions + XBRL（仅美股）
 
 ## When to Activate
 
+- 用户要**推荐 A股/港股股票**（波段选股、今日可布局标的）
+- 用户要**每日信号**（`daily_run.py`：扫池→裁决→快照→报告）
+- 用户要**单股波段分析**（`analyze_swing.py`：四维评分/三档状态/止损/移动止盈/三tab）
 - 用户要**全生命周期风控**（投前/持仓/预警/处置）
-- 用户要**投前审查**（能不能买/仓位上限/止损止盈预设）
-- 用户要**持仓监控**（当前盈亏/风险变化/是否需调仓）
-- 用户要**预警触发**（价格接近止损/业绩暴雷/基本面恶化）
-- 用户要**处置建议**（清仓/减仓/持有/加仓）
-- 用户要查**美股/港股/A股**行情/财报/指标/资金流/龙虎榜/北向/公告/调研
-- 关键词：全生命周期风控、投前、持仓、预警、处置、风控审查、风险等级、仓位上限、买入、持有、观望、回避、止损、止盈、PE、PB、ROE、美股、港股、**A股**、**沪深**、**上证**、**深证**、**创业板**、**科创板**、**北交所**、**打板**、**涨停**、**龙虎榜**、**北向资金**、**融资融券**、**大宗交易**、财报、技术分析、**缠论**、**分型**、**笔**、**线段**、**中枢**、**背驰**、**一买**、**二买**、**三买**、**一卖**、**二卖**、**三卖**、**顶分型**、**底分型**、**选股**、**推荐**、**标的**、**标的池**、**筛选**、**三维评分**、**宏观筛选**、**中观过滤**
+- 用户要查**A股/港股**行情/K线/资金流/公告/财务/板块
+- 关键词：波段、道氏、可布局、谨慎布局、观望、止损、移动止盈、选股、推荐、标的池、每日信号、**A股**、**沪深**、**上证**、**深证**、**创业板**、**科创板**、**港股**、**恒指**、量比、主力资金、日线趋势、30分钟、三tab、F10、公告、板块热点
 
 ---
 
-## ⚠️ 推荐股票强制执行规则（禁止跳过）
+## ⚠️ 推荐股票主流程（swing_band 波段，当前默认）
 
-用户要求**推荐股票**时，必须按以下三层流程完整执行，**不得跳过任何一步，不得仅从单一板块挑选**。
+**用户要求推荐 A股/港股股票时，一律走波段流程**（旧三层价值流程见下方 legacy 标注，仅 `--mode value` 兼容）：
 
-### 第 1 步 — 跨板块全市场扫描
+1. 批量：`uv run scripts/daily_run.py --markets cn,hk`（A股+港股，串行，单市场失败不中断）
+2. 单股：`uv run scripts/analyze_swing.py <代码>`（A股6位/港股5位）
+3. 输出：推荐结论表（四维分数+总分+三档状态+评分要点）+ 逐只信号（现价/上车条件/离场条件/三tab简介/道氏三步）+ 波段纪律
+4. LLM 解读层：结论先行、每条标注数据来源、`---` 分隔线后补充说明；强制 `/last30days` 舆情交叉验证（与主力5日资金/量比同向才介入）
+
+---
+
+## ⚠️ legacy 价值模式流程（禁止用于默认推荐，仅供 `--mode value` 兼容）
+
+以下 V1 时代的三层价值流程（8板块扫描→中观过滤→三维评分 5:3:2）已**不再是默认推荐逻辑**（2026-08-05 起波段体系替代）。保留仅供旧报告复现。
+
+### 第 1 步 — 跨板块全市场扫描（legacy）
 
 必须扫描以下 **全量 8 个板块**，一个不能少：
 
@@ -167,29 +188,53 @@ except FormatValidationError as e:
 
 ## Prerequisites
 
+- Python 3.12+（可由 uv 托管，无需系统 Python）
+- 依赖通过 `uv` 管理（首次自动安装，轻量约几十 MB；完整 Semantica 影子裁决约 2.5GB 为可选）
+
 ```bash
-pip install aiohttp
-# A 股数据（可选，仅在需要 A 股 K 线/财务快照时安装）
-pip install mootdx
+# 首次使用：AI 客户端（Claude Code/Codex/ZCode）会自动执行；手动安装：
+uv sync                          # 轻量依赖（默认）
+# uv sync --extra semantica     # 可选：完整 RETE 影子裁决（约 2.5GB）
 ```
 
-| 依赖 | 版本要求 | 用途 |
-|------|---------|------|
-| aiohttp | any | 所有 HTTP API 直连（全异步）|
-| mootdx | >=0.10 | A 股多周期 K 线 + 财务快照（可选）|
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| aiohttp | 3.14 | 全部 HTTP API 直连（全异步）|
+| pandas / pydantic | ≥3 / ≥2.13 | 数据处理 / 格式化器校验 |
+| mootdx | ≥0.11 | A 股多周期 K 线（备选源）|
+| semantica（可选） | 0.6.8 | RETE 影子裁决；缺失自动降级纯 Python |
 
 ## Install / Update
 
-一键安装或更新本 skill：
+**方式一：一键安装为 AI Skill（推荐，下载即用）**
 
 ```bash
-curl -o ~/.claude/skills/quant-risk/SKILL.md \
-  https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/SKILL.md
-# 同步代码模块（scripts/ 目录包含所有脚本 + Python 模块）
+# macOS / Linux
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/scripts/install_skill.sh)"
+# 默认装到 ~/.claude/skills/quant-risk；可用 --dest 指定（Codex: ~/.codex/skills/quant-risk，ZCode: ~/.agents/skills/quant-risk）
+# Windows PowerShell
+irm https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/scripts/install_skill.ps1 | iex
+```
+
+装完后重启 AI 客户端，对话中直接说「帮我分析 600388」「推荐今日 A股+港股」即可。
+
+**方式二：手动同步（已有 git）**
+
+```bash
 git clone https://github.com/xiazhicheng/quant-risk.git /tmp/_qr && \
 mkdir -p ~/.claude/skills/quant-risk && \
-cp -r /tmp/_qr/scripts ~/.claude/skills/quant-risk/scripts && \
+cp -r /tmp/_qr/SKILL.md /tmp/_qr/scripts ~/.claude/skills/quant-risk/ && \
 rm -rf /tmp/_qr
+```
+
+**方式三：Docker（零环境要求，脚本直跑）**
+
+```bash
+docker pull ghcr.io/xiazhicheng/quant-risk:latest
+docker run --rm -v $(pwd)/report:/app/report quant-risk daily --markets cn,hk
+```
+
+首次对话触发脚本执行时，AI 会自动 `uv sync` 安装依赖（几十 MB，约 1-3 分钟），之后即用。
 ```
 
 ## 核心原则

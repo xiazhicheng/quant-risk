@@ -23,3 +23,10 @@ portfolio.json
 
 # 分析报告输出（自动生成，含实时数据）
 report/
+
+# AgentMemory 本地记忆库（用户隐私数据，禁止入库）
+data/
+
+# 无关文件
+ve.pptx
+*.pptx

@@ -1,6 +1,15 @@
 # Quant-Risk
 
-全生命周期量化风控工具 — **投前审查 / 持仓监控 / 预警触发 / 处置决策** 四阶段全覆盖。
+**AI 选股/风控 Skill（Claude Code · Codex · ZCode 通用）— A股+港股波段推荐与全生命周期风控。**
+
+> 🎯 **下载即用**：一行命令安装为 AI Skill，放进 skills 目录重启即可对话使用（依赖由 AI 首次运行时自动安装，几十 MB）：
+>
+> ```bash
+> bash -c "$(curl -fsSL https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/scripts/install_skill.sh)"
+> # Windows: irm https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/scripts/install_skill.ps1 | iex
+> ```
+>
+> 装完后对 AI 说「推荐今日 A股+港股」或「帮我分析 600388」即可。脚本亦可直接命令行运行（见[快速开始](#快速开始)）。
 
 > 🎯 **核心卖点一：结合持仓给调仓建议**
 > 
@@ -19,6 +28,8 @@
 > **V2.0（2026-09-08）**：主看 **A 股 + 港股**（美股已移出维护）。默认**纯技术波段推荐**——方向引擎从缠论整体替换为**道氏理论**（收盘价摆动点 + 高点/低点序列判趋势），四维评分（日线趋势30 + 日线量价资金25 + 日线道氏20 + 30分钟道氏25 = 100），并落地**道氏三步操作框架**（①定方向=收盘价摆动点只做多；②验健康=涨放量/回调缩量+上证深证创业板同步；③找信号=收盘价未跌破前低则趋势延续）与**三阶段定位**（吸筹/公众参与/派发，缩量新高降级）；**卖出用移动止盈替代预测目标**（跌破前低或自高回撤 2ATR 离场）；每只标的附**同花顺式三tab简介**（📋简况 / 📊财务 / 🎯看点 / 📌近期动态，港股行业/板块/公告免费源已接入）。旧六维评分+缠论 5:3:2 保留在 `--mode value` legacy 路径。
 
 ## 投资理念
+
+> ⚠️ 以下为 **V1 价值评分体系（legacy）** 理念，保留仅供旧报告复现（`--mode value`）；**当前默认波段体系见上文 V2.0 段**（道氏四维评分 + 三档状态 + 移动止盈，纯技术筛选，不参与基本面评分）。
 
 > **六维评分(基本面,50分) + 缠论(技术面,30分) + 热点(情绪面,20分) = 100分（5:3:2）**
 >
@@ -49,7 +60,22 @@
 
 ## 快速开始
 
-**方式一：Docker 一键运行（推荐，零环境要求）**
+**方式一：安装为 AI Skill（推荐，下载即用）**
+
+```bash
+# macOS / Linux：一键安装到 ~/.claude/skills/quant-risk
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/scripts/install_skill.sh)"
+# Windows
+irm https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/scripts/install_skill.ps1 | iex
+# 其他客户端：install_skill.sh --dest ~/.codex/skills/quant-risk（Codex）
+#                      --dest ~/.agents/skills/quant-risk（ZCode）
+```
+
+装完后**重启 AI 客户端**，对话中直接说「推荐今日 A股+港股」或「帮我分析 600388」。首次执行时 AI 会自动 `uv sync` 安装依赖（几十 MB，约 1-3 分钟）。
+
+> 手动同步亦可：`git clone https://github.com/xiazhicheng/quant-risk.git && cp -r SKILL.md scripts ~/.claude/skills/quant-risk/`
+
+**方式二：Docker 一键运行（零环境要求，脚本直跑）**
 
 ```bash
 docker pull ghcr.io/xiazhicheng/quant-risk:latest
@@ -59,7 +85,7 @@ docker run --rm -v $(pwd)/report:/app/report quant-risk analyze 600388          
 
 > 镜像内置 Python 3.12 + uv + 全部依赖（含 Semantica），数据源为免费公开接口无需任何 Key。`report/` 挂载到宿主机即可持久化报告/回测记录/决策凭证。
 
-**方式二：本机一键安装（macOS / Linux / Windows）**
+**方式三：本机直接运行 CLI（macOS / Linux / Windows）**
 
 ```bash
 git clone https://github.com/xiazhicheng/quant-risk.git
@@ -69,28 +95,34 @@ bash install.sh                      # macOS/Linux：自动装 uv + Python 3.12 
 uv run scripts/analyze.py 03690 00268       # 分析美团+金蝶
 ```
 
-**方式三：手动安装（已有 uv）**
+**方式四：手动安装（已有 uv）**
 
 ```bash
-uv sync                                         # 安装全部依赖（含 Semantica）
+uv sync                                         # 安装轻量依赖（默认）
 uv run scripts/analyze.py 03690 00268       # 分析美团+金蝶
 ```
 
-> 💡 **依赖说明**：`uv sync` 安装**全部依赖**（行情/K线/评分/回测/规则引擎，含 Semantica 官方包及其 AI 推理库，首次下载约 **2.5GB**，请耐心等待）。Semantica 是**必须依赖**（Python 主裁决 + Semantica 影子对比 + 审计溯源）；万一缺失系统自动降级为纯 Python 参考引擎（容错，不影响功能）。无需任何 API Key。要求 Python 3.12+（安装脚本自动托管）。
+> 💡 **依赖说明**：默认 `uv sync` 安装**轻量依赖**（行情/K线/评分/回测/规则引擎，首次约几十 MB），无需任何 API Key，要求 Python 3.12+（安装脚本自动托管）。**Semantica（可选）**：需要完整影子裁决（Python 主裁决 + Semantica 影子对比 + 审计溯源）时执行 `uv sync --extra semantica`（官方全量包含 torch 等 AI 推理库，约 2.5GB）；未安装时系统自动降级为纯 Python 参考引擎（容错，功能完整）。
 
-或者作为 Claude Code Skill 使用：
+## ❓ 常见问题（FAQ）
 
-```bash
-mkdir -p ~/.claude/skills/quant-risk/scripts
-curl -o ~/.claude/skills/quant-risk/SKILL.md \
-  https://raw.githubusercontent.com/xiazhicheng/quant-risk/main/SKILL.md
-# 同步代码模块
-git clone https://github.com/xiazhicheng/quant-risk.git /tmp/_qr && \
-cp -r /tmp/_qr/scripts ~/.claude/skills/quant-risk/scripts && \
-rm -rf /tmp/_qr
-```
+**Q1：安装后跑 daily_run 全是 BLOCK / 数据缺失，是不是装坏了？**
+不是。报告出现 `BLOCK：关键数据缺失/数据质量=MISSING` 是**免费数据源限流**（东财资金流/港股 30m 等公开接口高频即限流）时的 fail-closed 正常行为，系统宁可拒绝也不给假信号。稍后重跑、或分市场跑（`--markets cn` / `--markets hk`）即可恢复。
 
-启动 Claude Code，说一句「帮我分析美团股票」，自动激活。
+**Q2：为什么默认不装 Semantica？**
+Semantica 官方全量包含 torch/faiss 等约 2.5GB AI 推理库，而本项目只用它的纯标准库 RETE。默认轻量安装（几十 MB）足够跑通全部功能（Python 主裁决 + 自动降级）；需要完整影子比对时 `uv sync --extra semantica`。
+
+**Q3：首次运行很慢 / 卡住？**
+首轮要拉全市场候选池（A股约 300 只 × 日K/30m/资金流），A股+港股串行约 1-5 分钟属正常；期间某数据源限流会有 WARN 日志，不影响其余标的。
+
+**Q4：Windows 兼容性？**
+`install.ps1` 自动装 uv + Python 3.12 + 依赖。数据层均为 HTTP 免费接口，无平台特定依赖。
+
+**Q5：如何卸载？**
+删除仓库目录即可（`rm -rf quant-risk`）；依赖装在项目内 `.venv/`，不污染系统。安装脚本创建的 uv 如需移除：`rm -rf ~/.local/bin/uv ~/.local/share/uv`。
+
+**Q6：数据从哪来？要注册/付费吗？**
+全部来自腾讯/东财/新浪/Yahoo 等免费公开接口，零注册、零 API Key。免费源高频访问有限流，属正常现象。
 
 ## MCP 接入（AI 工具调用，2026-09-09 新增）
 

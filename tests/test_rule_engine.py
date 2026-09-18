@@ -1,3 +1,5 @@
+import importlib.util
+
 from scripts.quantrisk.rule_engine import (
     PythonReferenceRuleEngine,
     SemanticaReteRuleEngine,
@@ -77,6 +79,8 @@ def test_semantica_rete_matches_reference():
         assert semantica.evaluate(case).verdict == reference.evaluate(case).verdict
 
 
+@pytest.mark.skipif(importlib.util.find_spec("semantica") is None,
+                    reason="Semantica 未安装（可选依赖），影子比对降级为纯 Python，降级路径见 test_shadow_degrades_without_semantica")
 def test_shadow_reference_remains_authoritative():
     result = ShadowRuleEngine().evaluate(features(index_sync=False))
     assert result.verdict == Verdict.WATCH

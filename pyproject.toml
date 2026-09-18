@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "A股+港股全生命周期量化风控：波段推荐/单股分析/每日收盘工作流/回测"
 readme = "README.md"
 requires-python = ">=3.12"
-# Semantica 为必须依赖（2026-09-09 用户确认，面向公开分发）：
-# 默认 uv sync 即装全量（含 torch/transformers/faiss 等 AI 推理库，首次约 2.5GB）。
-# 本项目实际只用到 semantica.reasoning 纯标准库 RETE，重型栈由官方包声明依赖带入。
+# Semantica 为可选依赖（2026-09-18 用户确认，面向「GitHub 下载即用」）：
+# 官方全量包含 torch/transformers/faiss 等 AI 推理库约 2.5GB，本项目实际只用
+# semantica.reasoning 纯标准库 RETE。默认 `uv sync` 不安装（轻量，几十 MB）；
+# 需要完整影子裁决时 `uv sync --extra semantica`。缺失时 rule_engine 自动降级
+# 纯 Python 参考引擎（容错，测试 test_shadow_degrades_without_semantica 覆盖）。
 dependencies = [
     "aiohttp==3.14.1",
     "mcp>=1.14",
@@ -17,9 +19,13 @@ dependencies = [
     "pyyaml>=6.0.3",
     "quantdash>=0.1.0",
     "requests>=2.34.2",
-    "semantica==0.6.8",
     "tickflow==0.1.24",
     "uvicorn>=0.52.4",
+]
+
+[project.optional-dependencies]
+semantica = [
+    "semantica==0.6.8",
 ]
 
 [dependency-groups]

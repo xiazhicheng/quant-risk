@@ -3276,9 +3276,13 @@ dependencies = [
     { name = "pyyaml" },
     { name = "quantdash" },
     { name = "requests" },
-    { name = "semantica" },
     { name = "tickflow" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+semantica = [
+    { name = "semantica" },
 ]
 
 [package.dev-dependencies]
@@ -3297,10 +3301,11 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "quantdash", specifier = ">=0.1.0" },
     { name = "requests", specifier = ">=2.34.2" },
-    { name = "semantica", specifier = "==0.6.8" },
+    { name = "semantica", marker = "extra == 'semantica'", specifier = "==0.6.8" },
     { name = "tickflow", specifier = "==0.1.24" },
     { name = "uvicorn", specifier = ">=0.52.4" },
 ]
+provides-extras = ["semantica"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]

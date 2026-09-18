@@ -18,7 +18,7 @@ Codex Skill，覆盖 **A 股 + 港股** 全生命周期风控：投前审查 →
   - `📊 财务`（报告期）：营收X亿（同比Y%）｜净利X亿（同比Y%）｜ROE｜毛利率｜净利率｜负债率——东财数据中台 `datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_FINANCE_MAINFINADATA`（免费，返回最新报告期 EPSJB/ROEJQ/XSMLL/XSJLL/ZCFZL/TOTALOPERATEREVE/TOTALOPERATEREVETZ/PARENTNETPROFIT/PARENTNETPROFITTZ）
   - `🎯 看点`：核心题材（东财 F10 CoreConception hxtc 题材要点）+ 所属板块（ssbk，**概念/题材类板块优先**——如华升股份显示"并购重组概念、算力概念"，与收购易信科技转型算力对应）
   - `📌 近期动态`：东财公告接口，重大事项（收购|重组|资产|中标|算力|增发|回购|股权|转让|停牌|合作|投资）优先，前2条
-  - **港股降级（2026-09-08 免费源升级，替代原"全缺失"）**：📋 简况=行业（东财 push2 `secid=116.XXXXX` f127）+ 腾讯财务字段，主营业务文字标注"数据缺失（港股F10无免费源，LLM联网补）"；🎯 看点=所属板块（腾讯自选股 `appstock/app/stockinfo/plate`，题材要点仍缺失 LLM 补）；📌 近期动态=腾讯公告（`appstock/news/noticeList/searchByType?symbol=hkXXXXX`，重大事项关键词优先，港交所披露易高频限流弃用）；📊 财务走腾讯78字段（PE(TTM)/ROE/股息率/负债率，负值标缺失）。实测弃用源：Yahoo quoteSummary（401+限流）、东财 datacenter 港股财务（报表不存在）、东财 emweb/f10 港股 F10（404/403 WAF）、同花顺/新浪/aastocks/investing（WAF 或数据贫乏）。
+  - **港股降级（2026-09-08 免费源升级，替代原"全缺失"）**：📋 简况=行业（东财 push2 `secid=116.XXXXX` f127）+ 腾讯财务字段，主营业务文字标注"数据缺失（港股F10无免费源，LLM联网补）"；🎯 看点=所属板块（腾讯自选股 `appstock/app/stockinfo/plate`，题材要点仍缺失 LLM 补）；📌 近期动态=腾讯公告（`appstock/news/noticeList/searchByType?symbol=hkXXXXX`，重大事项关键词优先，港交所披露易高频限流弃用）；📊 财务走腾讯78字段（PE(TTM)/ROE/股息率，负值标缺失；**负债率 2026-09-18 起标数据缺失**——腾讯 f[74] 实为"负债/净资产"类杠杆率非资产负债率：实测映美控股 5965.22%（净资产≈0 分母趋零爆炸，东财每股净资产 -0.086 为负）、腾讯 -28.41（净现金可为负）、东亚银行 51.52（银行真实负债率约90%），故移除 f[74]→debt_ratio 映射，渲染层加 0-100% 护栏兜底，测试 `test_tencent_hk_quote_debt_ratio_removed`/`test_render_profile_line_hk_debt_ratio_range_guard`）。实测弃用源：Yahoo quoteSummary（401+限流）、东财 datacenter 港股财务（报表不存在）、东财 emweb/f10 港股 F10（404/403 WAF）、同花顺/新浪/aastocks/investing（WAF 或数据贫乏）。
   - 实现：`data.py` `company_survey_async`/`business_mix_async`/`finance_brief_async`/`core_conception_async`/`recent_announcements_async`（失败返回空/error 不抛异常）、`swing.py` `attach_company_profiles`（TOP10 并发5限流，挂 profile/profile_extra/announcements）+ `_render_profile_line`（三tab渲染）、`analyze_swing.py` 单股接入。测试 `tests/test_company_profile.py`（F10/主营构成/财务指标/核心题材/三tab渲染/港股降级/异常安全等），33 测试全过。
 - **grill 审计整改（2026-09-08 用户确认 5 项）**：
   - **Q1 评分刻度修正**：`daily_trend_score` 原 30 分制实际满分 27（14均线多头+8四线之上+5MACD红），补「突破近60日新高 +3」凑满 30 分（同时是道氏突破确认信号）。测试 `test_trend_score_breakout_can_reach_30`。
@@ -522,7 +522,7 @@ scripts/
   - 核心数据流：`chan.py` → `chan_risk_assessment`（新增 fractals/strokes 字段）→ `recommender.py chan_score`（提取为 cd 字典）→ `recommend_hk.py build_selection_data`（填入 ch 字典）→ `formatter.py ChanDetail` 模型 → `_render_detail_block` / `_render_timing_block` 渲染
 	  - **关键文件变更**：`chan.py`(fractals/strokes输出) + `recommender.py`(chan_score提取深度数据) + `recommend_hk.py`(周线获取+数据传递) + `formatter.py`(ChanDetail扩展+渲染)
 	- **风控输出**: 每个阶段必须有明确结论 (买入/观望/拒绝 等)
-- **港股行情财务字段扩展**: `hk_stock_quote_tencent_async()` 从腾讯78字段中提取10个财务字段(PE_TTM/ROE/毛利率/净利率/营收增长率/负债率/股息率)，无需额外API调用
+- **港股行情财务字段扩展**: `hk_stock_quote_tencent_async()` 从腾讯78字段中提取财务字段(PE/PE_TTM/市值/股息率/ROE)——2026-07-22 移除误映射的 f[65]/f[71]/f[72]（非毛利率/营收增速/净利率）、2026-09-18 移除 f[74]（非资产负债率，实为负债/净资产杠杆率），港股负债率标数据缺失
 - **推荐股票强制规则**: SKILL.md 中定义的3步强制流程(跨板块全市场扫描8板块→中观硬约束过滤→微观三维评分TOP10)，含固定输出模板，禁止跳过任何一步或单板块推荐
 - **产业链分析 Mermaid 输出（2026-07-22 新增）**:
   - `portfolio_report.py` 和 `tech_chan.py` 支持输出 Mermaid 格式的产业链全景图

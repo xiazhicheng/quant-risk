@@ -249,8 +249,12 @@ async def hk_stock_quote_tencent_async(code: str) -> dict:
             # f[72]被标注为gross_margin但实际不是毛利率(华润0.419/金山0.130)
             # f[71]被标注为revenue_growth但实际不是营收增速
             # f[65]被标注为profit_margin但实际也不是净利率
+            # ⚠️ 2026-09-18 修复: 移除 f[74]→debt_ratio 映射——f[74] 实为"负债/净资产"类
+            #    杠杆率(净负债口径,可为负), 非资产负债率(负债/总资产, 恒正且≤100%)。
+            #    实测: 腾讯 -28.41(净现金)、映美控股 5965.22(净资产≈0分母趋零爆炸,
+            #    东财每股净资产 -0.086 为负)、东亚银行 51.52(银行真实负债率约90%)。
+            #    港股负债率无可靠免费源, 标缺失(fail-closed)。
             # 基本面数据请通过hk_fundamentals_async(东财→腾讯→Yahoo)获取
-            "debt_ratio":_sf(f[74]) if len(f)>74 else 0,
             "timestamp":f[30] if len(f)>30 else ""}
 
 async def us_stock_quote_tencent_async(ticker: str) -> dict:
@@ -610,7 +614,7 @@ async def stock_kline_30m_mootdx_async(code: str, market: str = "cn") -> list[di
 async def company_survey_async(code: str, market: str) -> dict:
     """公司资料（主营业务/行业/法人等），用于波段报告每只标的附基本面简介。
     A股：东财 F10 CompanySurveyAjax（行业+公司简介+法人+总经理+官网+注册资本）；
-    港股：腾讯78字段财务（PE/ROE/负债率/股息率/市值）——东财港股F10接口不可用，无主营业务文字。
+    港股：腾讯78字段财务（PE/ROE/股息率/市值）——东财港股F10接口不可用，无主营业务文字；负债率字段已移除（f[74] 为杠杆率非资产负债率，2026-09-18）。
     失败返回 {"error": ...}，不抛异常。"""
     market = market.lower()
     try:

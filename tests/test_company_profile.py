@@ -162,6 +162,56 @@ def test_render_profile_line_hk_missing_negatives():
     assert "数据缺失" in line
 
 
+def test_tencent_hk_quote_debt_ratio_removed(monkeypatch):
+    """2026-09-18 修复：f[74] 实为负债/净资产杠杆率（可为负、净资产≈0时爆炸），
+    非资产负债率，解析层必须移除 debt_ratio 映射（映美 f[74]=5965.22 不再上屏）。"""
+    fields = [""] * 78
+    fields[1] = "映美控股"
+    fields[3] = "4.185"
+    fields[4] = "4.045"
+    fields[5] = "4.095"
+    fields[6] = "4706000.0"
+    fields[30] = "2026/09/18 09:59:06"
+    fields[31] = "0.140"
+    fields[32] = "3.46"
+    fields[33] = "4.400"
+    fields[34] = "4.025"
+    fields[35] = "4.185"
+    fields[36] = "4706000.0"
+    fields[37] = "19817684.000"
+    fields[39] = "-65.40"
+    fields[43] = "9.27"
+    fields[44] = "35.9213"
+    fields[57] = "-72.50"
+    fields[60] = "2000"
+    fields[64] = "77.76"
+    fields[69] = "858334100.00"
+    fields[70] = "858334100.00"
+    fields[73] = "4.211"
+    fields[74] = "5965.22"
+    fields[75] = "HKD"
+    text = f'v_r_hk02028="{"~".join(fields)}";'
+
+    async def fake_get_gbk(url, **kw):
+        return text
+
+    monkeypatch.setattr(data, "_get_gbk", fake_get_gbk)
+    q = asyncio.run(data.hk_stock_quote_tencent_async("02028"))
+    assert q["name"] == "映美控股"
+    assert q["roe"] == 77.76          # ROE 字段保留（真实字段）
+    assert "debt_ratio" not in q      # f[74] 映射已移除，不再产生错误负债率
+
+
+def test_render_profile_line_hk_debt_ratio_range_guard():
+    """渲染层 0-100% 护栏：杠杆率（映美 5965/腾讯 -28）不上屏，量级内值保留。"""
+    r = {"profile": {"pe_ttm": 10.5, "roe": 10.3, "dividend_yield": 5.2, "debt_ratio": 5965.22}}
+    assert "负债率" not in swing._render_profile_line(r, "hk")
+    r2 = {"profile": {"pe_ttm": 10.5, "roe": 10.3, "dividend_yield": 5.2, "debt_ratio": -28.41}}
+    assert "负债率" not in swing._render_profile_line(r2, "hk")
+    r3 = {"profile": {"pe_ttm": 10.5, "roe": 10.3, "dividend_yield": 5.2, "debt_ratio": 45.0}}
+    assert "负债率 45.0%" in swing._render_profile_line(r3, "hk")
+
+
 def test_render_profile_line_error():
     r = {"profile": {"error": "F10资料为空"}}
     assert "数据缺失" in swing._render_profile_line(r, "cn")

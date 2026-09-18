@@ -628,7 +628,9 @@ def _render_profile_line(r: Dict[str, Any], market: str) -> str:
             fin.append(f"ROE {prof['roe']}%")
         if isinstance(prof.get("dividend_yield"), (int, float)) and prof.get("dividend_yield", 0) > 0:
             fin.append(f"股息率 {prof['dividend_yield']}%")
-        if isinstance(prof.get("debt_ratio"), (int, float)) and prof.get("debt_ratio", 0) > 0:
+        # 负债率护栏 0-100%：腾讯 f[74] 曾误映射为负债率（实为负债/净资产杠杆率，
+        # 映美 5965%/腾讯 -28 曾上屏，2026-09-18 源头已移除，此处兜底防其他路径）
+        if isinstance(prof.get("debt_ratio"), (int, float)) and 0 < prof.get("debt_ratio", 0) <= 100:
             fin.append(f"负债率 {prof['debt_ratio']}%")
         body = " | ".join(fin) if fin else "数据缺失"
         lines.append(f"- 📊 **财务**：{body}")

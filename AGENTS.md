@@ -8,76 +8,22 @@
 
 **分发形态（2026-09-18 用户确认）**：以 Skill 分发为第一顺位（`scripts/install_skill.sh`/`install_skill.ps1`，装到 `~/.claude/skills/quant-risk` 或 `--dest` 指定 Codex/ZCode 目录，AI 首次执行时自动 `uv sync`）；Docker 镜像（GHCR，`--extra semantica` 全量）+ 本地 CLI（`install.sh`/`install.ps1`）为备选。仓库不携带用户本地数据（`data/` 记忆库、`report/` 生成物、`ve.pptx` 均已 gitignore/出库）。
 
-## 核心约定
+## 核心约定（硬约束 + 指针）
 
-- **🧠 变更即同步铁律**：用户每次对输出格式、模板、评分体系、分析流程提出的更改，**必须立即同步到 AGENTS.md 中对应的模板/规则部分**，不得延后。这是防止反复犯同样错误的根本措施。
+- **🧠 变更即同步铁律**：用户每次对输出格式、模板、评分体系、分析流程提出的更改，**必须立即同步到 AGENTS.md 或对应 `docs/agents/` 主题文件**（swing-system / value-legacy / data-sources），不得延后。这是防止反复犯同样错误的根本措施。
 - **Python 包管理**: 用 `uv add` 不用 pip
 - **执行 Python**: 用 `uv run`
 - **记忆系统**: AgentMemory（行为记忆） + OpenKnowledge（文档知识）双轨制
-- **单股波段分析（2026-09-01 新增）**：`uv run scripts/analyze_swing.py 600388`（A股6位/港股5位，可批量）。与 `recommend.py --mode swing` 同源，复用 `swing.py` 评分核心 + `data.py` 数据层，仅把"全市场扫描"改为"指定个股"。输出：波段四维评分（日线趋势30+量价资金25+日线笔20+30分钟线段25）+ 日线/30m 道氏结论（规则八格式）+ 布局状态（可布局/谨慎/观望）+ 止损/目标 + 三刀筛辅助数据（量比/道氏双周期/板块）。数据获取：A股日K走腾讯→新浪→百度→TickFlow、30m 走 **Yahoo→东财→新浪→腾讯mkline→mootdx**（源链，2026-09-07 Yahoo/东财双限流后新增新浪/腾讯/mootdx 3 个 A股备用源）、资金流走东财分钟级；港股日K走腾讯→Yahoo、30m 走 **Yahoo→东财**（2026-09-07 排查确认腾讯无港股分钟接口、新浪港股K线接口已下线、Aastocks/同花顺/雪球均不可用——港股 30m 仅此两源，均为时间性限流，恢复后自动生效）、资金流走东财 secid_prefix=116。**美股不支持**（已移出维护）。
-- **主营业务/基本面简介（2026-09-08 新增，09-08 升级为同花顺三tab样式）**：波段推荐（`recommend.py --mode swing` TOP10）与单股分析（`analyze_swing.py`）每只标的自动附**四行基本面简介**（仿同花顺APP 简况/财务/看点 tab）：
-  - `📋 简况`：公司简介（东财F10 gsjj 截断120字）+（行业：XX | 法人：XX | 总经理：XX）+ **主营构成**（东财 F10 BusinessAnalysis zygcfx 最新报告期按产品拆分：产品+收入占比+毛利率，如"纺织贸易 82.1%（毛利率1.9%）"）
-  - `📊 财务`（报告期）：营收X亿（同比Y%）｜净利X亿（同比Y%）｜ROE｜毛利率｜净利率｜负债率——东财数据中台 `datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_FINANCE_MAINFINADATA`（免费，返回最新报告期 EPSJB/ROEJQ/XSMLL/XSJLL/ZCFZL/TOTALOPERATEREVE/TOTALOPERATEREVETZ/PARENTNETPROFIT/PARENTNETPROFITTZ）
-  - `🎯 看点`：核心题材（东财 F10 CoreConception hxtc 题材要点）+ 所属板块（ssbk，**概念/题材类板块优先**——如华升股份显示"并购重组概念、算力概念"，与收购易信科技转型算力对应）
-  - `📌 近期动态`：东财公告接口，重大事项（收购|重组|资产|中标|算力|增发|回购|股权|转让|停牌|合作|投资）优先，前2条
-  - **港股降级（2026-09-08 免费源升级，替代原"全缺失"）**：📋 简况=行业（东财 push2 `secid=116.XXXXX` f127）+ 腾讯财务字段，主营业务文字标注"数据缺失（港股F10无免费源，LLM联网补）"；🎯 看点=所属板块（腾讯自选股 `appstock/app/stockinfo/plate`，题材要点仍缺失 LLM 补）；📌 近期动态=腾讯公告（`appstock/news/noticeList/searchByType?symbol=hkXXXXX`，重大事项关键词优先，港交所披露易高频限流弃用）；📊 财务走腾讯78字段（PE(TTM)/ROE/股息率，负值标缺失；**负债率 2026-09-18 起标数据缺失**——腾讯 f[74] 实为"负债/净资产"类杠杆率非资产负债率：实测映美控股 5965.22%（净资产≈0 分母趋零爆炸，东财每股净资产 -0.086 为负）、腾讯 -28.41（净现金可为负）、东亚银行 51.52（银行真实负债率约90%），故移除 f[74]→debt_ratio 映射，渲染层加 0-100% 护栏兜底，测试 `test_tencent_hk_quote_debt_ratio_removed`/`test_render_profile_line_hk_debt_ratio_range_guard`）。实测弃用源：Yahoo quoteSummary（401+限流）、东财 datacenter 港股财务（报表不存在）、东财 emweb/f10 港股 F10（404/403 WAF）、同花顺/新浪/aastocks/investing（WAF 或数据贫乏）。
-  - 实现：`data.py` `company_survey_async`/`business_mix_async`/`finance_brief_async`/`core_conception_async`/`recent_announcements_async`（失败返回空/error 不抛异常）、`swing.py` `attach_company_profiles`（TOP10 并发5限流，挂 profile/profile_extra/announcements）+ `_render_profile_line`（三tab渲染）、`analyze_swing.py` 单股接入。测试 `tests/test_company_profile.py`（F10/主营构成/财务指标/核心题材/三tab渲染/港股降级/异常安全等），33 测试全过。
-- **grill 审计整改（2026-09-08 用户确认 5 项）**：
-  - **Q1 评分刻度修正**：`daily_trend_score` 原 30 分制实际满分 27（14均线多头+8四线之上+5MACD红），补「突破近60日新高 +3」凑满 30 分（同时是道氏突破确认信号）。测试 `test_trend_score_breakout_can_reach_30`。
-  - **Q2 滞后性纪律代码化**：`swing_score_one` 新增 `momentum_weak`（日线或30m结论含"动能走弱预警"即触发），状态**强制降级为「🟡谨慎布局：上升趋势但动能走弱」**——不再"当前可布局"，这是用户滞后性纪律的代码级落地。测试 `test_momentum_weak_force_cautious`。
-  - **Q3 ST/退市拦截+次新警示**：`swing_liquidity_filter` 加 `"ST" in name.upper() or "退" in name` 硬拦截（原 `startswith("ST")` 漏 \*ST）；日K<250 根标「次新股警示」（不阻断）。候选池 ST 过滤同步修正。测试 `test_st_stock_blocked`/`test_new_stock_warns_but_not_blocked`。
-  - **Q4 候选池扩池（根因修复）**：`fetch_cn_candidate_pool` 补科创板 688 段（原只扫 600000-605199+深主板+创业板，主线半导体/算力永远进不了池）；ST 过滤用 `in` 判断；**取池策略从"代码顺序前300"改为"全收集后按市值降序取300"**（大市值主线龙头优先入池）→ **2026-09-17 再改：A股按当日成交额降序取300 + 护栏（市值≥30亿 或 成交额≥1亿）**——市值排序把 300 亿以下小盘弹性票全挡在池外（实测粗筛 TOP80 全是 ≥300亿、0 只小盘），成交额与波段策略目标（活跃+动量）同构；港股池补日成交额≥500万元护栏（极微盘止损出不了货）。**注意坑**：成交额排序会把首日/次新股（N/C 开头，成交额爆炸）排进来，评分层日K<250 次新警示兜底不阻断。
-  - **Q5 回测闭环**：新增 `scripts/backtest_swing.py`——`--record 报告` 记录 TOP10 到 `report/swing_backtest.jsonl`，`--report` 统计 T+5/T+10/T+20 胜率与平均收益；跑 1-2 个月后回看评分是否合理，**不无数据调参**。
-  - **Q6/Q7 回测增强（2026-09-08 grill 第二轮）**：`--record` 解析总分（原 total 恒 0，无法按分验证）；`--report` 增加**按总分分段**（≥85/80-84/<80）和**按状态分组**（可布局/谨慎/观望）的胜率统计——回答"高分是否真高胜率、三档是否有区分度"。全池对照（300只）暂不做，先积累 TOP10 样本。
-  - **Q8 三刀筛自动化（量比/透支进代码）**：`swing_score_one` 加 `low_volume`（0<量比<1 缩量上涨→🟡谨慎布局：缩量上涨）和 `overheated`（5日涨幅>25%→🟡谨慎布局：透支风险勿追高）两个降级分支；三刀筛从人工步骤进一步代码化。测试 `test_low_volume_downgrade`/`test_overheated_downgrade`。
-  - **Q9 港股池风险词过滤**：`fetch_dynamic_pool` 加 `"退" in name or "ST" in name.upper()` 硬过滤（与 A股一致）；港股池本身按东财成交额翻页动态取（比 A股代码段遍历合理），无需扩段。
-  - **Q10 港股三tab数据缺失：2026-09-08 部分解决**——主营业务文字仍无免费源（东财港股 F10 404/403、Yahoo 401+限流），标"数据缺失"由 LLM 联网补（规则四标注来源）；行业/板块/公告已接入免费源（见"港股降级"条目）。
-  - **Q11 停牌/退市残留拦截（2026-09-08 用户反馈，宏源证券000562案例）**：候选池与评分双重拦截成交量为 0 的停牌/退市残留代码——退市代码（如 000562 宏源证券 2015 年被申万宏源吸收合并）行情冻结在停牌日：东财 F10 返回 2014 年财务/公告快照、腾讯行情成交量 0/涨跌幅 0/时间戳开盘前，价格与市值是历史快照，脚本不报错照常评分排第一。**修复**：`fetch_cn_candidate_pool` 加 `fields[36]`（成交量手）≤0 剔除（源头不进池）；`swing_liquidity_filter` 加实时成交量≤0 拦截兜底（A股 quote `volume`/港股 `volume_shares`，quote 缺失或字段缺失不拦防误杀）；`fetch_dynamic_pool` 加 `amount≤0` 剔除。测试 `test_suspended_*` 4 用例，49 测试全过。验证：000562 已从 TOP10 消失；注意申万宏源 000166（合并后存续主体）是正常标的保留。
-- **池构造 v3 + 热门板块池 + A1 验证闭环（2026-09-17 用户 grill 确认实施）**：
-  - **A股池 = 当日成交额降序前 300**（见 Q4 更新）+ **板块池补充**：`fetch_hot_boards()`（recommend_cn.py）拉东财板块资金流（行业 m:90+t:2 + 概念 m:90+t:3 各取前 10，**push2delay 主用 + push2 兜底**——实测 push2 高频即断连 delay 稳定），伪题材噪音过滤（AB股/融资融券/深股通/昨日涨停/次新股等非主线板块），每板块内按主力净流入取 top3（**成分股 ST/退 过滤**），`merge_pools()` 与主池按 code 去重合并（带 `board_hot` 板块名标记，经 `cn_swing_recommend_pipeline` 传入 stocks → 快照）。
-  - **板块池保底（关键）**：热门板块 top3 标的常因 fflow 高并发静默空/趋势未确认被粗筛挡在 80 外（实测 60 只 0 入选）。`run_swing_pipeline_with_intraday` 粗筛**先取 80-5 只，再从落选板块池标的中按日线趋势分（腾讯日K稳定源，不依赖 fflow）捞回最多 5 只，最后补足 80**。保底≠放行——数据缺失照样 BLOCK（2026-09-17 验证 6 只板块池股进 80，fflow 限流期全 BLOCK 属 fail-closed 正确）。**坑**：board_hot 必须显式传 stocks（pipeline 构造 stocks 时遗漏导致快照 0 标记）；`board_quota` 在 swing.py 内联常量。
-  - **A1 验证闭环（B 命题"三档状态是否有区分度"的手段）**：新增 `scripts/backtest_snapshot.py`（`--market cn|hk|all`）——读 `report/snapshots/*.json` **全量 results（80 只/天，非 TOP10）**，按 status 三档 / total 分数段（≥85/80-84/<80）/ verdict / 板块池来源 / pool_mode 分组，T+5/10/20 胜率与平均收益（T+N 价格用快照日后**真实收盘价**回填，复用 `backtest_swing._fetch_close/_returns`）。快照当日实时冻结 → **天然无幸存者偏差**。输出 `report/swing_snapshot_stats_{cn,hk}.md`。**池改造后快照带 pool_mode 字段**（daily.py 补写：cn=`amount+board`、hk=`amount`，历史快照无此字段归 mcap-only），A1 按池版本分组标口径。**首次初步结果（0917，样本 7-8 天）**：港股「当前可布局」7 样本 T+5 71%(+22%)/T+20 86%(+27.9%)、≥85 分 T+20 91%——三档有区分度信号；但 80-84 分 T+5 仅 22% 是反信号，样本太少待月底（20 交易日）正式回看。**纪律**：不无数据调参。
-- **LLM 选股逻辑判断层（2026-09-08 新增）**：基于脚本三tab公告行 + 联网检索（规则六）做推理判断，事实数据必须标注来源 URL。示例：华升股份收购易信科技 6.62 亿重大资产重组推进中（财联社/证券时报/央广财经/东财F10 2026-07-22 已完成加期评估并更新问询函）→ 主营麻纺→算力基础设施转型→估值重塑预期。港股公告数据缺失（东财接口不支持港股 total_hits=0、港交所披露易高频即限流）时由 LLM 在补充说明联网补。
+- **📄 主题文档索引（细节按需读取，不占常驻上下文）**：
+  - `docs/agents/swing-system.md` — **波段系统全部决策细节**（四维评分/道氏/ATR/上车离场/候选池/回测闭环/MCP server/daily 工作流/舆情辅助/三tab简介）。任务涉及波段评分、候选池、回测、MCP、daily 时读取。
+  - `docs/agents/value-legacy.md` — **legacy value 模式**（六维评分/四大师/缠论/投委会/镜像测试/行业漏斗/产业链Mermaid）。仅 `--mode value`、portfolio_report、tech_chan 时读取。
+  - `docs/agents/data-sources.md` — **数据源优先级完整表**（行情/K线/基本面/资金面源链、限流排查、K线 fallback 链）。涉及数据获取与限流排查时读取。
+
 - **数据分析方法（当前默认）**：A股与港股采用纯技术波段筛选，**持有周期不限定为 1-2 周——可以是几天、1 个月，若是真正的好标的持有 1 年也可**。总分 100 分：日线趋势 30 + 日线量价/资金 25 + 日线笔 20 + 30 分钟线段 25。基本面不参与评分、估值比较或一票否决；只使用行情、成交量、资金和道氏趋势（摆动点）数据。
-- **评分维度说明（2026-09-08 新增，固化到报告头部；09-08 推荐结论表加「评分要点」列）**：用户看不懂四维分数来源，已在 `render_swing_report`/`analyze_swing.py` 报告头部固化说明行：**日线趋势30分**=均线多头排列+MACD；**日线量价资金25分**=量比放量+主力净流入；**日线笔20分**=日线趋势方向（道氏摆动点）；**30分钟线段25分**=30m趋势确认短线入场（缺失或与日线趋势冲突则观望）。**推荐结论表新增「评分要点」列**（`_score_brief` 从各维度 reason 提取：如"4线之上MACD+0.35 / 量比3.01/主力+0.23亿 / up / up"），分数可逐只溯源。测试 `test_render_swing_report_score_legend`/`test_render_swing_report_score_brief_column`/`test_score_brief_extraction`。
-- **上车/离场条件固化（2026-09-10 用户确认：操作建议不是谨慎布局就是观望，和没说一样）**：逐只信号在「现价」行后自动输出两行可执行清单：`- 📌 **上车条件**`（状态翻译成触发价，按 status 分支——**当前可布局**→"现价X附近分批介入｜回踩MA5/MA10企稳加仓"；**观望**→"放量突破阶段高点X确认后再介入（现价勿追）"；**谨慎布局**→"回踩 MA5~MA10 区间（或道氏前低）企稳（现价勿追）｜放量突破近20日最高收盘X介入"）+ `- 🚪 **离场条件**`（固定结构全部标的："跌破止损X（-Y%）无条件离场｜移动止盈（跌破前低/自高点回撤，复用 exit_rule）｜持仓3-5日缩量滞涨减仓"）。实现：`swing.py` `_entry_exit_conditions()`（支撑=道氏前低优先>MA10>MA5；突破参考=近20日最高收盘 peak，`swing_score_one` 新增返回 `peak` 字段）+ `render_swing_report`/`analyze_swing.py render_one` 插入。测试 `test_entry_exit_conditions_cautious`/`test_entry_exit_conditions_watch_and_allow`/`test_render_swing_report_entry_exit_lines`，106 测试全过。**记住：状态必须带触发价，禁止只输出"谨慎布局/观望"不给价格**。
 - **波段方向判定（2026-09-08 起为道氏理论，替代缠论）**：日线方向用**道氏次级趋势**（摆动点序列判趋势）、30 分钟用**道氏小趋势**确认入场/离场。禁止把周线缠论、日线中枢、基本面评分或旧缠论笔/线段作为默认波段入场依据；30 分钟数据缺失或与日线方向冲突时只能观望。
-- **道氏理论替代缠论（2026-09-08 用户明确，原因：缠论看不懂）**：波段方向判定引擎从缠论（笔/线段/中枢/背驰）整体替换为**道氏理论**，评分框架（30/25/20/25）、三档状态（可布局/谨慎/观望）、ATR 止损目标、三 tab 简介**全部不变**。实现：`swing.py` 新增 `_find_pivots`（摆动点检测：左右各 N 根不比自己高/低即记摆动点，替代缠论"笔"）+ `_dow_trend`（道氏三句话：高点抬高且低点抬高=up/高点走低且低点走低=down/否则震荡）+ `_dow_conclusion`（道氏结论：🟢上升趋势|状态：高低点连续抬高|边界：跌破前低X转空、突破前高Y延续→操作，边界取就近现价摆动点）+ `_macd_divergence_note`（MACD 动能背离检查：价创新高但 MACD 柱收缩=⚠️动能走弱预警，价创新低但柱谷抬高=✅动能转强信号，用于对冲道氏滞后性）+ `daily_dow_score`（20分）/`intraday_dow_score`（25分）。旧函数名 `daily_stroke_score`/`intraday_segment_score` 保留为兼容别名（指向道氏实现）；输出 key 从 `chan_conclusion` 改 `conclusion`；渲染文案"日线缠论/30分钟缠论"→"日线道氏/30分钟道氏"，三刀筛"缠论双周期"→"道氏双周期"，状态"日线笔与30分钟线段冲突"→"日线趋势与30分钟趋势冲突"。`chan.py` 保留不动（value/portfolio 模式继续用缠论）。**滞后性纪律（2026-09-08 用户明确，必须时刻注意）**：道氏是「事后确认」理论，趋势反转天然滞后——要等价格跌破前低才确认转势，信号出现时往往已跌一段。因此：①任何标 ⚠️动能走弱预警（价创新高但 MACD 柱收缩）的上升趋势必须降级处理——严格等回踩支撑介入、绝不追当日涨幅、仓位减半；②高位放量滞涨视为动能衰竭信号；③「回踩支撑企稳再介入」是默认操作而非可选项（本身就是对滞后性的对冲）；④连续多日高位横盘警惕趋势末端。测试 `tests/test_swing_scoring.py` 迁移+新增道氏专项（摆动点/道氏三态/结论操作映射/status 文案/结论方向一致），39 测试全过。**已知差异**：道氏判定比缠论笔更严格（如华升日线高位震荡被判🟡而非缠论 up 笔），缠论时代报告不可与新道氏报告直接对比。
-- **ATR 动态止损 + 移动止盈（2026-09-01 ATR止损；09-08 移动止盈替代固定目标，用户明确"道氏不预测目标"）**：固定 -8% 止损/+10% 目标太机械，`swing.py` `swing_sl_tp()` ATR14 动态：**止损** = max(现价−2×ATR, 日线前低×0.985)，clamp [5%, 11%]，ATR 缺失回退 -8%；**卖出用移动止盈替代预测目标**：①跌破最近道氏前低（收盘价确认）离场（道氏第三信号）②自近20日最高收盘价回撤 2×ATR（clamp [5%,11%]）离场（趋势跟随不预测顶）。返回 `{stop_loss, atr, stop_pct, trail_stop, trail_pct, peak, exit_rule}`，**不再输出 take_profit/target_pct**。渲染 `止损X.XX（-Y.Y%）| 移动止盈：跌破前低Z或自高点W回撤P%离场`。改动点：`swing_sl_tp()` + `swing_score_one` 返回字段 + `render_swing_report`/`analyze_swing.py render_one` 渲染；测试 `test_swing_sl_tp_*` 3 个用例改移动止盈语义。
-- **道氏三步框架（2026-09-08 用户明确，完整落地道氏理论）**：①**定方向**=日线**收盘价**摆动点判趋势（`_find_pivots` 以 close 为基准，原则6"日内高低点是噪音，收盘价最重要"），高点/低点连续抬高=上升趋势只做多，否则空仓/观望；②**验健康**=`_dow_health`（原则4 成交量确认趋势：上涨放量/回调缩量=健康，价涨量缩=强弩之末）+ `build_index_sync`（原则3 指数相互验证：上证/深证/创业板须同步，背离⚠️即降级"谨慎布局：指数不同步"；港股恒指只作环境展示）——健康隐患/派发迹象/指数背离均强制降级；③**找信号**=`dow_step3`（原则5/6：以收盘价确认未跌破前低=趋势延续持有，跌破=离场）。另含 `_dow_stage` 三阶段（原则2：吸筹/公众参与/派发，缩量新高=派发迹象降级，第二阶段可重仓、第三阶段准备跑）。**降级链优先级**：数据缺失>双周期冲突>动能走弱预警>道氏整体偏空>缩量上涨>5日透支>派发迹象>健康度隐患>指数不同步>当前可布局。逐只信号渲染 `道氏①定方向/道氏②验健康(含指数)/道氏③找信号/三阶段` 四行 + 移动止盈。指数数据源：腾讯 `qt.gtimg.cn/q=sh000001,sz399001,sz399006,hkHSI`（`data.py cn_index_quotes_async`）；测试 `test_dow_health_*/test_dow_stage_*/test_build_index_sync_*/test_index_divergence_downgrade/test_dow_step3_breakout_check` 等，63 测试全过。
-- **波段道氏结论输出（2026-09-08 替代缠论；09-08 按用户原则改「定性+状态+明确边界」）**：`swing.py` 的 `daily_dow_score`/`intraday_dow_score`（旧名 `daily_stroke_score`/`intraday_segment_score` 为兼容别名）输出 `conclusion` 道氏一句话结论，格式 = **定性（🟢上升趋势/🟡震荡/🔴下降趋势）+ 状态（高点、低点连续抬高/走低/交错，基于摆动点序列道氏三句话）+ 明确边界（跌破前低X转空、突破前高Y延续——前低/前高取就近现价的摆动点，是状态切换条件，不是价格预测）+ 操作含义**。**用户原则（必须遵守）**：道氏理论结论永远是定性的、状态的、带有明确边界的——不预测目标价，只描述当前趋势状态与状态切换边界。**摆动点以收盘价为基准**（原则6：日内高低点是噪音）。动能预警用 MACD 动能背离检查（价创新高但 MACD 柱收缩=⚠️动能走弱预警）。
-- **波段布局状态三档（2026-08-31 新增）**：`swing_score_one` 的 status 判定加入道氏整体趋势：短线日线趋势+30分钟小趋势共振 up 但道氏整体趋势 down 时，标 **🟡谨慎布局：短线共振但道氏整体偏空**（而非"当前可布局"），杜绝"报告说可布局、道氏说观望"的自相矛盾。`build_swing_report` 的 advice 映射同步：`谨慎布局`→🟡谨慎布局。
-- **量化波段 V2.1 混合规则架构（2026-09-09 用户确认实施；本条覆盖此前相冲突的波段细节）**：目标为 A股+港股只做多、**高抛低吸、持有时间不确定**的可复现波段系统，**Python 是数值/时序/执行唯一真相，Semantica 是声明式 RETE 裁决+决策溯源层（可选依赖，LLM只能解释不得覆盖硬规则）**。依赖：`semantica==0.6.8` 为 **optional extra**（2026-09-18 用户确认改为可选，默认 `uv sync` 轻量安装几十 MB，完整影子裁决 `uv sync --extra semantica` 约 2.5GB——官方包声明依赖含 Torch/FAISS/opencv 等 AI 重型栈，本项目实际只用 `semantica.reasoning` 纯标准库 RETE）；分发通道：**Skill 安装第一顺位**（`scripts/install_skill.sh`/`install_skill.ps1`，一键装到 `~/.claude/skills/quant-risk` 或 `--dest` 指定 Codex/ZCode，AI 首次执行自动 uv sync）+ Docker 镜像（`Dockerfile`，python:3.12-slim + uv，`uv sync --extra semantica` 全量，`docker run -v $(pwd)/report:/app/report quant-risk daily`）+ 本地一键安装（`install.sh`/`install.ps1` 自动装 uv + Python 3.12 + 轻量依赖 + 冒烟自检，2026-09-09 新增、09-18 改轻量）；万一 Semantica 缺失系统自动降级纯 Python 参考引擎（容错，测试 `test_shadow_degrades_without_semantica` 覆盖，`test_shadow_reference_remains_authoritative` 无 semantica 时 skip）；默认 `research + band + shadow`，Semantica/Python影子比对，Python主裁决；Semantica异常 `BLOCK`，live 无 receipt/provenance_id fail-closed，首轮不接券商。
-  - **单策略 `swing_band`（2026-09-09 用户确认：不做1-2周/1-2月双策略拆分）**：持有周期不预设，由道氏破前低（收盘确认）与自入场峰值移动止盈离场信号自然决定；`max_holding_days=60` 仅作风控上界。tactical/trend/1w2w/1m2m 均为历史别名，`normalize_strategy_id` 统一归一为 swing_band；配置在 `config/strategies/swing_band.yaml`（含 version/ruleset_hash/ATR移动止盈/组合与成本参数）。
-  - **30m 为入场优化非硬门槛（2026-09-09）**：有已确认30m且方向up→参与segment评分优化入场；30m缺失→不BLOCK（segment 0分，日线裁决）；30m与日线方向冲突→仍WATCH观望（道氏双周期纪律保留）。`intraday_confirmation_required=false`。
-  - **P0 事实规则**：摆动点以收盘价计算并带 `pivot_at/confirmed_at`，仅确认后下一根可交易K线使用；道氏结论/第三步/初始止损统一最近已确认 `previous_low/previous_high`；A股上证/深证/创业板**任一方向不一致即背离**，任一关键指数缺失即禁新仓；资金流空数组=`MISSING`而非+0，价格/量能/指数/资金任一关键数据 MISSING/STALE=`BLOCK`；次新股仅警示不阻断；停牌/退市=`BLOCK`。
-  - **规则层**：`strategy_models.py`（FeatureSnapshot/DecisionResult/DecisionReceipt/PositionState等不可变模型）→`feature_engine.py`（只计算事实）→`rule_engine.py`（`PythonReferenceRuleEngine`/`SemanticaReteRuleEngine`/`ShadowRuleEngine`）。固定规则ID：DATA_GAP/STALE/SUSPENDED BLOCK、收盘破前低/持仓峰值移动止盈 EXIT、方向冲突/非up/动能弱/缩量/透支/派发/健康/指数背离 WATCH；冲突顺序 BLOCK>EXIT>REDUCE>WATCH>ALLOW，同级priority+rule_id稳定排序。分数只负责 rank_score，`entry_eligible`单独裁决。
-  - **凭证与执行**：`provenance.py` 以SQLite `report/decision_outbox.sqlite3` 先本地幂等落盘 DecisionReceipt（facts/snapshot/ruleset/code commit hash）再异步写图；`execution.py` 支持 paper/backtest 成本滑点、A股T+1/100股/涨跌停/停牌、港股交易单位/费用，并有 live ExecutionGuard（总≤80%、现金≥20%、单股≤15%、板块≤30%、市场≤60%）。移动止盈只使用 `PositionState.max_close_since_entry`，绝不再用近20日最高价。
-  - **回测纪律**：旧`--record/--report`只作兼容T+N研究统计；`backtest_engine.py` 事件回放按**实际持有天数分布**统计（<5天/5-20天/20-60天/>60天的胜率/均收益/合计收益，`--engine-report` 输出），回答"策略实际持有多久、哪个持有段赚钱"；当前股票池历史回填必须标 `survivorship_bias=true`，每日冻结快照 forward paper/walk-forward 才可作为live验证。验收：冻结快照/receipt重复hash一致、Semantica/Python核心裁决一致、LLM不可改裁决、关键数据缺失不ALLOW、扣成本样本外看净收益/最大回撤/PF而不是只看胜率。
+- **滞后性纪律（必须时刻注意）**：道氏是「事后确认」理论，趋势反转天然滞后——要等价格跌破前低才确认转势。①动能走弱预警（价创新高但 MACD 柱收缩）的上升趋势必须降级处理——严格等回踩支撑介入、绝不追当日涨幅、仓位减半；②高位放量滞涨视为动能衰竭信号；③「回踩支撑企稳再介入」是默认操作而非可选项；④连续多日高位横盘警惕趋势末端。
+- **记住：状态必须带触发价，禁止只输出"谨慎布局/观望"不给价格**（详见 swing-system.md 上车/离场条件条目）。
 
-
-- **MCP server（2026-09-09 新增，AI 工具接入层）**：`scripts/mcp_server.py` 用 mcp 2.x `MCPServer` 暴露 5 个确定性工具（全部复用现有模块，固定 research 不接 live）：`analyze_stock`（单股，复用 analyze_swing.analyze_one）/`run_daily`（单市场收盘工作流，复用 daily.run_daily）/`run_recommend`（TOP10，复用 recommend pipeline）/`backtest_stats`（回测统计，复用 backtest_swing 逻辑）/`get_daily_report`（读报告）。**双 transport**：`--transport stdio`（默认本地）+ `--transport http --host --port`（Streamable HTTP，uvicorn，远程/容器；Docker 用 `-p 8765:8765 quant-risk scripts/mcp_server.py --transport http --host 0.0.0.0`）。**ZCode 适配**：`.zcode/config.json` 的 `mcp.servers.quant-risk` = stdio `uv run scripts/mcp_server.py`（重启 ZCode 生效）；`.mcp.json` 同款（Claude Code）；README 含 http + mcp-remote 桥两种远程接入。依赖 `mcp>=1.14` + `uvicorn` 已入核心。测试 `tests/test_mcp_server.py` 4 用例（工具注册/mocked 单股/缺失报告/无记录错误），客户端 streamable-http 连接验证通过。**run_daily Error 退 CLI 修复（2026-09-17）**：根因① data.py 满屏 `print("[WARN]...")` 污染 stdio 协议 stdout 帧（MCP stdio 下 stdout 只能承载 JSON-RPC）② mcp_server 用相对路径 `report/...`，cwd 不对时写文件抛错。修复：mcp_server.py 顶部 monkeypatch `builtins.print` → stderr + `os.chdir(项目根)`（stdio/http 双 transport 生效）。冒烟测试：initialize/list_tools/call 工具全通过、报告读取正常。
-- **每日收盘工作流 daily（2026-09-09 Phase 1，无 LLM 依赖）**：`uv run scripts/daily_run.py` 一条命令跑完 **A股+港股** 的「扫池 → swing_band 裁决 → outbox 落库 → 冻结快照 → 报告落盘 → 回测记录」，skill 只负责解读产物。核心编排在 `quantrisk/daily.py`（`run_daily`/`render_daily_summary`），入口 `scripts/daily_run.py`（argparse：`--markets cn,hk`/`--min-stocks 300`/`--rule-engine shadow|python|semantica`/`--no-backtest`/`--snapshot-dir`）。产物：`report/recommend-{cn,hk}-YYYYMMDD-daily.md`（信号报告）+ `report/snapshots/{cn,hk}-YYYYMMDD.json`（冻结快照，walk-forward 基建）+ `report/decision_outbox.sqlite3`（决策凭证）+ `report/swing_backtest.jsonl`（TOP10 回测记录，复用 backtest_swing `_record_from_report` 解析）。**边界**：①固定 `run_mode=research`，不暴露 `--run-mode`，live 需专门流程（fail-closed 精神）；②**串行跑两市场**（双市场并行会再触发东财资金流限流，eastmoney-fflow 已知坑）；③单市场失败不中断另一市场；④engine 级持有天数回放（run_swing_replay）依赖 walk-forward 基建，属 Phase 2，daily 目前只记录 jsonl 供 `--report` T+N 统计。测试 `tests/test_daily.py` 8 用例离线 mock（pipeline/渲染注入），97 测试全过。
-- **舆情与资金热点辅助（2026-08-31 集成，08-31 升级为强制流程）**：集成外部技能 [last30days-skill](https://github.com/mvanhorn/last30days-skill)（v3.21.1）作为 ZCode 用户级技能（`~/.agents/skills/last30days/`），跨 Reddit/X/YouTube/StockTwits/Polymarket 等平台按真实参与度评分合成舆情简报。**每次找标的（`recommend.py` 输出 TOP10 后）必须用 `/last30days` 舆情辅助判断市场热点板块，并用资金进入情况（主力5日/量比）交叉验证——这是强制流程，不得跳过**。交叉验证逻辑：舆情确认板块是真共识还是游资讲故事（看 Reddit/社区讨论深度与参与度），资金面确认是否有真金白银跟进（主力5日净流入+量比>1 为量价齐升）。两者同向才可介入，背离则观望。技能源仓库缓存在 `~/.zcode/cli/skills-cache/last30days-skill/`，`git pull` 即可更新。免费源（Reddit/HN/Polymarket/GitHub/Web）零配置可用；yt-dlp（YouTube 字幕）可选；X/Twitter 需浏览器 cookie，TikTok/Instagram 需 ScrapeCreators。
-- **价值评分链（legacy）**：六维基本面、5:3:2、基本面一票否决、周线定势/日线定点保留在 `--mode value` 兼容路径，不属于 A股/港股默认波段推荐逻辑。
-- **📊 一图胜千言（2026-07-23 新增）**：所有分析报告优先使用 Mermaid 图而非纯表格。目前包含 4 种 Mermaid 图类型：
-  - **产业链全景图（流程图+子图）**：上中下游子图+竞争格局+核心财务数据，边框颜色区分层级（蓝=上游、橙=中游、绿=下游、粉=竞争、紫=财务）
-  - **大师辩论（时序图）**：5 参与者（段永平/巴菲特/芒格/李录/系统），每个维度 6 步骤 2 轮辩论，`Note over` 分隔维度，数据源标注在节点中
-  - **一票否决（时序图）**：4 参与者（漏斗/逆向/镜子/结论），逐项检查后汇总结论
-  - **技术面/情绪面（流程图）**：4 个子图展示趋势/缠论/量价/支撑或新闻/机构/资金/板块，每条数据标注数据源
-  - 图的目的是减少文字阅读负担，表格只作为补充，Mermaid 图类型按数据特性选择（流程图展示结构、时序图展示流程、Journey 图展示评分）
-- **金融数据精度工具 (`scripts/financial_rigor.py`)**：借鉴 ai-berkshire 的金融严谨性工具，提供市值验算（股价×总股本 vs 报告市值）、估值指标精确验算（PE/PB/ROE/FCF Yield）、多源交叉验证（N个来源自动比对，>1%标记）。所有计算使用 Python `decimal.Decimal`（精确十进制），非 `float`（浮点近似）。
-- **芒格式逆向检验**：在 `_raw_score_one` 中生成"这家公司可能怎么死"的逆向风险分析，基于负债率/营收增速/净利/ROE/毛利率等指标列出失败路径，呈现在详情块的"芒格式逆向检验"段落。
-- **镜子测试**：在详情块末尾自动生成"5句话说清楚为什么买"，基于 ROE/PE/负债率/止损等数据逐句构建。≥5句通过，3-4句边缘，<3句未通过。贯彻"说不清楚不买"原则。
-- **留白原则**：C级信息丰富度的标的，评分建议降一档（强烈关注→可关注），且输出追加留白声明"数据严重不足，置信度较低"。
-- **双重舍入链修复**：`percentile_score_all` 中评分计算改为先保留精确值再一次性舍入，消减约 0.2-0.3 分累积误差，消除 69.5→70.0 边界误判。
-- **投委会裁决反哺铁律（2026-08-12 修复）**：定价建议表/详情块择时/择时判断段落**三处展示必须共用同一套投委会裁决来源**，禁止各自独立判定。裁决逻辑集中在 `formatter.py` 的 `_committee_counts()`（多方项/空方项/熔断标记计算）+ `_committee_verdict()`（方向+仓位），投委会Mermaid、定价表 advice、`_render_detail_block` 和 `_render_timing_block` 的 timing 全部调用这两个函数。委员会判"卖出/回避"（如 PE>80 触发熔断但技术面强势）时：定价表 advice 覆盖为"回避"，timing 覆盖为"暂不建议入场（委员会否决）"——**杜绝"定价说强烈关注、择时说可布局、委员会说卖出"的自相矛盾**。已知坑：summary code 是 `"600201 生物股份"`（含名称），detail code 是 `"600201"`（纯代码），匹配时需 `s.code.split()[0]` 提取纯代码。
-- **ai-berkshire 项目引用**：本项目借鉴了 [ai-berkshire](https://github.com/xbtlin/ai-berkshire) 的以下 SOP：
-  - **六维评分框架**：生意质量(段永平)、护城河(巴菲特)、管理层(段永平+巴菲特)、最大风险(芒格)、文明趋势(李录)、估值(巴菲特+段永平)
-  - **行业研究 SOP** (`industry-research.md`)：产业链全景图、全球扫描、文明趋势判断
-  - **行业漏斗筛选 SOP** (`industry-funnel.md`)：四层漏斗、5条硬指标、AI偏见自查
-  - **芒格式逆向检验**：公司级+行业级风险分析
-  - **镜子测试**：5句话说清楚为什么买
 ## 📋 输出格式铁律（已固化，直接执行，不必再查知识库）
 
 以下规则经过反复踩坑后固化，是 quant-risk 项目的最高优先级行为规范，所有会话必须遵守。
@@ -238,6 +184,7 @@
 > 🗂️ **持仓数据仅存储在 AgentMemory 中，不保存本地文件**，不再有 `portfolio.json`。
 > `portfolio_report.py` 通过 `--stdin` 参数接收持仓 JSON，AI 从 AgentMemory 取出后通过管道传入。
 
+
 ## 用户持仓自动保存规则
 
 **触发时机**（满足任一即执行保存）：
@@ -254,6 +201,7 @@
    - `concepts`: `["portfolio", "持仓", user_name, ...]`
 
 **注意：** 不要等待用户说"保存"才执行。上述触发时机到来时，自动执行保存。
+
 
 ## 🚀 一句话投资建议工作流（2026-07-24 更新）
 
@@ -407,6 +355,7 @@ graph TB
 
 - 保存本次持仓信息到 AgentMemory
 
+
 ## 架构速览 (V1.8.0)
 
 所有代码统一在 `scripts/` 目录下，`quantrisk` 作为 `scripts/quantrisk/` 子包存在。
@@ -422,212 +371,51 @@ scripts/
 ├── tech_chan.py             缠论深度分析 + 产业链Mermaid输出 🔥
 ├── chan_mtf.py              缠论多周期联立分析
 ├── formatter.py             选股推荐格式化器 (Pydantic + 渲染)
-├── formatters/              四阶段风控格式化器
-│   ├── __init__.py
-│   ├── _base.py             共享: FormatValidationError + 校验/渲染工具
-│   ├── _pretrade.py         投前审查: format_pretrade()
-│   ├── _holding.py          持仓监控: format_holding()
-│   ├── _alert.py            预警触发: format_alert()
-│   └── _disposal.py         处置决策: format_disposal()
+├── formatters/              四阶段风控格式化器（_pretrade/_holding/_alert/_disposal）
+├── mcp_server.py            MCP server（stdio + Streamable HTTP 双 transport，5 工具）
 └── quantrisk/               Python 模块（scripts/quantrisk 子包）
-    ├── __init__.py          包入口
-    ├── recommender.py       共享过滤/评分引擎
-    ├── recommend_hk.py      港股选股推荐适配器
-    ├── recommend_cn.py      A股选股推荐适配器
-    ├── recommend_us.py      美股选股推荐适配器
-    ├── data.py              数据层 — 行情/K线/基本面/资金面/信号/公告/期权/SEC/工具 + TickFlow
+    ├── data.py              数据层 — 行情/K线/基本面/资金面/信号/公告 + TickFlow
+    ├── daily.py             每日编排：run_daily + render_daily_summary
     ├── chan.py              缠论 — 分型→笔→线段→中枢→背驰→买卖点
     ├── indicators.py        技术指标 — MA/MACD/RSI/KDJ/BOLL + 缠论 re-export
-	    ├── screener.py          标的池筛选 + 批量查询
-	    └── report.py            StockAnalyzer 一键全量分析入口
+    ├── screener.py          标的池筛选 + 批量查询
+    ├── report.py            StockAnalyzer 一键全量分析入口
+    ├── recommender.py       共享过滤/评分引擎
+    ├── recommend_cn.py      A股选股推荐适配器
+    ├── recommend_hk.py      港股选股推荐适配器
+    ├── recommend_us.py      美股选股推荐适配器（legacy）
+    └── chain_renderer.py    产业链渲染器：Mermaid 图文本生成
 ```
 
-## 数据源优先级
+## 数据源优先级（速览，完整表见 docs/agents/data-sources.md）
 
 | 数据类型 | 主源 | 备选 | 备注 |
 |---------|------|------|------|
 | A股行情 | 腾讯(不封IP) | 东财 push2 | — |
-| A股日K | 腾讯(前复权) | 新浪(免鉴权) / 百度(带MA) / TickFlow(兜底) | 2026-08-31 新浪日K上线，TickFlow 降级为最终兜底 |
+| A股日K | 腾讯(前复权) | 新浪 / 百度(带MA) / TickFlow(兜底) | 2026-08-31 新浪日K上线 |
 | 港股行情 | 腾讯(78字段) | 新浪(25字段) | — |
-| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 2026-08-12 修复：原 web.ifzq.gtimg.cn 已501，改用 ifzq.gtimg.cn；新浪港股日K接口已失效不可用 |
-| 美股行情 | 腾讯(71字段) | 新浪(36字段) | — |
-| 美股日K | 新浪 / Yahoo | TickFlow(兜底) | — |
+| 港股日K | 腾讯(ifzq.gtimg.cn) | Yahoo / TickFlow(兜底) | 新浪港股日K已失效 |
 | 基本面(港股A股) | 东财 datacenter | Yahoo(key stats) | — |
-| 基本面(美股) | Yahoo | — | — |
-| 缠论K线 | 腾讯(ifzq.gtimg.cn) / Yahoo / 新浪 | TickFlow(兜底) | TickFlow支持前复权 |
+| 缠论K线 | 腾讯 / Yahoo / 新浪 | TickFlow(兜底) | 支持前复权 |
 
-**腾讯 K 线域名（2026-08-12 修复）**：`http://web.ifzq.gtimg.cn`（HTTP+web 前缀）已失效返回 501，全部落到 TickFlow 导致缠论评分失真。修复为 `data.py` 的 `_tencent_kline_get()` 多域名降级：`https://ifzq.gtimg.cn` → `https://proxy.finance.qq.com/ifzqgtimg/`（均验证可用，0.1s，无 501）。**HTTPS + 非 web 前缀是硬要求**，改回 `web.ifzq.gtimg.cn` 会让缠论全挂（缠论评分 6/20 最低基准 = K 线源全挂的信号）。
+**腾讯 K 线域名（2026-08-12 修复）**：`http://web.ifzq.gtimg.cn`（HTTP+web 前缀）已失效 501，修复为 `_tencent_kline_get()` 多域名降级：`https://ifzq.gtimg.cn` → `https://proxy.finance.qq.com/ifzqgtimg/`。**HTTPS + 非 web 前缀是硬要求**，改回 `web.ifzq.gtimg.cn` 会让缠论全挂（缠论评分 6/20 最低基准 = K 线源全挂的信号）。
 
-**TickFlow** (免费免注册): 官方 SDK `pip install tickflow`，`TickFlow.free()` 模式
-- 免费提供历史日K/周K/月K/季K/年K，无需 API Key
-- 支持 A股(`.SH`/`.SZ`/`.BJ`) + 港股(`.HK`) + 美股(`.US`)
-- 支持前复权 (`adjust=True`)
-- 不支持实时行情和分钟级K线（free模式）
-- 文档: https://docs.tickflow.org
-- **2026-08-31 降级为最终兜底源**：`free-api.tickflow.org` 连接不稳定（频繁连接失败），所有 K 线 fallback 链中 TickFlow 移到最后，前端有腾讯/新浪/Yahoo 兜底，TickFlow 极少触发。`_get_tickflow()` 初始化加 8s 超时、`kline_tickflow_async` 数据请求加 10s 超时，失败快速返回不拖慢整体。
-
-## 关键设计决策
-
-- **代码从 SKILL.md 提取为 Python 模块**: V1.2.0 将之前散落在 SKILL.md 文本中的函数正式提取为可导入的 Python 包。V1.6.0 进一步重构评分系统为 100 分制、增加基本面 debug 明细、选股→定价→择时三段式输出、持仓择时判断。
-- **所有代码统一在 scripts/ 目录**: 脚本入口 `scripts/*.py`，Python 模块 `scripts/quantrisk/*.py`，不再保留顶层 `quantrisk/` 目录
-- **data.py 四合一**: HTTP 会话管理 + 行情层(8函数) + K线层(6函数) + 基本面/资金面/信号等(30函数)合并为一个文件，GitHub 浏览一目了然
-- **scripts/ 入口**: 可直接 `uv run scripts/analyze.py 03690` 运行，无需 pip install
-- **A股行情主力**: 腾讯 (不封IP) > 东财 push2
-- **A股日K**: 腾讯 (前复权) > 新浪 (免鉴权) > 百度 (带MA) / mootdx (多周期) > TickFlow (最终兜底)
-- **缠论背驰**: MACD面积对比, 阈值15%, 强背驰50%
-- **缠论中枢**: 至少3段重叠 (min_overlap=3)
-- **标准化笔**: 分型间距≥4根K线, 同向取极端值
-- **数据获取**: 全部 aiohttp 异步, batch_*() 并行查询
-- **标的池筛选**: 四层流程：①宏观扫描(板块排名→候选池) → ②中观过滤(市值/股价硬约束) → ③基本面一票否决(营收< -30%或净利< -30%或PE严重负值等8条直接淘汰，贯彻"六维评分为基础") → ④微观评分(六维评分×10+缠论×6+热点×4，满分100，5:3:2)
-- **评分系统 V3（2026-07-22 重构，六维评分）**:
-  - 借鉴 ai-berkshire 的"四大师视角对抗"框架，基本面评分拆分为 6 个独立维度
-  - 📊 生意质量(段永平) → 毛利率/净利率/ROE，判断"这是对的生意吗？"
-  - 🔒 护城河(巴菲特) → ROE/毛利率/股息率/负债率，判断"护城河深不深？"
-  - 👔 管理层(段永平+巴菲特) → ROE/净利率/营收增速/负债率，判断"管理层值得信任吗？"
-  - ⚠️ 最大风险(芒格) → 负债率/营收增速(负值重扣)/净利同比(负值重扣)，判断"怎么会死？"
-  - 🌍 文明趋势(李录) → 营收增速/净利率/负债率/股息率/ROE，判断"10年后还在吗？"
-  - 💰 估值(巴菲特+段永平) → PE相对估值/股息率，判断"够便宜吗？有安全边际吗？"
-  - 每个维度独立评分（基础分 2.0，范围 1~10），各自在池内做百分位排名后等权平均
-  - 合成公式：`fb_pct = (percentile(dim1) + ... + percentile(dim6)) / 6`
-  - 映射公式：`fb = 1 + fb_pct×4`，`fb_w = round(fb×10, 1)`，满分 50
-  - 百分位排名在未 clamp 的原始分上操作，扩大区分度
-  - 独立裁决：基于百分位评分映射为 ✅ 通过(≥4.0) / ⚠️ 有条件通过(≥3.0) / ❓ 灰色地带(≥2.0) / ❌ 不通过(<2.0)
-  - 投票制合成：6/6 通过→强烈推荐，5/6→推荐，3-4/6→灰色地带，1-2/6→不推荐，0/6→回避
-  - 每个维度配有独立追问文本（基于原始指标生成定性分析），如"毛利率X%远超60%，有极强的定价权"
-  - 信息丰富度评级：A级(7-9字段有值)/B级(4-6字段)/C级(<4字段)，标注在报告中
-  - 三维评分合成（5:3:2）：`total = fb_w(六维基本面,50分) + ch_w(缠论技术面,30分) + hot_w(热点情绪面,20分) = 100分`
-- **基本面一票否决（2026-07-20 新增，7-22 扩展为 8 条）**：
-  - 在评分之前增加 `fundamental_veto()` 关卡，严重基本面恶化的标的不进评分池
-  - 否决条件：营收同比<-30% 或 净利同比<-30% 或 PE<-10（严重亏损）或 负债率>90% 或 ROE<0 或 毛利率<10%且营收<0 或 PB<0 或 营收<净利
-  - 否决记录在报告中独立展示
-  - 贯彻"六维评分为基础"理念：技术面和热点再强，基本面崩塌的股票也不推荐
-- **输出格式「四大师视角对抗 + 选股→定价→择时」三段式（2026-07-22 重构为四大师框架）**:
-  - 第一步：选股（全市场扫描→中观过滤→TOP10 排名→各股四大师评分明细）
-  - 第二步：定价（入场区间→止损→目标价→综合建议表）
-  - 第三步：择时（四大师背景摘要 + 推荐标的买入时机 + **持仓卖出判断**）
-  - 各股分析块以**四大师视角对抗**为中心：展示四大师评分表（含计算明细链如 `基础2.0+毛利率35.9%(>20%→0)+...`），并自动生成对抗分析文本（如"好生意≠好价格"、"长期vs短期的视角冲突"）
-  - 满分 100 分，TOP10 表列名：`📊六维评分(50分) | 🔧缠论(30分) | 🔥热点(20分)`
-- **TOP10 全量深度分析（2026-08-12 扩展）**：TOP10 推荐不再只深度分析 TOP5——Mermaid 排名图展示全部 10 只的三维评分，各股分析详情块覆盖全部 10 只，定价建议表增加评分列（`📊六维(50) | 🔧缠论(30) | 🔥热点(20) | 总分`）。改动点：`formatter.py` 的 `_render_top10_mermaid`（去掉 `[:5]`）、`recommender.py` 和 `recommend_hk.py` 的 `build_selection_data`（details 循环 `top10[:5]`→`top10`）、`SummaryItem` 模型加 `fb_w/ch_w/hot_w/total` 字段。**注意**：两个市场各有独立的 `build_selection_data`（`recommender.py` 给 A股/美股用、`recommend_hk.py` 给港股用），改详情层需同步改两处。
-- **✨ 推荐理由速览表（2026-08-12 新增）**：在 Mermaid 排名图之后、各股分析之前，插入 `### ✨ 推荐理由速览` 表格，每只标的一行自动生成一句话理由。理由组成：基本面亮点（六维评分最高 1-2 个维度的结论文本）+ 技术面信号（缠论结论/MA排列）+ 情绪面（近5日涨幅/主力资金）+ 委员会方向（🟢买入/🟡持有/🔴回避）。**回避标的例外**：理由改为风险警示（指出 PE 畸高/ROE 低/负债率畸高等熔断原因），而非亮点。生成函数 `formatter.py` 的 `_gen_reason(d: DetailItem)` + `_render_reason_rows(details)`。
-- **📊 得分构成可见（2026-08-14 新增）**：用户要求"看不到得分怎么算的"→ 两处展示评分过程：① 推荐理由速览表加「📊 得分构成」列（六维各维度 1-10 分 + 最高分维度完整计算明细链，`_score_breakdown()`）；② 详情块「二、财务数据与分析」插入六维评分明细表（得分/信心度/**得分逻辑**(dimN_debug 计算链)/大师视角/其他大师质疑/大师答疑）。**已知坑**：`_render_detail_block` 有两个 return，执行的是 855 行附近的 13 节模板，940-1067 行的 dim_table 构建是死代码——改评分展示必须插到 855 模板，不能改死代码区。
-- **持仓卖出判断（2026-07-20 新增）**:
-  - 当用户提供持仓信息后，择时步骤自动分析每只持仓的卖出时机
-  - 输出格式：持有/减仓/卖出/加仓 + 具体理由（MA排列/MACD/资金流向）
-  - 数据格式：`format_output(data, market)` 的 data 中传入 `portfolio_timing` 列表
-  - 详见 `formatter.py` 的 `PortfolioTimingItem` 模型和 `_render_portfolio_timing()` 函数
-- **缠论深度分析嵌入推荐模板（2026-07-21 新增）**:
-  - 推荐报告的缠论部分从简略摘要升级为**周线大势 + 日K买卖点 + 笔结构**三层深度分析
-  - **周线定大势**：从腾讯获取周K数据，计算周线MA60状态和缠论判定（偏多/中性/偏空）
-  - **日K定买卖点**：从 `chan_risk_assessment` 提取最近底分型/顶分型价格与日期、是否站上MA5、最近笔方向
-  - **买卖点 + 背驰**：展示一买/二买/三买/卖点详情，以及顶背驰/底背驰（强/弱）信号
-  - 渲染位置：详情页"论据"段落后缩进展示，择时论据中追加"缠论"子段落
-  - 核心数据流：`chan.py` → `chan_risk_assessment`（新增 fractals/strokes 字段）→ `recommender.py chan_score`（提取为 cd 字典）→ `recommend_hk.py build_selection_data`（填入 ch 字典）→ `formatter.py ChanDetail` 模型 → `_render_detail_block` / `_render_timing_block` 渲染
-	  - **关键文件变更**：`chan.py`(fractals/strokes输出) + `recommender.py`(chan_score提取深度数据) + `recommend_hk.py`(周线获取+数据传递) + `formatter.py`(ChanDetail扩展+渲染)
-	- **风控输出**: 每个阶段必须有明确结论 (买入/观望/拒绝 等)
-- **港股行情财务字段扩展**: `hk_stock_quote_tencent_async()` 从腾讯78字段中提取财务字段(PE/PE_TTM/市值/股息率/ROE)——2026-07-22 移除误映射的 f[65]/f[71]/f[72]（非毛利率/营收增速/净利率）、2026-09-18 移除 f[74]（非资产负债率，实为负债/净资产杠杆率），港股负债率标数据缺失
-- **推荐股票强制规则**: SKILL.md 中定义的3步强制流程(跨板块全市场扫描8板块→中观硬约束过滤→微观三维评分TOP10)，含固定输出模板，禁止跳过任何一步或单板块推荐
-- **产业链分析 Mermaid 输出（2026-07-22 新增）**:
-  - `portfolio_report.py` 和 `tech_chan.py` 支持输出 Mermaid 格式的产业链全景图
-  - 饮料行业（02460）：上游 PET/水源/包材 → 中游 自有工厂/代工厂 → 下游 传统渠道/冷柜/电商
-  - 软件行业（03888）：上游 AI大模型/云计算/硬件 → 中游 WPS/WPS365/WPS AI/游戏 → 下游 个人/政企/海外，含"飞钉微"竞争格局子图
-  - 每个节点带 emoji 状态标记（🟢/🟡/🔴），卡脖子环节特殊标注
-  - 标注与行业龙头的核心差距（毛利率/市占率/市值等）
-- **行业漏斗5条硬指标（2026-07-22 新增）**:
-  - 借鉴 ai-berkshire 漏斗 SOP：PE估值/ROE/营收增速/净利增速/负债率
-  - 逐条检查并给出漏斗结果（通过/边缘/不通过）
-  - 与基本面一票否决互补：否决是硬淘汰，漏斗是评分参考
-- **芒格式行业级风险评估（2026-07-22 新增）**:
-  - 在公司级风险（营收/净利/ROE/负债率）基础上，增加行业级风险
-  - 含历史类比（如当前水战 vs 2010年代康师傅/统一收缩）
-  - 行业特定风险如 PET 成本暴涨、冷柜战、"飞钉微"竞争格局
-- **AI 偏见自查清单（2026-07-22 新增）**:
-  - 报告末尾自动输出5种偏见自查：龙头偏好、成熟行业偏好、新业务偏好、英文偏好、故事偏好
-  - 每条标注在报告中的对应处理方式
-- **`portfolio_report.py` 一键报告（2026-07-22 新增）**:
-  - 整合 8 大模块：组合总览 → 产业链Mermaid → 四大师 → 行业漏斗 → 芒格式风险 → 缠论 → 镜子测试 → AI偏见自查
-  - 支持 `--stdin` 从 stdin 读取持仓 JSON（AI 从 AgentMemory 取出后传入）
-  - 回退：本地 `portfolio.json`（虽已弃用但代码兼容）
-  - 一行命令运行：`echo '{"holdings":[{"code":"02460","market":"hk","shares":4600,"avg_cost":10.334}]}' | uv run scripts/portfolio_report.py --stdin`
-  - 镜子测试序号自动递增（①②③④⑤）
-
-## 文件清单
+## 文件清单（核心）
 
 | 文件/目录 | 用途 |
 |-----------|------|
 | SKILL.md | Skill 主定义 (数据函数 + 风控模板) |
 | README.md | 项目说明 |
 | CHANGELOG.md | 版本记录 |
-| AGENTS.md | 本文件（项目约定和设计决策）|
-| scripts/analyze.py | 统一多市场分析脚本（港股/A股/美股）|
-| scripts/analyze_swing.py | 🎯 单股波段分析（A股/港股，复用 swing.py 评分核心 + data.py 数据层，输出四维评分+缠论结论+三刀筛辅助）|
-| scripts/daily_run.py | 🎯 每日收盘工作流 CLI 入口（A股+港股，无 LLM 依赖：扫池→裁决→outbox→快照→报告→回测记录）|
-| scripts/mcp_server.py | 🎯 MCP server（MCPServer 2.x，stdio + Streamable HTTP 双 transport，5 工具供 AI 工具调用）|
-| .zcode/config.json | ZCode 工作区 MCP 配置（quant-risk stdio 直连，重启 ZCode 生效）|
-| Dockerfile | 🎯 镜像构建（python:3.12-slim + uv，`--extra semantica` 全量，2026-09-09 公开分发）|
-| install.sh / install.ps1 | 🎯 本地一键安装（自动装 uv + Python 3.12 + 轻量依赖 + 冒烟自检，macOS/Linux + Windows）|
-| scripts/install_skill.sh / install_skill.ps1 | 🎯 **Skill 一键安装（下载即用，分发第一顺位）**：装到 `~/.claude/skills/quant-risk` 或 `--dest` 指定 Codex/ZCode，支持 curl 远程执行 + 本地仓库两种模式，排除 `__pycache__` |
-| .kimi-code/mcp.json | 🎯 Kimi Code MCP 接入（2026-09-18）：open-knowledge stdio server（`ok mcp`，继承项目根 cwd 找 `.ok/`，跨机器可移植），Kimi Code 新会话自动注册 `mcp__open-knowledge__exec/search/write/edit`；`ok init` 重装项目级 skill（.claude/.cursor/.agents/skills/open-knowledge/）与 `.ok/`（config.yml 入库，local/ 等运行时状态由 .ok/.gitignore 排除） |
-| scripts/recommend.py | 统一推荐入口脚本 |
-| scripts/portfolio.py | 持仓诊断工具 |
-| scripts/portfolio_report.py | 🔥 持仓完整报告（产业链Mermaid+投委会辩论+缠论+情绪面）|
-| scripts/tech_chan.py | 🔥 缠论深度分析 + 产业链Mermaid 输出 |
-| scripts/chan_mtf.py | 缠论多周期联立分析 |
-| scripts/formatter.py | 选股推荐格式化器 |
-| scripts/formatters/ | 四阶段风控格式化器 |
-| scripts/quantrisk/data.py | 数据层：行情/K线/基本面/资金面/信号/公告/期权/SEC/工具 + TickFlow |
-| scripts/quantrisk/daily.py | 每日编排：run_daily 串行跑市场（单市场失败隔离）+ render_daily_summary 摘要 |
-| scripts/quantrisk/chan.py | 缠论：分型→笔→线段→中枢→背驰→买卖点 |
-| scripts/quantrisk/indicators.py | 技术指标：MA/MACD/RSI/KDJ/BOLL/支撑压力/止损止盈 |
-| scripts/quantrisk/chain_renderer.py | 产业链渲染器：Mermaid 图文本生成（纯渲染，无文件依赖） |
-| scripts/quantrisk/screener.py | 标的池三层筛选 + 批量查询 |
-| scripts/quantrisk/report.py | StockAnalyzer 一键全量分析入口 |
-| scripts/quantrisk/recommender.py | 共享过滤/评分引擎 |
-| scripts/quantrisk/recommend_hk.py | 港股选股推荐适配器 |
-| scripts/quantrisk/recommend_cn.py | A股选股推荐适配器 |
-| scripts/quantrisk/recommend_us.py | 美股选股推荐适配器 |
+| AGENTS.md | 本文件（项目约定 + 行为铁律 + 文档索引）|
+| docs/agents/ | 主题决策归档：swing-system / value-legacy / data-sources |
+| scripts/daily_run.py | 🎯 每日收盘工作流 CLI 入口（A股+港股，无 LLM 依赖）|
+| scripts/install_skill.sh / install_skill.ps1 | 🎯 Skill 一键安装（分发第一顺位）|
+| Dockerfile | 🎯 镜像构建（python:3.12-slim + uv，`--extra semantica` 全量）|
+| install.sh / install.ps1 | 🎯 本地一键安装（uv + Python 3.12 + 轻量依赖 + 冒烟自检）|
+| .mcp.json / .zcode/config.json | MCP stdio 接入（Claude Code / ZCode）|
+| .kimi-code/mcp.json | 🎯 Kimi Code MCP 接入（open-knowledge stdio server）|
 
-## 分析框架
+## 分析框架（默认波段）
 
-三维评分体系（100 分制，2026-07-22 重构为六维评分；2026-08-05 权重改为 5:3:2）：
-
-| 维度 | 满分 | 类型 | 子维度 | 核心问题 |
-|------|:----:|:----:|--------|---------|
-| 📊 六维评分 | 50 | 基本面 | 生意质量/护城河/管理层/最大风险/文明趋势/估值 | 估值合理吗？盈利质量如何？财务健康吗？ |
-| 🔧 缠论 | 30 | 技术面 | 周线大势/MA排列/MACD/买卖点 | 结构位置在哪？有买卖点信号吗？（周线定势，日线定点）|
-| 🔥 热点 | 20 | 情绪面 | 板块资金排名/个股资金流向/成交量/动量 | 是否在市场主线？ |
-
-**满分**：六维评分 50 + 缠论 30 + 热点 20 = **100 分**（5:3:2）
-
-**评分流程**：
-1. 原始分计算 — 6 个维度各自独立评分（基础分 2.0，各维度加减分），hot_score 和 chan_score 同
-2. 池内百分位排名（`percentile_score_all`）— 6 个维度百分位等权平均，hot/ch 各自映射到 1~5
-3. 加权合成：`fb_pct = (percentile(dim1) + ... + percentile(dim6)) / 6`
-4. 映射到 50 分：`fb_w = round((1 + fb_pct×4)×10, 1)`
-5. 技术面：`ch_w = 百分位×6`（满分30），情绪面：`hot_w = 百分位×4`（满分20）
-6. 总分：`total = fb_w + ch_w + hot_w`
-
-**建议阈值**：≥70 强烈关注 | ≥56 可关注 | ≥44 观察 | <44 回避
-
-**六维评分维度**（大师归属）：
-
-| 维度 | 大师归属 | 核心指标 | 核心问题 |
-|:----|:--------:|---------|---------|
-| 📊 生意质量 | 段永平 | 毛利率/净利率/ROE | 这是对的生意吗？ |
-| 🔒 护城河 | 巴菲特 | ROE/毛利率/股息率/负债率 | 护城河深不深？ |
-| 👔 管理层 | 段永平+巴菲特 | ROE/净利率/营收增速/负债率 | 管理层值得信任吗？ |
-| ⚠️ 最大风险 | 芒格 | 负债率/营收增速/净利同比 | 怎么会死？有什么风险？ |
-| 🌍 文明趋势 | 李录 | 营收增速/净利率/负债率/ROE | 10年后还在吗？ |
-| 💰 估值 | 巴菲特+段永平 | PE相对估值/股息率 | 够便宜吗？有安全边际吗？ |
-
-**情绪面（热点）评分维度**（6 个）：
-板块资金排名、个股资金流向、板块龙头、成交量、20 日动量、20 日累计资金流向
-
-**技术面（缠论）评分维度**（5 个）：
-**周线大势（偏多 +0.5 / 偏空 -0.5）**、MA 排列（7 档）、MACD 金叉/死叉、MA 交叉（MA5/MA20/MA60）、缠论买卖点信号
-
-**输出格式**（2026-07-22 重构为四大师独立裁决+投票制框架，新增镜子测试+逆向检验+留白原则）：
-- 第一步：**选股** — 全市场扫描 → 中观过滤 → TOP10 评分明细（含四大师独立裁决表 + 追问 + 投票制合成结论 + 芒格式逆向检验 + 留白声明）
-- 第二步：**定价** — 入场区间 → 止损 → 目标价 → 综合建议表
-- 第三步：**择时** — 四大师裁决摘要 → MA排列 → MACD → 资金流向 → 买卖时机建议
-- 各股详情块末尾包含**镜子测试**：5句话说清楚为什么买，说不清楚不买
-
+总分 100 分：**日线趋势 30 + 日线量价/资金 25 + 日线笔 20 + 30 分钟线段 25**。三档状态：当前可布局 / 谨慎布局 / 观望。详细评分维度、道氏三步、降级链、ATR 止损移动止盈、上车/离场条件见 `docs/agents/swing-system.md`。legacy 六维评分框架（`--mode value`）见 `docs/agents/value-legacy.md`。

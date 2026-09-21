@@ -29,3 +29,9 @@ data/
 # 无关文件
 ve.pptx
 *.pptx
+
+# 本地密钥（TypeSafe / 其他 API key），禁止提交
+.env
+
+# Kimi Code 本地配置（AI 工具目录，不入库）
+.kimi-code/

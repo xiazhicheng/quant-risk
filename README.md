@@ -90,7 +90,7 @@ uv run scripts/analyze_swing.py 600388   # 单股波段分析
 | A股/港股行情 | 腾讯财经（主源，不封 IP）、东财 push2 |
 | A股日K | 腾讯（前复权）→ 新浪 → 百度 → TickFlow（兜底） |
 | 港股日K | 腾讯 → Yahoo |
-| 30分钟K线 | A股：Yahoo→东财→新浪→腾讯→mootdx；港股：Yahoo→东财 |
+| 30分钟K线 | A股：Yahoo→东财→新浪→腾讯；港股：Yahoo→东财 |
 | 资金流 | 东财 push2his（分钟级，并发限流自动退避） |
 | 基本面/财务 | 东财 datacenter / F10 |
 | 公告 | 东财公告接口（A股）/ 腾讯公告（港股） |

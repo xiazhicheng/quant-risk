@@ -33,7 +33,7 @@ def test_30m_failure_is_explicit(monkeypatch):
         return []
 
     for fn in ("stock_kline_30m_eastmoney_async", "stock_kline_30m_sina_async",
-               "stock_kline_30m_tencent_async", "stock_kline_30m_mootdx_async"):
+               "stock_kline_30m_tencent_async"):
         monkeypatch.setattr(data, fn, fake_empty)
     monkeypatch.setattr(data, "stock_kline_yahoo_async", fake_yahoo)
     result = asyncio.run(data.stock_kline_30m_async("000001", "cn"))
@@ -54,7 +54,7 @@ def test_30m_eastmoney_fallback(monkeypatch):
     async def fake_empty(*args, **kwargs):
         return []
 
-    for fn in ("stock_kline_30m_sina_async", "stock_kline_30m_tencent_async", "stock_kline_30m_mootdx_async"):
+    for fn in ("stock_kline_30m_sina_async", "stock_kline_30m_tencent_async"):
         monkeypatch.setattr(data, fn, fake_empty)
     monkeypatch.setattr(data, "stock_kline_yahoo_async", fake_yahoo)
     monkeypatch.setattr(data, "stock_kline_30m_eastmoney_async", fake_em)
@@ -76,7 +76,7 @@ def test_30m_sina_fallback(monkeypatch):
     async def fake_sina(code, market):
         return [{"date": f"2020-01-01 {i:02d}:00", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100} for i in range(45)]
 
-    for fn in ("stock_kline_30m_eastmoney_async", "stock_kline_30m_tencent_async", "stock_kline_30m_mootdx_async"):
+    for fn in ("stock_kline_30m_eastmoney_async", "stock_kline_30m_tencent_async"):
         monkeypatch.setattr(data, fn, fake_empty)
     monkeypatch.setattr(data, "stock_kline_yahoo_async", fake_yahoo)
     monkeypatch.setattr(data, "stock_kline_30m_sina_async", fake_sina)

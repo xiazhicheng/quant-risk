@@ -16,8 +16,9 @@
 - **记忆系统**: AgentMemory（行为记忆） + OpenKnowledge（文档知识）双轨制
 - **📄 主题文档索引（细节按需读取，不占常驻上下文）**：
   - `docs/agents/swing-system.md` — **波段系统全部决策细节**（四维评分/道氏/ATR/上车离场/候选池/回测闭环/MCP server/daily 工作流/舆情辅助/三tab简介）。任务涉及波段评分、候选池、回测、MCP、daily 时读取。
-  - `docs/agents/value-legacy.md` — **legacy value 模式**（六维评分/四大师/缠论/投委会/镜像测试/行业漏斗/产业链Mermaid）。仅 `--mode value`、portfolio_report、tech_chan 时读取。
+  - `docs/agents/value-legacy.md` — **legacy value 模式**（六维评分/四大师/缠论/投委会/镜像测试/行业漏斗/产业链Mermaid）。仅 `--mode value`、portfolio_report（六维/投委会部分；技术面已道氏化 2026-09-21）、tech_chan 时读取。
   - `docs/agents/data-sources.md` — **数据源优先级完整表**（行情/K线/基本面/资金面源链、限流排查、K线 fallback 链）。涉及数据获取与限流排查时读取。
+  - `docs/agents/jev-advice.md` — **TypeSafe jev 外部 AI 裁决**（state/questions 写法、依赖 TYPESAFE_API_KEY、三类结构化问题、踩坑）。任务涉及 jev 模型、持仓买卖双引擎交叉验证、`scripts/jev_advice.py` 时读取。
 
 - **数据分析方法（当前默认）**：A股与港股采用纯技术波段筛选，**持有周期不限定为 1-2 周——可以是几天、1 个月，若是真正的好标的持有 1 年也可**。总分 100 分：日线趋势 30 + 日线量价/资金 25 + 日线笔 20 + 30 分钟线段 25。基本面不参与评分、估值比较或一票否决；只使用行情、成交量、资金和道氏趋势（摆动点）数据。
 - **波段方向判定（2026-09-08 起为道氏理论，替代缠论）**：日线方向用**道氏次级趋势**（摆动点序列判趋势）、30 分钟用**道氏小趋势**确认入场/离场。禁止把周线缠论、日线中枢、基本面评分或旧缠论笔/线段作为默认波段入场依据；30 分钟数据缺失或与日线方向冲突时只能观望。
@@ -303,15 +304,17 @@ graph TB
 | 指标 | 数据 |
 |:----|:----|
 | MA60 | XX.XX，偏离+X.XX% 🔴偏空/🟢偏多 |
-| 缠论判定 | 有/无中枢，笔X，方向 ↑/↓ |
+| 道氏判定 | 上升/下降/震荡，摆动点N |
 
 **② 日线走势**
 
 | 指标 | 数据 |
 |:----|:----|
-| 走势类型 | 单中枢盘整/无中枢单边上涨/下跌 |
-| 最近笔 | ↑/↓ YYYY-MM-DD~YYYY-MM-DD [XX.XX→XX.XX] |
-| 中枢区间 | ZG=XX.XX ZD=XX.XX ZZ=XX.XX，价格在内部/上方/下方 |
+| 走势类型 | 最近日线趋势 up/down/neutral（收盘价摆动点）|
+| 道氏结论 | 🟢上升趋势/🟡震荡/🔴下降趋势，状态+边界（跌破前低X转空、突破前高Y延续），必须含操作含义 |
+| 最近摆动点 | ↑/↓/➖ YYYY-MM-DD~YYYY-MM-DD [低X→高Y] |
+| 趋势健康 | 上涨放量/缩量（量比X）|
+| 三阶段 | 吸筹/公众参与/派发 |
 
 **③ 关键信号**
 
@@ -319,8 +322,8 @@ graph TB
 |:----|:----|:----:|
 | MA排列 | 偏多/偏空/中性 | MA5=XX MA10=XX MA20=XX MA60=XX |
 | MACD | 多头✅/空头❌ | DIF=XX DEA=XX 柱=XX |
-| 缠论买卖点 | 一买/二买/三买/无 | 底分型=XX(日期) 顶分型=XX(日期) |
-| 风控 | 止损-X.XX% | 止损 XX.XX / 止盈 XX.XX |
+| 动能预警 | ⚠️动能走弱/✅动能转强/无 | MACD 柱背离（价新高柱收缩）|
+| 风控 | 止损-X.XX% | 止损 XX.XX / 卖出：移动止盈（跌破前低X或自高点回撤X%离场）|
 
 **🔥 市场情绪**（Mermaid journey 图，10分制，价格40%+量能30%+趋势30%）
 
@@ -367,7 +370,8 @@ scripts/
 ├── daily_run.py             每日收盘工作流（Phase 1，无 LLM 依赖）🎯
 ├── recommend.py             统一推荐脚本入口
 ├── portfolio.py             持仓诊断工具
-├── portfolio_report.py      持仓完整报告（产业链Mermaid+投委会辩论+缠论+情绪面）🔥
+├── portfolio_report.py      持仓完整报告（产业链Mermaid+投委会辩论+道氏技术面+情绪面）🔥
+├── jev_advice.py            TypeSafe jev 外部模型持仓买卖裁决（state/questions 见 docs/agents/jev-advice.md）🎯
 ├── tech_chan.py             缠论深度分析 + 产业链Mermaid输出 🔥
 ├── chan_mtf.py              缠论多周期联立分析
 ├── formatter.py             选股推荐格式化器 (Pydantic + 渲染)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 📊 持仓组合完整报告 — 一键生成
-整合四大师 + 缠论深度分析 + 产业链Mermaid + 行业漏斗5条 + 新标的推荐
+整合四大师 + 道氏深度分析 + 产业链Mermaid + 行业漏斗5条 + 新标的推荐
 
 用法:
     uv run scripts/portfolio_report.py              # 从 portfolio.json 读取持仓
@@ -13,10 +13,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime
 from scripts.quantrisk.report import StockAnalyzer
 from scripts.quantrisk.data import (hk_stock_quote_tencent_async, hk_kline_tencent_async,
-                                     stock_kline_yahoo_async, kline_tickflow_async,
+                                     hk_kline_async, stock_kline_yahoo_async, kline_tickflow_async,
                                      key_indicators_eastmoney_async, close_async_session, close_tickflow)
-from scripts.quantrisk.chan import chan_theory_full, calc_ma
-from scripts.quantrisk.indicators import calc_stop_loss_take_profit
+from scripts.quantrisk.chan import calc_ma
+from scripts.quantrisk.swing import _find_pivots, _dow_trend, _dow_health, _dow_stage, daily_dow_score, swing_sl_tp
 from scripts.quantrisk.chain_renderer import render_mermaid_raw, render_chain_block, has_chain_data
 
 def fmt(v, dec=2):
@@ -83,9 +83,7 @@ async def fetch_klines(code, market="hk", days=730):
         from scripts.quantrisk.data import us_stock_kline_sina_async
         kl = await us_stock_kline_sina_async(code, min(days, 800))
         return kl or []
-    kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1d", f"{days//365}y")
-    if kl and len(kl) >= 60: return kl
-    kl = await hk_kline_tencent_async(code, "day", days)
+    kl = await hk_kline_async(code, "day", days)  # 统一入口：腾讯优先，Yahoo兜底，fail-closed
     if kl and len(kl) >= 60: return kl
     kl = await kline_tickflow_async(f"{code}.HK", "1d", days)
     return kl or []
@@ -98,11 +96,14 @@ async def fetch_week_kline(code, market="hk"):
     if market == "us":
         kl = await stock_kline_yahoo_async(code, "1wk", "2y")
         return kl or []
-    kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1wk", "2y")
-    if not kl:
-        # Yahoo 失败时回退腾讯港股周K
-        from scripts.quantrisk.data import hk_kline_tencent_async
-        kl = await hk_kline_tencent_async(code.zfill(5), "week", 120)
+    # 港股周K：腾讯单点优先（2026-09-18 决策），Yahoo 仅兜底且异常吞掉不崩脚本
+    from scripts.quantrisk.data import hk_kline_tencent_async
+    kl = await hk_kline_tencent_async(code.zfill(5), "week", 120)
+    if kl and len(kl) >= 60: return kl
+    try:
+        kl = await stock_kline_yahoo_async(f"{int(code)}.HK", "1wk", "2y")
+    except Exception:
+        kl = []
     return kl or []
 
 # ── 行业漏斗5条硬指标 ──
@@ -663,85 +664,71 @@ def six_dimensions(pe, roe, gm, np_margin, rev_yoy, net_yoy, dr, dy, pb=0, secto
         "total_score": total_score,
     }
 
-# ── 缠论分析 ──
-def chan_detail_output(klines, price, label="日线"):
+# ── 道氏分析（2026-09-21 替代缠论：调仓报告技术面收敛到道氏理论） ──
+def dow_detail_output(klines, price, label="日线"):
+    """日线道氏分析：摆动点序列判趋势 + 道氏三重信号 + 边界/健康度/阶段。
+
+    返回 {"summary": str, "detail": list[str]}，格式与旧 chan_detail_output 兼容（渲染层只改标签）。"""
     if not klines or len(klines) < 60:
         return {"summary": "数据不足", "detail": []}
-    # 用 chan_risk_assessment 拿综合结论（偏多/中性/偏空 + 评分 + 买卖点）
-    from scripts.quantrisk.chan import chan_risk_assessment
-    ca = chan_risk_assessment(klines)
-    ch = ca if "error" not in ca else chan_theory_full(klines)
-    if "error" in ch:
-        return {"summary": ch["error"], "detail": []}
-    
+    dd = daily_dow_score(klines)
+    if dd.get("error"):
+        return {"summary": dd["error"], "detail": []}
     lines = []
-    trend = ch.get("trend", {})
-    strokes = ch.get("strokes", [])
-    pivots = ch.get("pivots", [])
-    divs = ch.get("divergences", [])
-    bs = ch.get("buy_sell_points", {})
-    
-    verdict = ca.get("chan_verdict", "") if "error" not in ca else ""
-    chan_score = ca.get("chan_score", "") if "error" not in ca else ""
-    verdict_icon = {"偏多": "🟢", "中性": "🟡", "偏空": "🔴"}.get(verdict, "🟡")
-    verdict_line = f"结论：{verdict_icon} {verdict}" if verdict else "结论：数据不足"
-    if isinstance(chan_score, (int, float)):
-        verdict_line += f"（评分 {chan_score:+d}）"
-    lines.append(f"{verdict_line} | 走势: {trend.get('description','未知')} | 笔{ch.get('strokes_count',0)} 段{ch.get('segments_count',0)} 中枢{ch.get('pivots_count',0)}")
-    
-    if strokes:
-        last_s = strokes[-1]
-        dir_icon = "↑" if last_s["direction"] == "up" else "↓"
-        lines.append(f"最近笔: {dir_icon} {last_s['start_date']}~{last_s['end_date']} [{fmt(last_s['low'])}→{fmt(last_s['high'])}]")
-        if last_s.get("broken"):
-            lines.append(f"💥 笔断裂: {'向上突破' if last_s['direction']=='up' else '向下突破'}")
-    
-    if pivots:
-        pz = pivots[-1]
-        lines.append(f"中枢: ZG={fmt(pz['zg'])} ZD={fmt(pz['zd'])} ZZ={fmt(pz['zz'])}")
-        if price > pz["zg"]:
-            lines.append(f"价格在中枢上方({fmt((price-pz['zg'])/pz['zg']*100)}%) ✅")
-        elif price < pz["zd"]:
-            lines.append(f"价格在中枢下方({fmt((pz['zd']-price)/pz['zd']*100)}%) 🔴")
-        else:
-            lines.append(f"价格在中枢内部 ➖")
-        # 三买潜力
-        if price > pz["zg"] * 0.97 and price < pz["zg"] * 1.03:
-            lines.append(f"⚡ 中枢上沿附近，关注突破三买机会")
-    
-    if divs:
-        for d in divs:
-            icon = "🟢" if "底" in d.get("detail","") else "🔴"
-            sev = "⚡" if d.get("severity") == "strong" else ""
-            lines.append(f"{icon}{sev} {d['detail']}")
-    
-    if bs.get("buy_points"):
-        for bp in bs["buy_points"]:
-            lines.append(f"🟢 {bp['detail']}")
-    elif not bs.get("sell_points"):
-        lines.append("当前无买卖点信号，等待背驰或突破确认")
-    if bs.get("sell_points"):
-        for sp in bs["sell_points"]:
-            lines.append(f"🔴 {sp['detail']}")
-    
-    return {"summary": trend.get('description','未知'), "detail": lines}
+    # ① 道氏一句话结论（定性+状态+边界+操作）
+    conclusion = dd.get("conclusion") or "道氏结论：数据缺失"
+    lines.append(conclusion)
+    # ② 最近摆动点（替代缠论"最近笔"）
+    last_dir = "↑" if dd.get("direction") == "up" else "↓" if dd.get("direction") == "down" else "➖"
+    sd = dd.get("start_date") or ""
+    ed = dd.get("end_date") or ""
+    prev_high = dd.get("previous_high") or 0
+    prev_low = dd.get("previous_low") or 0
+    if sd or ed:
+        lines.append(f"最近摆动点: {last_dir} {sd}~{ed} [低{fmt(prev_low)}→高{fmt(prev_high)}]")
+    # ③ 边界（前低/前高，跌破/突破即状态切换）
+    if prev_low > 0 or prev_high > 0:
+        lines.append(f"道氏边界: 跌破前低{fmt(prev_low)}转空、突破前高{fmt(prev_high)}延续")
+    # ④ 健康度（成交额确认趋势）
+    vol_ratio = 0.0
+    if len(klines) >= 10:
+        r5 = sum((k.get("volume", 0) or 0) for k in klines[-5:])
+        p5 = sum((k.get("volume", 0) or 0) for k in klines[-10:-5])
+        if p5 > 0: vol_ratio = r5 / p5
+    health = _dow_health(klines, vol_ratio)
+    lines.append(f"道氏②验健康: {health.get('note', '数据缺失')}（量比{vol_ratio:.2f}x）")
+    # ⑤ 动能预警（MACD柱背离，对冲滞后性）
+    from scripts.quantrisk.swing import _macd_divergence_note
+    note = _macd_divergence_note(klines, _find_pivots(klines, window=4))
+    if note:
+        lines.append(f"动能预警: {note}")
+    # ⑥ 三阶段（吸筹/公众参与/派发）
+    stage, stage_note = _dow_stage(klines, vol_ratio, price)
+    lines.append(f"三阶段: {stage}｜{stage_note}")
+    return {"summary": dd.get("reason", "未知"), "detail": lines}
 
-# ── 周线定势 ──
+# ── 周线定势（道氏版：MA60 + 周线摆动点判趋势） ──
 def weekly_outlook(week_kl, price):
     if not week_kl or len(week_kl) < 20:
         return "周线数据不足"
     w_ma = calc_ma(week_kl, [60])
     w_ma60 = w_ma[-1]["ma60"] if w_ma and w_ma[-1].get("ma60") else None
     w_close = week_kl[-1]["close"]
-    ch = chan_theory_full(week_kl, min_bi_len=5)
+    # 周线道氏：摆动点判趋势（替代旧周线缠论）
+    pivots = _find_pivots(week_kl, window=3)
+    if len(pivots) >= 4:
+        direction, desc = _dow_trend(pivots)
+        dow_desc = {"up": "上升趋势", "down": "下降趋势", "neutral": "震荡"}.get(direction, "未知")
+    else:
+        dow_desc = "摆动点不足"
     
     parts = []
     if w_ma60:
         off = (w_close / w_ma60 - 1) * 100
         icon = "🔴" if off < -5 else "🔵" if off < 0 else "🟢"
         parts.append(f"MA60={fmt(w_ma60)} {icon}偏{off<0 and '空' or '多'}({fmt(off)}%)")
-    parts.append(f"缠论:{ch.get('trend',{}).get('description','未知')}")
-    parts.append(f"笔{ch.get('strokes_count',0)}")
+    parts.append(f"道氏:{dow_desc}")
+    parts.append(f"摆动点{len(pivots)}")
     return " | ".join(parts)
 
 # ── 镜子测试（5句话说清楚为什么买—判分引擎） ──
@@ -900,8 +887,8 @@ async def analyze_holding(h, result):
     day_kl = await fetch_klines(code, market)
     week_kl = await fetch_week_kline(code, market)
     
-    # 缠论
-    chan = chan_detail_output(day_kl, price)
+    # 道氏分析（2026-09-21 替代缠论）
+    dow = dow_detail_output(day_kl, price)
     
     # 周线
     weekly = weekly_outlook(week_kl, price)
@@ -942,9 +929,6 @@ async def analyze_holding(h, result):
         tag = "触及上轨🔴" if pos >= 95 else "偏上⚠️" if pos >= 70 else "中轨附近➖" if pos >= 30 else "偏下⚠️" if pos >= 5 else "触及下轨🟢"
         boll_detail = f"上轨{upper:.2f} 中轨{middle:.2f} 下轨{lower:.2f} | 位置{pos:.0f}% {tag}"
     
-    # 止损止盈
-    sltp = tech.get("stop_loss_take_profit", {})
-    
     # 行业风险
     industry_risks_map = {
         "02460": ["PET成本2026年+40%，行业价格战持续", "冷柜战中被农夫山泉全面压制"],
@@ -961,14 +945,16 @@ async def analyze_holding(h, result):
     risks = munger_risk_check(code, name, rev_yoy, net_yoy, roe, dr, pe, gm, np_margin, industry_risks_map.get(code))
     
     # 镜子测试
-    mirror_result, mirror_reasons = mirror_test(code, masters.get("dims", []), pe, roe, rev_yoy, net_yoy, chan, ma_detail)
+    mirror_result, mirror_reasons = mirror_test(code, masters.get("dims", []), pe, roe, rev_yoy, net_yoy, dow, ma_detail)
     
-    # 技术止损（对已亏损标的用现价计算，对盈利或微亏标的用成本）
+    # 技术止损/移动止盈（道氏：ATR 止损 + 移动止盈，不预测目标；2026-09-21 替代固定止盈）
     entry_for_sl = price if pnl_pct < -10 else cost
     tech_sl = None
+    sltp = {}
     if day_kl and len(day_kl) >= 20:
-        sltp_calc = calc_stop_loss_take_profit(entry_price=entry_for_sl, klines=day_kl[-60:])
-        tech_sl = sltp_calc.get("stop_loss")
+        dow_sl = swing_sl_tp(entry_for_sl, day_kl[-120:])
+        tech_sl = dow_sl.get("stop_loss")
+        sltp = dow_sl
     
     # ── 5日量价情绪数据 ──
     pct_5d_val = None
@@ -1046,7 +1032,7 @@ async def analyze_holding(h, result):
         "risks": risks,
         "mirror": mirror_result, "mirror_reasons": mirror_reasons,
         "weekly": weekly,
-        "chan": chan,
+        "dow": dow,
         "ma_detail": ma_detail,
         "macd_detail": macd_detail,
         "boll_detail": boll_detail,
@@ -1495,7 +1481,7 @@ async def generate_report(holdings=None):
         print("> 📡 数据来源: 腾讯/新浪日K线 → 量价情绪评分")
         print()
         
-        # 缠论 & 技术面（表格输出）
+        # 道氏 & 技术面（表格输出）
         print("### 🔧 技术面分析")
         print()
         print("| 维度 | 指标 | 数据 |")
@@ -1508,36 +1494,29 @@ async def generate_report(holdings=None):
                 p = p.strip()
                 if "MA60" in p:
                     print(f"| 周线大势 | MA60 | {p} |")
-                elif "缠论" in p:
-                    print(f"| 周线大势 | 缠论判定 | {p} |")
-                elif "笔" in p:
-                    print(f"| 周线大势 | 缠论笔 | {p} |")
+                elif "道氏" in p:
+                    print(f"| 周线大势 | 道氏判定 | {p} |")
+                elif "摆动点" in p:
+                    print(f"| 周线大势 | 摆动点 | {p} |")
         else:
             print(f"| 周线大势 | 综合 | {weekly} |")
         # 日线走势
-        chan_summary = d['chan']['summary']
-        print(f"| 日线走势 | 走势类型 | {chan_summary} |")
-        for line in d["chan"]["detail"]:
+        dow_summary = d['dow']['summary']
+        print(f"| 日线走势 | 走势类型 | {dow_summary} |")
+        for line in d["dow"]["detail"]:
             line = line.strip()
-            if line.startswith("结论"):
-                print(f"| 日线走势 | **缠论结论** | {line} |")
-                continue
-            if "走势" in line and "oken" not in line:
-                continue  # 跳过已处理的走势类型
-            if "最近笔" in line:
-                print(f"| 日线走势 | 最近笔 | {line} |")
-            elif "中枢" in line and "ZG" in line:
-                print(f"| 日线走势 | 中枢区间 | {line} |")
-            elif "价格" in line and "中枢" in line:
-                print(f"| 日线走势 | 价格位置 | {line} |")
-            elif "突破" in line or "三买" in line:
-                print(f"| 日线走势 | 特殊信号 | {line} |")
-            elif "底背" in line or "顶背" in line or "背驰" in line:
-                print(f"| 日线走势 | 背驰信号 | {line} |")
-            elif "笔断裂" in line:
-                print(f"| 日线走势 | 笔断裂 | {line} |")
-            elif "笔" in line and "段" in line and "中枢" in line:
-                print(f"| 日线走势 | 结构 | {line} |")
+            if line.startswith("道氏结论"):
+                print(f"| 日线走势 | **道氏结论** | {line} |")
+            elif "最近摆动点" in line:
+                print(f"| 日线走势 | 最近摆动点 | {line} |")
+            elif "道氏边界" in line:
+                print(f"| 日线走势 | 道氏边界 | {line} |")
+            elif "道氏②" in line:
+                print(f"| 日线走势 | 趋势健康 | {line} |")
+            elif "动能预警" in line:
+                print(f"| 日线走势 | 动能预警 | {line} |")
+            elif "三阶段" in line:
+                print(f"| 日线走势 | 三阶段 | {line} |")
         # 技术指标
         ma = d['ma_detail']
         macd = d['macd_detail']
@@ -1551,18 +1530,11 @@ async def generate_report(holdings=None):
         boll = d.get("boll_detail", "")
         if boll:
             print(f"| 布林带 | 价格在布林带中 | {boll} |")
-        # 缠论笔
-        chan_detail = d["chan"]["detail"]
-        last_stroke = ""
-        for line in chan_detail:
-            if "最近笔" in line:
-                last_stroke = line.strip()
-                break
-        print(f"| 缠论笔 | {'↑' if '↑' in last_stroke else '↓' if '↓' in last_stroke else '-'} | {last_stroke} |")
-        # 止损止盈
+        # 风控（道氏：ATR止损 + 移动止盈，不预测目标）
         if d["tech_sl"]:
             sl_off = (d["price"] / d["tech_sl"] - 1) * 100
-            print(f"| 风控 | 止损-{fmt(abs(sl_off))}% | 止损 {fmt(d['tech_sl'])} / 止盈 {fmt(d['sltp'].get('take_profit','-'))} |")
+            exit_rule = d['sltp'].get('exit_rule', '')
+            print(f"| 风控 | 止损-{fmt(abs(sl_off))}% | 止损 {fmt(d['tech_sl'])} | 卖出：{exit_rule or '移动止盈离场'} |")
             print()
             
             print()
@@ -1658,7 +1630,7 @@ async def _generate_data_json(holdings):
             "funnel_total": result.get("funnel_total", 0),
             "risks": result.get("risks", []),
             "weekly": result.get("weekly", ""),
-            "chan": result.get("chan", {}),
+            "dow": result.get("dow", {}),
             "ma_detail": result.get("ma_detail", ""),
             "macd_detail": result.get("macd_detail", ""),
             "boll_detail": result.get("boll_detail", ""),
@@ -1791,18 +1763,20 @@ async def _render_analysis(analysis):
             for p in str(weekly).split("|"):
                 p = p.strip()
                 if "MA60" in p: print(f"| 周线大势 | MA60 | {p} |")
-                elif "缠论" in p: print(f"| 周线大势 | 缠论判定 | {p} |")
-                elif "笔" in p: print(f"| 周线大势 | 缠论笔 | {p} |")
+                elif "道氏" in p: print(f"| 周线大势 | 道氏判定 | {p} |")
+                elif "摆动点" in p: print(f"| 周线大势 | 摆动点 | {p} |")
         else:
             print(f"| 周线大势 | 综合 | {weekly} |")
-        chan = stock.get("chan", {})
-        print(f"| 日线走势 | 走势类型 | {chan.get('summary','')} |")
-        for line in chan.get("detail", []):
+        dow = stock.get("dow", {})
+        print(f"| 日线走势 | 走势类型 | {dow.get('summary','')} |")
+        for line in dow.get("detail", []):
             ls = line.strip()
-            if "最近笔" in ls: print(f"| 日线走势 | 最近笔 | {ls} |")
-            elif "中枢" in ls and "ZG" in ls: print(f"| 日线走势 | 中枢区间 | {ls} |")
-            elif "价格" in ls and "中枢" in ls: print(f"| 日线走势 | 价格位置 | {ls} |")
-            elif "笔" in ls and "段" in ls and "中枢" in ls: print(f"| 日线走势 | 结构 | {ls} |")
+            if ls.startswith("道氏结论"): print(f"| 日线走势 | **道氏结论** | {ls} |")
+            elif "最近摆动点" in ls: print(f"| 日线走势 | 最近摆动点 | {ls} |")
+            elif "道氏边界" in ls: print(f"| 日线走势 | 道氏边界 | {ls} |")
+            elif "道氏②" in ls: print(f"| 日线走势 | 趋势健康 | {ls} |")
+            elif "动能预警" in ls: print(f"| 日线走势 | 动能预警 | {ls} |")
+            elif "三阶段" in ls: print(f"| 日线走势 | 三阶段 | {ls} |")
         ma = stock.get("ma_detail", "")
         direction = "偏多" if "🔺" in str(ma) else "偏空" if "🔻" in str(ma) else "中性"
         print(f"| MA排列 | {direction} | {ma} |")
@@ -1814,8 +1788,8 @@ async def _render_analysis(analysis):
         sl = stock.get("tech_sl", 0)
         if sl:
             sl_off = (price / sl - 1) * 100 if sl else 0
-            tp = stock.get("sltp", {}).get("take_profit", "-")
-            print(f"| 风控 | 止损-{abs(sl_off):.2f}% | 止损 {sl} / 止盈 {tp} |")
+            exit_rule = stock.get("sltp", {}).get("exit_rule", "移动止盈离场")
+            print(f"| 风控 | 止损-{abs(sl_off):.2f}% | 止损 {sl} | 卖出：{exit_rule} |")
         # 镜子测试
         print()
         print("### 📋 镜子测试")
@@ -1829,7 +1803,7 @@ async def _render_analysis(analysis):
         print(f"> {stock.get('advice','')}")
         print()
     print("---")
-    print(f"> 📡 数据来源: StockAnalyzer + chan_theory_full + 研报数据库 + 行业分析")
+    print(f"> 📡 数据来源: StockAnalyzer + 道氏理论(swing.dow) + 研报数据库 + 行业分析")
     print(f"> ⚠️ 声明: 基于公开市场数据，不构成投资建议")
     print(f"> 脚本: scripts/portfolio_report.py --sixdim-render | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 

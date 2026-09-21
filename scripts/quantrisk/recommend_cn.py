@@ -309,7 +309,7 @@ async def cn_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]
     qf = [lambda c=c: cn_stock_quote_tencent_async(c) for c in codes]
     qr = await parallel_map(qf, max_concurrency=20)
 
-    # 并行获取基本面（东财→Yahoo→mootdx，三级 fallback）
+    # 并行获取基本面（东财→Yahoo，两级 fallback）
     indf = [lambda c=c: cn_key_indicators_fallback(c) for c in codes]
     ind = await parallel_map(indf, max_concurrency=20)
 

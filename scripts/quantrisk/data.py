@@ -579,46 +579,6 @@ async def stock_kline_30m_tencent_async(code: str, market: str = "cn") -> list[d
     return rows
 
 
-_MOOTDX_SERVERS = [("119.147.212.81", 7709), ("218.75.126.9", 7709), ("123.125.108.14", 7709)]
-
-
-async def stock_kline_30m_mootdx_async(code: str, market: str = "cn") -> list[dict]:
-    """mootdx（通达信TCP）A股30分钟K线（frequency=2）。A股最末兜底源，同步调用放线程池。"""
-    market = market.lower()
-    if market != "cn":
-        return []
-
-    def _sync():
-        from mootdx.quotes import Quotes
-        for ip, port in _MOOTDX_SERVERS:
-            try:
-                c = Quotes.factory(market="std", server=(ip, port), timeout=8)
-                df = c.bars(symbol=code, frequency=2, offset=800)
-                if df is not None and len(df):
-                    return df
-            except Exception:
-                continue
-        return None
-
-    df = await asyncio.to_thread(_sync)
-    if df is None or not len(df):
-        return []
-    rows = []
-    for _, row in df.iterrows():
-        try:
-            dt = str(row["datetime"])
-            if len(dt) == 16:
-                pass
-            elif len(dt) == 19:
-                dt = dt[:16]
-            rows.append({"date": dt, "open": float(row["open"]), "high": float(row["high"]),
-                         "low": float(row["low"]), "close": float(row["close"]),
-                         "volume": int(float(row.get("vol", 0) or 0))})
-        except (ValueError, KeyError, TypeError):
-            continue
-    return rows
-
-
 async def company_survey_async(code: str, market: str) -> dict:
     """公司资料（主营业务/行业/法人等），用于波段报告每只标的附基本面简介。
     A股：东财 F10 CompanySurveyAjax（行业+公司简介+法人+总经理+官网+注册资本）；
@@ -838,7 +798,7 @@ async def recent_announcements_async(code: str, market: str, top: int = 4) -> li
 
 async def stock_kline_30m_async(code: str, market: str, range_: str = "60d") -> dict:
     """A股/港股统一30分钟K线入口，源链按序取数，绝不伪造周期。
-    A股：Yahoo → 东财 → 新浪 → 腾讯mkline → mootdx；港股：Yahoo → 东财。
+    A股：Yahoo → 东财 → 新浪 → 腾讯mkline；港股：Yahoo → 东财。
     任一源拿到 ≥40 根即停，source 字段如实标注实际数据源。"""
     market = market.lower()
     if market == "hk":
@@ -850,8 +810,7 @@ async def stock_kline_30m_async(code: str, market: str, range_: str = "60d") -> 
         sources = [("Yahoo", lambda: stock_kline_yahoo_async(symbol, interval="30m", range_=range_)),
                    ("东财", lambda: stock_kline_30m_eastmoney_async(code, market)),
                    ("新浪", lambda: stock_kline_30m_sina_async(code, market)),
-                   ("腾讯", lambda: stock_kline_30m_tencent_async(code, market)),
-                   ("mootdx", lambda: stock_kline_30m_mootdx_async(code, market))]
+                   ("腾讯", lambda: stock_kline_30m_tencent_async(code, market))]
     else:
         return {"available": False, "source": "", "interval": "30m", "bars": [], "bar_count": 0,
                 "error": f"不支持的市场: {market}"}
@@ -1179,46 +1138,6 @@ async def kline_tickflow_batch_async(symbols: list[str], period: str = "1d", cou
             out[sym] = rows
     return out
 
-
-# mootdx A股K线（同步，TCP直连）
-try:
-    from mootdx.quotes import Quotes as _MootdxQuotes; _MOOTDX_OK = True
-except ImportError: _MOOTDX_OK = False
-
-def _tdx_client():
-    if not _MOOTDX_OK: raise ImportError("mootdx 未安装: uv add mootdx")
-    servers = [("119.147.212.81",7709),("180.153.18.170",7709),
-               ("59.175.238.38",7709),("112.74.214.43",7709)]
-    import socket
-    for ip,port in servers:
-        s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.settimeout(1.5)
-        try: s.connect((ip,port)); s.close(); return _MootdxQuotes.factory(market="std",server=(ip,port))
-        except: s.close(); continue
-    return _MootdxQuotes.factory(market="std")
-
-def cn_stock_kline_tdx_sync(code:str,frequency:int=9,start:int=0,count:int=200) -> list[dict]:
-    """A股K线（mootdx TCP）。frequency: 9=日线, 10=周, 11=月, 8=1分钟等"""
-    try:
-        client = _tdx_client(); df = client.bars(symbol=code,frequency=frequency,start=start,count=count)
-        if df is None or df.empty: return []
-        return [{"date":str(r.get("date",""))[:19],"open":round(float(r.get("open",0)),2),
-                 "high":round(float(r.get("high",0)),2),"low":round(float(r.get("low",0)),2),
-                 "close":round(float(r.get("close",0)),2),"volume":int(r.get("volume",0)),
-                 "amount":round(float(r.get("amount",0)),2)} for _,r in df.iterrows()]
-    except Exception as e:
-        print(f"[WARN] mootdx K线失败({code}): {e}"); return []
-
-def cn_financial_snapshot_sync(code:str) -> dict:
-    """A股最新季报财务快照（mootdx）"""
-    try:
-        client = _tdx_client(); df = client.finance(symbol=code)
-        if df is None or df.empty: return {}
-        r = df.iloc[-1].to_dict()
-        return {"eps":round(float(r.get("eps",0)),4),"total_equity":float(r.get("equity",0)),
-                "revenue_total":float(r.get("revenue",0)),"net_profit":float(r.get("net_profit",0)),
-                "roe_pct":round(float(r.get("roe",0))*100,2)}
-    except Exception as e:
-        print(f"[WARN] mootdx 财务快照失败({code}): {e}"); return {}
 
 # ═════════════════════════════════════════════════
 # L4-L11: 基本面 / 资金面 / 信号 / 工具 (Fundamental)
@@ -1634,7 +1553,7 @@ async def cn_key_indicators_async(code:str, page_size:int=4) -> list[dict]:
 
 
 async def cn_key_indicators_fallback(code: str) -> list[dict]:
-    """A股基本面统一入口（东财 datacenter → Yahoo keyStatistics → mootdx 同步快照）。
+    """A股基本面统一入口（东财 datacenter → Yahoo keyStatistics）。
 
     返回与 cn_key_indicators_async 兼容的 list[dict] 格式。
     当东财 datacenter 因限流/宕机返回空数据时，自动降级到备选源。
@@ -1661,19 +1580,6 @@ async def cn_key_indicators_fallback(code: str) -> list[dict]:
     except Exception as e:
         _record_source("cn_indicator_yahoo", False)
         print(f"[WARN] Yahoo基本面失败({code}): {e}")
-
-    # 3. mootdx 同步快照（最后兜底：EPS/ROE/净利润/营收）
-    #    注意：mootdx 是 TCP 同步调用，必须在线程池执行避免阻塞 event loop
-    try:
-        loop = asyncio.get_running_loop()
-        snap = await loop.run_in_executor(None, lambda: cn_financial_snapshot_sync(code))
-        if snap:
-            _record_source("cn_indicator_mootdx", True)
-            return [snap]
-        _record_source("cn_indicator_mootdx", False)
-    except Exception as e:
-        _record_source("cn_indicator_mootdx", False)
-        print(f"[WARN] mootdx快照失败({code}): {e}")
 
     return []
 

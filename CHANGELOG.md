@@ -1,5 +1,32 @@
 # Changelog
 
+## V1.10.0 (2026-09-21) — 持仓报告道氏化收敛 + TypeSafe jev 外部裁决 + 依赖清理
+
+### 持仓报告技术面：缠论 → 道氏（portfolio_report.py）
+
+- 调仓组合报告技术面整体收敛为道氏理论（2026-09-21 用户明确）：日线 `chan_detail_output`（笔/中枢/背驰/买卖点）→ `dow_detail_output`（道氏结论/摆动点/边界/趋势健康/三阶段，复用 swing.py 道氏核心）；周线缠论判定 → 道氏判定（周线摆动点判涨跌/震荡）
+- 风控从固定止盈改为道氏移动止盈（ATR 止损 + 跌破前低/自高点回撤离场，不预测目标），与波段系统 `swing_sl_tp` 对齐
+- 六维评分/投委会/产业链/情绪面保留（value legacy 逻辑）；同步更新 AGENTS.md 投资建议模板技术面段落、value-legacy/swing-system 文档
+
+### TypeSafe jev 外部 AI 裁决（新增 scripts/jev_advice.py）
+
+- 持仓买卖裁决双引擎：复用 analyze_swing 信号管线打包 state + questions（Choice/Score/Noul 三类结构化问题），调 `jev-latest` 独立裁决 buy/hold/reduce/sell + 组合风险
+- **jev 非必需（降级设计）**：typesafe-sdk 未装 / 无 key / 调用失败时自动降级 `local_dow_action` 纯规则裁决（离场/道氏 down→sell，双 up→buy，冲突/派发→reduce，其余→hold），永不崩溃
+- API key 存项目根 `.env`（已 gitignore），脚本 `_load_dotenv` 零依赖自动加载
+- 主题文档 `docs/agents/jev-advice.md`：state/questions 写法规范 + 三类问题 + 降级映射 + 踩坑记录
+
+### 依赖清理与安全
+
+- **移除 mootdx**（其 tenacity<9 与 typesafe-sdk 的 >=9 冲突）：删 data.py 四个同步函数（30m 兜底/TDX K线/财务快照）+ 30m 源链 mootdx 段，A股基本面兜底 东财→Yahoo 两级；30m 源链收敛 Yahoo→东财→新浪→腾讯；同步 tests/test_30m_data.py（3 处）、recommend_cn.py 注释、README/docs 引用
+- **安装 typesafe-sdk 0.7.0**（tenacity 升 9.1.4）
+- .gitignore 新增 `.env`（API key）与 `.kimi-code/`（本地 AI 配置，含已跟踪的 mcp.json 解除跟踪）
+
+### 测试
+
+- 新增 tests/test_jev_advice.py（12 用例：state/questions 构建 + local_dow_action 全分支降级），全量 **132 用例通过**（+2 skipped semantica 可选）
+
+---
+
 ## V1.9.0 (2026-09-19) — 数据可靠性加固 + CLI 硬化 + 文档一致性
 
 ### 数据可靠性加固（切片1）

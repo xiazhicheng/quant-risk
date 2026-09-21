@@ -359,7 +359,7 @@ graph TB
 - 保存本次持仓信息到 AgentMemory
 
 
-## 架构速览 (V1.9.0)
+## 架构速览 (V1.10.0)
 
 所有代码统一在 `scripts/` 目录下，`quantrisk` 作为 `scripts/quantrisk/` 子包存在。
 

@@ -59,11 +59,16 @@ def _rows_from_snapshot(snap: dict[str, Any], market: str) -> list[dict[str, Any
         code = r.get("code")
         if not code:
             continue
+        # 门禁状态（2026-09-24 Q4-B）：gate.state 优先，兼容顶层 veto 字段；历史快照两者皆无 → 未评估
+        gate_state = (r.get("gate") or {}).get("state") or ""
+        if not gate_state and "veto" in r:
+            gate_state = "veto" if r.get("veto") else "pass"
         rows.append({
             "as_of": snap["as_of"], "market": market, "code": code,
             "name": r.get("name") or "", "status": r.get("status") or "观望",
             "total": r.get("total") or 0, "verdict": r.get("verdict") or "WATCH",
             "board": snap["board_of"].get(code, ""),
+            "gate": gate_state,
         })
     return rows
 
@@ -138,6 +143,12 @@ def render_report(snaps: list[dict[str, Any]], market: str, days: list[int],
     section("按来源（板块池 vs 主池）", [
         ("板块池(热门板块top3)", [r for r in all_rows if r["board"]]),
         ("主池", [r for r in all_rows if not r["board"]]),
+    ])
+    # 基本面门禁（2026-09-24 Q4-B：通过组 vs 否决组条件收益差）
+    section("按基本面门禁", [
+        ("门禁通过", [r for r in all_rows if r["gate"] == "pass"]),
+        ("门禁否决", [r for r in all_rows if r["gate"] == "veto"]),
+        ("未评估（财务缺失/历史快照）", [r for r in all_rows if r["gate"] not in ("pass", "veto")]),
     ])
     # pool_mode
     section("按池版本(pool_mode)", [

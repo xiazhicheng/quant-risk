@@ -10,6 +10,7 @@
     - 波段四维评分（日线趋势30 + 量价资金25 + 日线道氏20 + 30分钟道氏25 = 100）
     - 日线/30分钟道氏一句话结论（规则八格式）
     - 布局状态判定（当前可布局 / 谨慎布局 / 观望）+ 止损/目标价
+    - 基本面门禁（只否决不加分：评分后置评估，触发⛔禁止新建仓；持仓不加仓）
     - 三刀筛辅助数据（量比 / 道氏双周期方向 / 板块）
 
 与 recommend.py --mode swing 同源：复用 swing.py 评分核心 + data.py 数据层，
@@ -121,6 +122,16 @@ def parse_args() -> tuple[list[str], str, str, str]:
     return codes, strategy, run_mode, rule_engine
 
 
+def _apply_gate_to_result(result: dict, gate: dict) -> dict:
+    """单股分析的门禁落地（2026-09-24 grill Q1 展示面补齐）：只否决不加分——评分/道氏裁决不动，
+    veto 时状态封顶「⛔门禁否决」（禁止新建仓；持仓者不加仓，卖出仍由道氏决定）。"""
+    result["gate"] = gate
+    result["veto"] = gate.get("state") == "veto"
+    if result["veto"] and str(result.get("status") or "").startswith(("当前可布局", "谨慎布局")):
+        result["status"] = f"⛔门禁否决：{'；'.join(gate.get('reasons') or [])}"
+    return result
+
+
 async def analyze_one(code: str, market: str, name_hint: str = "", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow") -> dict:
     from scripts.quantrisk.data import (company_survey_async, recent_announcements_async,
                                         business_mix_async, finance_brief_async, core_conception_async,
@@ -147,6 +158,14 @@ async def analyze_one(code: str, market: str, name_hint: str = "", strategy: str
         except Exception:
             extra[key] = {}
     result = swing_score_one(stock, daily, intraday, flow)
+    # 基本面门禁（2026-09-24 grill Q1：单股同源评估，只否决不加分，不动评分与道氏裁决）
+    try:
+        from scripts.quantrisk.gate import evaluate_gate, fetch_gate_metrics
+        gate = evaluate_gate(market, name, await fetch_gate_metrics(code, market))
+    except Exception as exc:
+        print(f"[WARN] 门禁评估异常({code}): {type(exc).__name__}: {str(exc)[:80]}")
+        gate = {"state": "unknown", "reasons": [], "notes": [], "rule_set": ""}
+    _apply_gate_to_result(result, gate)
     result["market"] = market
     result["name"] = name
     result["daily_count"] = len(daily)
@@ -196,6 +215,17 @@ def render_one(r: dict) -> str:
         (f"，ATR{r.get('atr')}" if r.get('atr') else ""),
         f"- 📌 **上车条件**：{entry_line}",
         f"- 🚪 **离场条件**：{exit_line}",
+    ]
+    gate = r.get("gate") or {}
+    if gate.get("state") == "veto":
+        lines.append(f"- ⛔ **基本面门禁：否决（{'；'.join(gate.get('reasons') or [])}）→ 禁止新建仓**"
+                     "（只否决不加分；持仓者不加仓，卖出仍由道氏裁决）")
+    elif gate.get("state") == "pass":
+        note_s = "；".join(gate.get("notes") or [])
+        lines.append(f"- ✅ 基本面门禁：通过（不计分，仅门禁{'；' + note_s if note_s else ''}）")
+    else:
+        lines.append("- ⚠️ 基本面门禁：财务数据缺失（未评估，不否决不加分）")
+    lines += [
         _render_profile_line(r, r["market"]),
         f"- 日线趋势（30）：{t['reason']}",
         f"- 日线量价/资金（25）：{f['reason']}",

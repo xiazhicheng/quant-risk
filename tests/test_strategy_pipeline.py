@@ -12,6 +12,16 @@ def bars(count=90):
     ]
 
 
+def _fake_gate_pass(monkeypatch):
+    """离线化：门禁不打真实财务接口，全部 pass（门禁规则本身由 test_gate.py 覆盖）。"""
+    async def fake_gate(results, market, **kw):
+        for r in results:
+            r["gate"] = {"state": "pass", "reasons": [], "rule_set": "cn_strict"}
+            r["veto"] = False
+        return {"evaluated": len(results), "vetoed": 0}
+    monkeypatch.setattr("scripts.quantrisk.gate.apply_fundamental_gate", fake_gate)
+
+
 def test_pipeline_requests_intraday_for_band(monkeypatch):
     """单策略 swing_band：统一尝试拉取30m（入场优化），30m缺失由规则层不阻断。"""
     stocks = [{"c": "600000", "n": "测试", "s": "其他", "p": 19.0,
@@ -36,6 +46,7 @@ def test_pipeline_requests_intraday_for_band(monkeypatch):
 
     monkeypatch.setattr(swing, "attach_company_profiles", skip_profiles)
     monkeypatch.setattr(swing, "_attach_decision_receipts", skip_receipts)
+    _fake_gate_pass(monkeypatch)
     report = asyncio.run(swing.run_swing_pipeline_with_intraday(stocks, "cn", daily_fetch, flow_fetch, intraday_fetch))
     assert called["intraday"] == 1
     assert report["details"][0]["strategy_id"] == "swing_band"
@@ -63,6 +74,7 @@ def test_pipeline_tolerates_missing_intraday(monkeypatch):
 
     monkeypatch.setattr(swing, "attach_company_profiles", skip_profiles)
     monkeypatch.setattr(swing, "_attach_decision_receipts", skip_receipts)
+    _fake_gate_pass(monkeypatch)
     report = asyncio.run(swing.run_swing_pipeline_with_intraday(stocks, "cn", daily_fetch, flow_fetch, intraday_fetch))
     assert report["details"][0]["segment"]["available"] is False
     assert report["details"][0]["verdict"] == "ALLOW" or report["details"][0]["verdict"] == "WATCH"

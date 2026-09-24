@@ -164,6 +164,9 @@ def render_daily_summary(result: dict[str, Any]) -> str:
         lines.append(f"## {label}（{market}）")
         lines.append(f"- 报告：{m.get('file') or '—'}")
         lines.append(f"- 快照：{m.get('snapshot') or '—'}")
+        gate = (m.get("report") or {}).get("gate_stats") or {}
+        if gate:
+            lines.append(f"- ⛔ 基本面门禁：评估 {gate.get('evaluated', 0)} 只，否决 {gate.get('vetoed', 0)} 只")
         top10 = m.get("top10") or []
         if top10:
             lines.append("- TOP10：")

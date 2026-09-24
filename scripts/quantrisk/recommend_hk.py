@@ -838,7 +838,7 @@ async def score_all_passed(
 # ═══════════════════════════════════════════════════════════════
 
 async def hk_swing_recommend_pipeline(min_stocks: int = 300, industry: str = "", strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
-    """港股纯技术波段流程：日线笔 + 30分钟线段。"""
+    """港股纯技术波段流程：日线道氏 + 30分钟道氏（评分后置基本面门禁，只否决不加分）。"""
     from scripts.quantrisk.swing import run_swing_pipeline_with_intraday, build_index_sync
     from scripts.quantrisk.data import stock_kline_30m_async, cn_index_quotes_async
 

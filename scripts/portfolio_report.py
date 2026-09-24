@@ -2,6 +2,7 @@
 """
 📊 持仓组合完整报告 — 一键生成
 道氏持仓裁决（_dow_verdict，2026-09-23 全道氏化）+ 道氏技术面 + 产业链Mermaid
++ 基本面门禁"不加仓"标注（只否决不加分，不改道氏卖出裁决）+ 新标的推荐
 
 用法:
     uv run scripts/portfolio_report.py              # 从 portfolio.json 读取持仓
@@ -978,6 +979,10 @@ async def analyze_holding(h, result):
     
     # 获取K线（按市场）
     market = h.get("market", "hk")
+    # 基本面门禁（2026-09-24 grill Q1/Q6：已持仓只标"不加仓"，卖出裁决仍完全由道氏 _dow_verdict() 决定）
+    from scripts.quantrisk.gate import evaluate_gate
+    gate = evaluate_gate(market, name, {"net_profit": ind.get("HOLDER_PROFIT"),
+                                        "debt_ratio": dr, "revenue_yoy": rev_yoy})
     day_kl = await fetch_klines(code, market)
     week_kl = await fetch_week_kline(code, market)
     
@@ -1116,6 +1121,7 @@ async def analyze_holding(h, result):
     return {
         "code": code, "name": name, "sector": sector,
         "market": market,
+        "gate": gate,
         "cost": cost, "price": price, "shares": shares,
         "market_value": price * shares, "cost_value": cost * shares,
         "pnl_pct": pnl_pct,
@@ -1388,6 +1394,15 @@ async def generate_report(holdings=None):
             print(f"- ⚡ 动能：{dow_d['divergence']}")
         if dow_d.get("stage"):
             print(f"- 📊 三阶段：{dow_d['stage']}")
+        # 基本面门禁（Q6：只标不加仓，不改道氏裁决动作）
+        gate = d.get("gate") or {}
+        if gate.get("state") == "veto":
+            print(f"- ⛔ 基本面门禁：**不加仓**（{'；'.join(gate.get('reasons') or [])}）｜卖出仍由上方道氏裁决决定，门禁不触发卖出")
+        elif gate.get("state") == "pass":
+            note_s = "；".join(gate.get("notes") or [])
+            print(f"- ✅ 基本面门禁：通过（不计分，仅门禁{'；' + note_s if note_s else ''}）")
+        else:
+            print("- ⚠️ 基本面门禁：财务数据缺失（未评估，不触发限制）")
         print()
         print("> 📡 数据来源: 腾讯/新浪日K线 → 道氏摆动点序列（dow_detail_output）")
         
@@ -1521,7 +1536,7 @@ async def generate_report(holdings=None):
     print("|:----|:----|:----|")
     print("| 日K线 / 道氏摆动点 | 腾讯（主） | ✅ 新浪备源可用 |")
     print("| 行情 / 现价 | 腾讯 | ⚠️ 单一源 |")
-    print("| 基本面（PE/ROE/毛利率/负债率/增速）| 东财 datacenter | ⚠️ 单一源，仅作背景参考，**不参与道氏调仓裁决** |")
+    print("| 基本面（PE/ROE/毛利率/负债率/增速）| 东财 datacenter | ⚠️ 单一源，仅作背景参考 + 触发⛔不加仓门禁，**不参与道氏调仓裁决** |")
     print()
 
     print("---")

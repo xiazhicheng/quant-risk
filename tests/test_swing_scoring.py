@@ -580,3 +580,108 @@ def test_dow_step3_breakout_check(monkeypatch):
     # 现价 28 > 前低 9.0：未跌破，趋势延续
     r_hold = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 28, "q": {"volume": 1e7}}, daily, daily, {})
     assert "趋势延续" in r_hold["dow_step3"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 滞后性纪律·扣分+降档双轨（2026-09-24 grill Q7=C / Q12=A）
+# ═══════════════════════════════════════════════════════════════
+
+from types import SimpleNamespace
+
+
+def _force_allow_engine(monkeypatch, stroke_conclusion="🟢上升趋势"):
+    """强制道氏双周期 up + 规则引擎 ALLOW：隔离纪律逻辑，验证封顶能压过引擎放行。"""
+    from scripts.quantrisk.rule_engine import ShadowRuleEngine
+
+    monkeypatch.setattr("scripts.quantrisk.swing.daily_stroke_score",
+                        lambda _: {"score": 20.0, "direction": "up", "trend_direction": "up",
+                                   "low": 9.0, "reason": "up", "conclusion": stroke_conclusion})
+    monkeypatch.setattr("scripts.quantrisk.swing.intraday_segment_score",
+                        lambda _: {"score": 25.0, "direction": "up", "available": True,
+                                   "reason": "up", "conclusion": "up"})
+    monkeypatch.setattr(ShadowRuleEngine, "evaluate",
+                        lambda self, f: SimpleNamespace(
+                            verdict=SimpleNamespace(value="ALLOW"), entry_eligible=True,
+                            rule_hits=[], engine="python", error="",
+                            shadow_match=True, shadow_verdict="ALLOW"))
+
+
+def _flat_tail(daily, n_flat, volume=None):
+    """把末尾 n_flat 根K线改成收盘走平（构造滞涨/横盘），返回新列表。"""
+    out = [dict(k) for k in daily]
+    close = out[-1]["close"]
+    for k in out[-n_flat:]:
+        k.update({"close": close, "high": close + 0.01, "low": close - 0.01})
+        if volume is not None:
+            k["volume"] = volume
+    return out
+
+
+def test_discipline_momentum_weak_deducts_trend_and_caps(monkeypatch):
+    """① 动能走弱：日线趋势 30 扣 6，状态封顶谨慎布局（step=0.02 使振幅≥4%，隔离③）。"""
+    daily = bars(count=90, step=0.02)
+    baseline = daily_trend_score(daily)["score"]
+    _force_allow_engine(monkeypatch, stroke_conclusion="⚠️动能走弱预警：价创新高但上涨动能收缩")
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 11.8},
+                             daily, daily, {"flow_5d": 1e8, "days": 5})
+    rules = [d["rule"] for d in result["discipline"]]
+    assert any("动能走弱" in r for r in rules)
+    assert result["trend"]["score"] == max(0.0, baseline - 6)
+    assert "动能走弱" in result["trend"]["reason"] and "扣6分" in result["trend"]["reason"]
+    # 引擎 ALLOW 放行也不得回到"当前可布局"（Q7=C 封顶对引擎生效）
+    assert result["status"].startswith("谨慎布局")
+    assert "滞后性纪律" in result["status"]
+
+
+def test_discipline_high_volume_stall_deducts_flow_and_caps(monkeypatch):
+    """② 高位放量滞涨：60日高位区+量比>2x+当日涨幅<1% → 量价 25 扣 6。"""
+    daily = bars(count=90, step=0.02)
+    daily = _flat_tail(daily, 5, volume=50000)  # 末5日收盘走平+末5日放量（确保进入85%高位区）
+    flow = {"flow_5d": 1e8, "days": 5}
+    baseline = daily_flow_score(daily, flow)["score"]
+    _force_allow_engine(monkeypatch)
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 11.8},
+                             daily, daily, flow)
+    rules = [d["rule"] for d in result["discipline"]]
+    assert any("高位放量滞涨" in r for r in rules)
+    assert result["flow"]["score"] == max(0.0, baseline - 6)
+    assert "高位放量滞涨" in result["flow"]["reason"] and "扣6分" in result["flow"]["reason"]
+    assert result["status"].startswith("谨慎布局") and "滞后性纪律" in result["status"]
+
+
+def test_discipline_high_flat_streak_deducts_trend(monkeypatch):
+    """③ 高位横盘：高位区连续≥10日振幅<4% → 日线趋势 30 扣 4。"""
+    from datetime import date as _date, timedelta
+    daily = bars(count=50, step=0.05)
+    close = daily[-1]["close"]
+    tail_day = _date.fromisoformat(daily[-1]["date"]) + timedelta(days=1)
+    for i in range(12):  # 追加12根一字K线（振幅≈0.17% <4%），总62根满足日线趋势≥60要求
+        daily.append({"date": (tail_day + timedelta(days=i)).isoformat(),
+                      "open": close, "high": close + 0.01, "low": close - 0.01,
+                      "close": close, "volume": 2000})
+    # 高位区自检：step=0.05 使现价处于60日区间约89%分位（≥85%），避免测试数据贴边界
+    assert 0.85 <= (close - min(k["low"] for k in daily[-60:])) / (
+        max(k["high"] for k in daily[-60:]) - min(k["low"] for k in daily[-60:]))
+    baseline = daily_trend_score(daily)["score"]
+    _force_allow_engine(monkeypatch)
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": close},
+                             daily, daily, {"flow_5d": 1e8, "days": 5})
+    rules = [d["rule"] for d in result["discipline"]]
+    assert any("高位横盘" in r for r in rules)
+    assert result["trend"]["score"] == max(0.0, baseline - 4)
+    assert "高位横盘" in result["trend"]["reason"] and "扣4分" in result["trend"]["reason"]
+    assert result["status"].startswith("谨慎布局") and "滞后性纪律" in result["status"]
+
+
+def test_discipline_absent_keeps_status_untouched(monkeypatch):
+    """对照组：三条纪律都不触发（step=0.02 振幅≥4%、无放量滞涨、无动能走弱）→ 不扣分不封顶。"""
+    daily = bars(count=90, step=0.02)
+    baseline_t = daily_trend_score(daily)["score"]
+    baseline_f = daily_flow_score(daily, {"flow_5d": 1e8, "days": 5})["score"]
+    _force_allow_engine(monkeypatch)
+    result = swing_score_one({"c": "600000", "n": "测试", "s": "其他", "p": 11.8},
+                             daily, daily, {"flow_5d": 1e8, "days": 5})
+    assert result["discipline"] == []
+    assert result["trend"]["score"] == baseline_t
+    assert result["flow"]["score"] == baseline_f
+    assert result["status"] == "当前可布局"

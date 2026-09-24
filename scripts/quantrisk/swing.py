@@ -1,4 +1,4 @@
-"""纯技术波段选股：日线趋势/量价/笔 + 30分钟线段。
+"""纯技术波段选股：日线趋势/量价/日线道氏 + 30分钟道氏（+基本面门禁，只否决不加分）。
 
 该模块不读取基本面字段，也不调用周线缠论（2026-09-08 起方向判定改用道氏理论）。评分面向持有几天至 1-2 周。
 """
@@ -239,6 +239,32 @@ def _last_pivot_prices(pivots: List[Dict]) -> tuple[float, float]:
     return (lows[-1] if lows else 0.0), (highs[-1] if highs else 0.0)
 
 
+def _in_high_zone(daily: List[Dict], lookback: int = 60, pct: float = 0.85) -> bool:
+    """60日高位区（滞后性纪律②③，2026-09-24 Q12=A）：现价处于近60日区间
+    （最低低~最高高）的 ≥85% 分位。区间宽度为0（一字盘）视为非高位。"""
+    if len(daily) < 10:
+        return False
+    win = daily[-min(lookback, len(daily)):]
+    highs = [_num(k.get("high")) for k in win]
+    lows = [_num(k.get("low")) for k in win]
+    hi, lo = max(highs), min(lows)
+    close = _num(daily[-1].get("close"))
+    if hi <= lo:
+        return False
+    return (close - lo) / (hi - lo) >= pct
+
+
+def _is_flat_streak(daily: List[Dict], n: int = 10, max_amp: float = 0.04) -> bool:
+    """连续 n 日振幅 < max_amp（高位横盘纪律③）：振幅=(最高-最低)/最低。"""
+    if len(daily) < n:
+        return False
+    for k in daily[-n:]:
+        h, low = _num(k.get("high")), _num(k.get("low"))
+        if low <= 0 or (h - low) / low >= max_amp:
+            return False
+    return True
+
+
 def _macd_divergence_note(klines: List[Dict], pivots: List[Dict]) -> str:
     """道氏趋势的动能预警：价格方向与动能（MACD柱）方向背离时提示（道氏用动能验证趋势强弱，
     用于对冲道氏反转确认的滞后性）。价创新高但柱峰走低=动能走弱；价创新低但柱谷抬高=动能转强。"""
@@ -444,6 +470,30 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
             dow_step3 = f"未跌破前低{stroke_low:.2f}（收盘价确认），趋势延续"
     else:
         dow_step3 = "方向未定或前低不足，等信号确认"
+    # ── 滞后性纪律·扣分+降档双轨（2026-09-24 grill Q7=C / Q12=A）──────────
+    # 三条可量化纪律代码化：扣分写回维度分（评分扣分可见），状态封顶"谨慎布局"——
+    # 预警不抢道氏转势确认的活（跌破前低才由道氏给离场），故封顶不压到观望。
+    discipline: List[Dict[str, Any]] = []
+    if momentum_weak:  # ① 动能走弱：价创新高但MACD柱收缩（沿用 _macd_divergence_note 摆动点级判定）
+        discipline.append({"rule": "动能走弱（价创新高MACD柱收缩）", "dim": "trend", "deduct": 6.0})
+    chg_1d = 0.0
+    if len(daily) >= 2:
+        p0, p1 = _num(daily[-2].get("close")), _num(daily[-1].get("close"))
+        chg_1d = (p1 - p0) / p0 * 100 if p0 > 0 else 0.0
+    high_zone = _in_high_zone(daily)
+    if high_zone and vol_ratio > 2.0 and chg_1d < 1.0:  # ② 高位放量滞涨（动能衰竭）
+        discipline.append({"rule": "高位放量滞涨（60日高位区+量比>2x+当日涨幅<1%）", "dim": "flow", "deduct": 6.0})
+    if high_zone and _is_flat_streak(daily):  # ③ 高位横盘（警惕趋势末端）
+        discipline.append({"rule": "高位横盘（高位区连续≥10日振幅<4%）", "dim": "trend", "deduct": 4.0})
+    for d in discipline:
+        target = trend if d["dim"] == "trend" else flow_score
+        before = float(target.get("score") or 0)
+        target["score"] = max(0.0, round(before - d["deduct"], 1))
+        applied = round(before - target["score"], 1)
+        d["applied"] = applied
+        if applied > 0:  # 扣分可见（基础分已为0时保留在 discipline 里做降档依据，不写"扣0分"）
+            target["reason"] = str(target.get("reason") or "") + \
+                f"；⚠️{d['rule'].split('（')[0]}扣{applied:g}分"
     total = round(trend["score"] + flow_score["score"] + stroke["score"] + segment["score"], 1)
     if not ok:
         status = "数据缺失"
@@ -467,6 +517,10 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
         status = "当前可布局"
     else:
         status = "观望：等待日线趋势与30分钟小趋势共振"
+    # 纪律封顶（Q12=A）：任何纪律触发时状态不得高于"谨慎布局"
+    discipline_names = "；".join(str(d["rule"]).split("（")[0] for d in discipline)
+    if discipline and status.startswith("当前可布局"):
+        status = f"谨慎布局：滞后性纪律（{discipline_names}）"
     stop_base = stroke_low if stroke.get("direction") == "up" else 0
     sl_tp = swing_sl_tp(price, daily, stop_base)
     result = {"code": stock.get("c") or stock.get("code", ""), "name": stock.get("n") or stock.get("name", ""), "sector": stock.get("s") or stock.get("sector", "其他"), "price": price, "total": total,
@@ -474,6 +528,7 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
             "as_of": stock.get("as_of") or "", "liquidity_ok": ok,
             "trend": trend, "flow": flow_score, "stroke": stroke, "segment": segment,
             "tradable": tradable, "status": status, "error": error, "direction_conflict": direction_conflict,
+            "discipline": discipline,
             "stop_loss": sl_tp["stop_loss"], "trail_stop": sl_tp["trail_stop"],
             "trail_pct": sl_tp["trail_pct"], "exit_rule": sl_tp["exit_rule"],
             "peak": sl_tp.get("peak"), "atr": sl_tp.get("atr"), "stop_pct": sl_tp.get("stop_pct"),
@@ -514,6 +569,10 @@ def swing_score_one(stock: Dict[str, Any], daily: List[Dict], intraday: List[Dic
                                        "priority": 1000, "reason": str(exc), "engine": "python"}],
                        "decision_engine": "python", "shadow_match": None, "shadow_verdict": "UNAVAILABLE",
                        "decision_error": str(exc)})
+    # 纪律封顶不可被规则引擎 ALLOW 翻回"当前可布局"（Q7=C 双轨：扣分+降档对引擎同样生效；
+    # BLOCK/EXIT 等更严裁决不受影响）
+    if discipline and str(result.get("status") or "").startswith("当前可布局"):
+        result["status"] = f"谨慎布局：滞后性纪律（{discipline_names}）"
     return result
 
 
@@ -527,9 +586,14 @@ def rank_swing_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def build_swing_report(ds: str, stocks: List[Dict[str, Any]], results: List[Dict[str, Any]],
                        market: str) -> Dict[str, Any]:
-    """把纯技术结果转换为市场无关的结构化报告。"""
+    """把纯技术结果转换为市场无关的结构化报告。
+
+    2026-09-24 门禁（Q1/Q5/Q6）：veto=True 的候选不进 TOP10，进入 vetoed 列表
+    渲染 ⛔ 行；评分本身不受门禁影响（基本面只否决不加分）。
+    """
     ranked = rank_swing_results(results)
-    top10 = ranked[:10]
+    vetoed_ranked = [r for r in ranked if r.get("veto")]
+    top10 = [r for r in ranked if not r.get("veto")][:10]
     sectors: Dict[str, Dict[str, Any]] = {}
     for s in stocks:
         sec = s.get("s", "其他")
@@ -562,13 +626,21 @@ def build_swing_report(ds: str, stocks: List[Dict[str, Any]], results: List[Dict
                          "total": r["total"], "advice": advice,
                          "strategy_id": r.get("strategy_id", "swing_band"),
                          "verdict": verdict, "entry_eligible": r.get("entry_eligible", False),
+                         "veto": bool(r.get("veto")),
+                         "gate_state": (r.get("gate") or {}).get("state", ""),
                          "rule_hits": r.get("rule_hits", [])})
         details.append({**r, "rank": rank})
         summary.append({"code": r["code"], "name": r["name"], "advice": advice,
                         "buy": r["status"], "stop_loss": r["stop_loss"],
                         "trail_stop": r["trail_stop"], "exit_rule": r["exit_rule"], "total": r["total"]})
+    vetoed_rows = []
+    for r in vetoed_ranked:
+        reasons = (r.get("gate") or {}).get("reasons") or []
+        vetoed_rows.append({"code": r["code"], "name": r["name"], "total": r["total"],
+                            "status": r.get("status", ""), "reasons": reasons,
+                            "reason": "；".join(reasons)})
     return {"date": ds, "market": market, "selection_mode": "swing", "sectors": list(sectors.values()),
-            "eliminated": [], "vetoed": [], "passed_count": len(stocks), "top10": top_rows,
+            "eliminated": [], "vetoed": vetoed_rows, "passed_count": len(stocks), "top10": top_rows,
             "details": details, "summary": summary}
 
 
@@ -705,7 +777,8 @@ def _entry_exit_conditions(r: Dict[str, Any]) -> tuple[str, str]:
     上车（按状态分支）：
       - 当前可布局 → 现价附近可分批介入，回踩支撑企稳加仓；
       - 观望（双周期冲突/方向未定）→ 放量突破阶段高点确认后再介入（现价勿追）；
-      - 谨慎布局 → 回踩支撑企稳（现价勿追）｜放量突破阶段高点介入。
+      - 谨慎布局 → 回踩支撑企稳（现价勿追）｜放量突破阶段高点介入；
+      - ⛔门禁否决 → 禁止新建仓/不加仓（基本面门禁 2026-09-24，只否决不加分）。
     回踩带 = MA5~MA10 区间（短线支撑），支撑 = 道氏前低（上升趋势）优先；突破参考 = 近20日最高收盘（阶段高点，道氏不预测目标，只给确认条件）。
     离场（固定结构，全部标的）：止损无条件走 + 移动止盈（跌破前低/自高点回撤，来自 exit_rule）+ 缩量滞涨纪律。"""
     price = float(r.get("price") or 0)
@@ -724,7 +797,11 @@ def _entry_exit_conditions(r: Dict[str, Any]) -> tuple[str, str]:
         pullback = f"回踩 {lo:.2f}-{hi:.2f}（MA5/MA10）"
     else:
         pullback = f"回踩 {support:.2f} 企稳"
-    if status.startswith("谨慎布局"):
+    if status.startswith("⛔门禁否决"):
+        reason_s = status.split("：", 1)[1] if "：" in status else status
+        entry = (f"⛔ 基本面门禁否决（{reason_s}）：禁止新建仓、不加仓；"
+                 f"财务修复且道氏回踩企稳/放量突破 {breakout:.2f} 后再评估")
+    elif status.startswith("谨慎布局"):
         entry = f"{pullback} 企稳（现价{price:.2f}勿追）｜放量突破 {breakout:.2f} 介入"
     elif status.startswith("观望"):
         entry = f"放量突破 {breakout:.2f} 确认后再介入（现价{price:.2f}勿追）"
@@ -745,8 +822,8 @@ def render_swing_report(data: Dict[str, Any], market: str) -> str:
     """波段模式独立渲染器：只展示日线趋势/量价/道氏趋势方向。"""
     label = "A股" if market == "cn" else "港股"
     first_strategy = str((data.get("details") or [{}])[0].get("strategy_id") or "swing_band")
-    lines = [f"## {label}波段选股推荐 | {data.get('date', '')}", "", "> 持有周期不预设：由道氏破前低/移动止盈离场信号自然决定（高抛低吸，时间不确定）；纯技术筛选，不使用基本面评分或否决。",
-             "> 评分说明（满分100）：**日线趋势30分**=均线多头排列+MACD；**日线量价资金25分**=量比放量+主力净流入；**日线道氏20分**=日线摆动点趋势方向（道氏三句话）；**30分钟道氏25分**=30m摆动点趋势，有则优化入场、缺失不阻断、与日线冲突则观望。",
+    lines = [f"## {label}波段选股推荐 | {data.get('date', '')}", "", "> 持有周期不预设：由道氏破前低/移动止盈离场信号自然决定（高抛低吸，时间不确定）；评分纯技术（基本面不进100分），另设**基本面门禁**：触发即从推荐剔除并标注⛔（只否决不加分，财务数据缺失不否决）。",
+             "> 评分说明（满分100）：**日线趋势30分**=均线多头排列+MACD；**日线量价资金25分**=量比放量+主力净流入；**日线道氏20分**=日线摆动点趋势方向（道氏三句话）；**30分钟道氏25分**=30m摆动点趋势确认入场，缺失或与日线冲突则观望（不补默认分）。",
              "> 道氏三步（用户框架）：①定方向=盘价摆动点判趋势（只做多）；②验健康=涨放量/回调缩量+主要指数同步；③找信号=收盘价未跌破前低则趋势延续，跌破离场。**卖出用移动止盈不预测目标**。",
              "",
              "### 推荐结论", "", "| 排名 | 标的 | 日线趋势 | 日线量价资金 | 日线道氏 | 30分钟道氏 | 总分 | 操作 | 评分要点 |", "|:---:|:----|:---:|:---:|:---:|:---:|:---:|:----|:----|"]
@@ -761,6 +838,15 @@ def render_swing_report(data: Dict[str, Any], market: str) -> str:
         d = detail_map.get(row["code"]) or {}
         brief = " / ".join(_score_brief(d[k], k) for k in ("trend", "flow", "stroke", "segment")) if d else ""
         lines.append(f"| {row['rank']} | {row['name']}（{row['code']}） | {row['trend_score']}/30 | {row['flow_score']}/25 | {row['stroke_score']}/20 | {row['segment_score']}/25 | **{row['total']}/100** | {row['advice']} | {brief} |")
+    # ⛔ 基本面门禁否决（2026-09-24 Q1/Q5：只否决不加分；此表供 backtest --record 解析 veto 分组）
+    vetoed = data.get("vetoed") or []
+    if vetoed:
+        lines += ["", "### ⛔ 基本面门禁否决（只否决不加分，不进评分）", "",
+                  "| 标的 | 总分 | 原状态 | 否决原因 |", "|:----|:---:|:----|:----|"]
+        for v in vetoed:
+            reasons = v.get("reasons") or ([v["reason"]] if v.get("reason") else [])
+            lines.append(f"| {v.get('name', '?')}（{v.get('code', '')}） | {v.get('total', 0)} | "
+                         f"{v.get('status', '')} | {'；'.join(reasons) or '数据缺失'} |")
     lines += ["", "### 逐只波段信号", ""]
     for r in data.get("details", []):
         trend, flow, stroke, segment = r["trend"], r["flow"], r["stroke"], r["segment"]
@@ -779,12 +865,21 @@ def render_swing_report(data: Dict[str, Any], market: str) -> str:
                   f"- 道氏②验健康：{health.get('note', '数据缺失')}（量比{vol_ratio}x）｜指数：{idx.get('note', '数据缺失')}",
                   f"- 道氏③找信号：{r.get('dow_step3', '数据缺失')}",
                   f"- 三阶段：{r.get('stage', '未知')}｜{r.get('stage_note', '')}"]
+        gate = r.get("gate")
+        if gate:
+            note_s = "；".join(gate.get("notes") or [])
+            if gate.get("state") == "pass":
+                lines.append(f"- ✅ 基本面门禁：通过（不计分，仅门禁{'；' + note_s if note_s else ''}）")
+            elif gate.get("state") == "veto":
+                lines.append(f"- ⛔ 基本面门禁：否决（{'；'.join(gate.get('reasons') or [])}）")
+            else:
+                lines.append("- ⚠️ 基本面门禁：财务数据缺失（未评估，不否决不加分）")
         if r.get("direction_conflict"):
             lines.append("- ⚠️ 日线趋势与30分钟道氏趋势方向冲突，禁止当前布局。")
         if r.get("error"):
             lines.append(f"- 数据状态：{r['error']}")
         lines.append("")
-    lines += ["### 波段纪律", "", "- 30分钟道氏缺失或与日线趋势冲突：只观望，不补默认分。", "- 放量突破或回踩确认后再入场；单只仓位建议不超过20%。", "- ⚠️ 道氏滞后性：趋势反转确认天然滞后，标 ⚠️动能走弱预警（价新高但 MACD 柱收缩）的上升趋势严格等回踩支撑、不追当日涨幅、仓位减半；高位放量滞涨视为衰竭信号。", "- 跌破技术止损无条件离场，持仓3-5个交易日缩量滞涨则减仓。", "", "> ⚠️ 声明：基于公开市场行情与技术指标自动生成，不构成投资建议。"]
+    lines += ["### 波段纪律", "", "- ⛔ 基本面门禁触发即剔除推荐（A股严：净利为负/负债率>70%/营收同比<-20%/ST退市；港股松：退市风险/负债率>80%）；财务数据缺失不否决。", "- 30分钟道氏缺失或与日线趋势冲突：只观望，不补默认分。", "- 放量突破或回踩确认后再入场；单只仓位建议不超过20%。", "- ⚠️ 道氏滞后性：趋势反转确认天然滞后，标 ⚠️动能走弱预警（价新高但 MACD 柱收缩）的上升趋势严格等回踩支撑、不追当日涨幅、仓位减半；高位放量滞涨视为衰竭信号。", "- 跌破技术止损无条件离场，持仓3-5个交易日缩量滞涨则减仓。", "", "> ⚠️ 声明：基于公开市场行情与技术指标自动生成，不构成投资建议。"]
     return "\n".join(lines)
 
 
@@ -870,7 +965,10 @@ async def run_swing_pipeline(stocks: List[Dict[str, Any]], market: str,
         flow = flow if isinstance(flow, dict) else {}
         normalized.append(stock)
         results.append(swing_score_one(stock, daily, stock.get("intraday", []), flow))
+    from .gate import apply_fundamental_gate
+    gate_stats = await apply_fundamental_gate(results, market)
     report = build_swing_report(__import__("datetime").datetime.now().strftime("%Y-%m-%d"), normalized, results, market)
+    report["gate_stats"] = gate_stats
     report = await attach_company_profiles(report, market)
     return await _attach_decision_receipts(report, normalized)
 
@@ -899,6 +997,8 @@ def swing_validate(data: Dict[str, Any]) -> None:
             raise ValueError(f"裁决矛盾: {row.get('code')}")
         if row.get("entry_eligible", False) and row.get("verdict") not in ("ALLOW",):
             raise ValueError(f"可布局与裁决不一致: {row.get('code')}")
+        if row.get("veto"):
+            raise ValueError(f"门禁否决标的混入TOP10: {row.get('code')}")
 
 
 __all__ = ["swing_liquidity_filter", "daily_trend_score", "daily_flow_score", "daily_stroke_score",
@@ -943,7 +1043,11 @@ async def run_swing_pipeline_with_intraday(stocks: List[Dict[str, Any]], market:
         bars = intraday_from_result(intra) if isinstance(intra, dict) else []
         results.append(swing_score_one(stock, daily, bars, flow))
         normalized.append(stock)
+    # ⛔ 基本面门禁（2026-09-24 Q1/Q11-B：后置门禁，只对完成评分的候选≤80只拉财务）
+    from .gate import apply_fundamental_gate
+    gate_stats = await apply_fundamental_gate(results, market)
     report = build_swing_report(__import__("datetime").datetime.now().strftime("%Y-%m-%d"), normalized, results, market)
+    report["gate_stats"] = gate_stats
     report = await attach_company_profiles(report, market)
     if snapshot_path:
         from .snapshot import write_snapshot

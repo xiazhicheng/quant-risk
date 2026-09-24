@@ -30,11 +30,34 @@ BACKTEST_FILE = os.path.join(os.path.dirname(__file__), "..", "report", "swing_b
 
 
 def _record_from_report(path: str) -> list[dict]:
-    """从 recommend 报告 markdown 提取 TOP10：解析 '#### N. 名称（代码）— 状态' 和总分。"""
+    """从 recommend 报告 markdown 提取回测记录。
+
+    解析两处（2026-09-24 门禁 Q4-B）：
+      1. '#### N. 名称（代码）— 状态' + 总分 → TOP10，veto=False
+      2. '### ⛔ 基本面门禁否决' 表格行 → 被否决候选，veto=True（供通过 vs 否决分组对比）
+    """
     records = []
     lines = open(path, encoding="utf-8").read().splitlines()
+    in_veto = False
     for i, line in enumerate(lines):
-        m = re.match(r"####\s+\d+\.\s+(.+?)（(\d{5,6})）—\s*(.+)$", line.strip())
+        s = line.strip()
+        if s.startswith("### "):
+            in_veto = "基本面门禁否决" in s
+            continue
+        if in_veto:
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) >= 2:
+                m = re.match(r"(.+?)（(\d{5,6})）$", cells[0])
+                if m:
+                    try:
+                        total = float(cells[1])
+                    except ValueError:
+                        total = 0.0
+                    records.append({"date": date.today().isoformat(), "code": m.group(2),
+                                    "name": m.group(1), "status": "门禁否决", "total": total,
+                                    "file": os.path.basename(path), "veto": True})
+            continue
+        m = re.match(r"####\s+\d+\.\s+(.+?)（(\d{5,6})）—\s*(.+)$", s)
         if not m:
             continue
         name, code, status = m.group(1), m.group(2), m.group(3)
@@ -45,7 +68,8 @@ def _record_from_report(path: str) -> list[dict]:
             if tm:
                 total = float(tm.group(1))
         records.append({"date": date.today().isoformat(), "code": code, "name": name,
-                        "status": status, "total": total, "file": os.path.basename(path)})
+                        "status": status, "total": total, "file": os.path.basename(path),
+                        "veto": False})
     return records
 
 
@@ -151,6 +175,42 @@ async def _report(days_list: list[int]) -> None:
                     n += 1
                     w += int(v > 0)
             print(f"  {st_label}: {len(grp)}条, 有数据{n}条, 胜率 {w}/{n} = {w/n*100:.0f}%" if n else f"  {st_label}: {len(grp)}条, 数据不足")
+        # Q4-B/Q13：按基本面门禁分组（通过组 T+N 均收益应优于否决组 ≥2pp @T+20）
+        print("\n按基本面门禁分组（均收益）：")
+        cache: dict[str, list] = {}
+
+        async def _pairs(code: str, _cache=cache, _market=market):
+            if code not in _cache:
+                _cache[code] = await _fetch_close(code, _market)
+            return _cache[code]
+
+        async def _mean(grp, d):
+            vals = []
+            for r in grp:
+                v = _returns(await _pairs(r["code"]), r["date"], d)
+                if v is not None:
+                    vals.append(v)
+            return (sum(vals) / len(vals) if vals else None), len(vals)
+
+        pass_grp = [r for r in items if not r.get("veto")]
+        veto_grp = [r for r in items if r.get("veto")]
+        if not veto_grp:
+            print("  否决组：无样本（该批报告尚未包含 ⛔ 门禁否决记录）")
+        for d in days_list:
+            pm, pn = await _mean(pass_grp, d)
+            vm, vn = await _mean(veto_grp, d)
+            p_s = f"{pm:+.2f}%" if pm is not None else "—"
+            v_s = f"{vm:+.2f}%" if vm is not None else "—"
+            diff = f"{pm - vm:+.2f}pp" if (pm is not None and vm is not None) else "数据不足"
+            print(f"  T+{d}: 通过 n={pn} {p_s} | 否决 n={vn} {v_s} | 差 {diff}")
+        if 20 in days_list and veto_grp:
+            pm20, _ = await _mean(pass_grp, 20)
+            vm20, _ = await _mean(veto_grp, 20)
+            if pm20 is not None and vm20 is not None:
+                gap = pm20 - vm20
+                print(f"  Q13通过线（T+20 通过-否决 ≥2pp）：{'✅ 达成' if gap >= 2.0 else '❌ 未达成'}（{gap:+.2f}pp）")
+            else:
+                print("  Q13通过线（T+20）：数据不足")
     from scripts.quantrisk.data import close_async_session
     await close_async_session()
 

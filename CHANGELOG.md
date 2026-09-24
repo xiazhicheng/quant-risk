@@ -1,5 +1,26 @@
 # Changelog
 
+## V1.12.0 (2026-09-24) — 基本面门禁（只否决不加分）+ 滞后性纪律扣分降档双轨 + stale 文档清理
+
+### 基本面门禁（grill Q1/Q5/Q6/Q11 共识，新增 `scripts/quantrisk/gate.py`）
+
+- 基本面**只否决不加分**：不进 100 分评分（评分保持纯技术 30/25/20/25）；评分完成后**后置**评估（候选≤80只/市场 + 持仓，不扫全池，防东财限流）
+- 规则分市场：A股严（净利为负/负债率>70%/营收同比<-20%/ST退市）｜港股松（退市风险/负债率>80%）；**金融业（银行/证券/保险/信托）豁免负债率规则**（notes 留痕，净利/营收/ST 照常）；财务缺失 fail-open 不否决（回测归"未评估"）
+- 接入面：`swing.py` TOP10 剔除 veto + ⛔否决表 + 逐只门禁行 + `swing_validate` 拦截；`backtest_swing` veto 字段解析 + 门禁分组 + Q13 通过线判定（通过组T+20高于否决组≥2pp 且 PF≥旧策略、回撤恶化≤1pp）；`backtest_snapshot` gate 分组；`portfolio_report` 持仓"不加仓"标注（卖出仍归道氏 `_dow_verdict()`）；`analyze_swing` 单股同源评估 + ⛔状态封顶 + 上车条件"禁止新建仓"分支；`daily` 摘要门禁统计
+
+### 滞后性纪律扣分+降档双轨（grill Q7/Q12）
+
+- `swing_score_one` 三条纪律代码化：①动能走弱 日线趋势-6 ②高位放量滞涨（60日≥85%分位+量比>2x+当日涨幅<1%）量价-6 ③高位横盘（高位区连续≥10日振幅<4%）日线趋势-4
+- 扣分写回维度分+reason 标注 `⚠️XX扣N分`，明细进 `result["discipline"]`；状态封顶"谨慎布局"，**规则引擎 ALLOW 不可翻回**（封顶在 facade 后二次生效，BLOCK/EXIT 不受影响）
+
+### stale 文档清理（grill Q9/Q10）
+
+- 命名与口径统一：AGENTS.md「日线笔/30分钟线段」→「日线道氏/30分钟道氏」、"基本面不参与一票否决"改为门禁铁律、缠论6/20旧诊断话术；swing-system.md L40 30m缺失口径（缺失→观望，原"不BLOCK"表述易误读）、Q2 条目升级双轨、评分表头命名、新增门禁条目；data-sources.md 缠论诊断话术
+- 代码文档：formatter.py TOP10 表头 60/20/20→50/30/20（与 summary 表头 5:3:2 对齐）；recommend.py/portfolio_report.py/recommend_cn/hk docstring 去四大师旧承诺；report legend「缺失不阻断」→「缺失则观望」；README/SKILL 门禁口径
+- 测试：全量 **158 通过**（+2 skipped semantica），全离线：`test_gate.py` 22 条（含金融业豁免 4 条、单股门禁 4 条）+ 滞后性纪律 `test_discipline_*` 4 条
+
+---
+
 ## V1.11.0 (2026-09-24) — 持仓调仓逻辑全道氏化（投委会辩论移除 + 硬编码修复）
 
 ### 调仓裁决：六维评分/投委会辩论 → 道氏信号（portfolio_report.py）

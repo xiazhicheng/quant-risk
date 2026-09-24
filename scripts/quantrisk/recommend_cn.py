@@ -333,7 +333,7 @@ async def cn_batch_analysis(candidates: List[Dict[str, str]]) -> Dict[str, Dict]
 # ═══════════════════════════════════════════════════════════════
 
 async def cn_swing_recommend_pipeline(candidates: List[Dict[str, str]], strategy: str = "tactical", run_mode: str = "research", rule_engine: str = "shadow", snapshot: str = "") -> dict:
-    """A股纯技术波段流程：日线笔 + 30分钟线段。"""
+    """A股纯技术波段流程：日线道氏 + 30分钟道氏（评分后置基本面门禁，只否决不加分）。"""
     from scripts.quantrisk.data import stock_kline_30m_async, cn_index_quotes_async
     from scripts.quantrisk.swing import run_swing_pipeline_with_intraday, build_index_sync
 

@@ -111,7 +111,7 @@
     - 「组合优化建议」（六维评分<30 且亏损>20% 才止损）→「🎯 道氏持仓裁决总表」；「AI偏见自查清单」（硬编码标的条目）→「🔍 数据源自查」。
     - `dow_detail_output()` 返回值新增结构化字段 `direction/previous_low/previous_high/stage/health/divergence/vol_ratio` 供裁决消费；「基本面分析」标题改为「基本面背景（不参与调仓裁决）」，无产业链数据时不再输出空标题。
   - 整合模块（当前）：组合总览 → 调仓路线图（道氏）→ 逐只（基本信息 → 基本面背景 → 核心财务 → **道氏持仓裁决** → 市场情绪 → 技术面）→ 道氏持仓裁决总表 → 数据源自查
-  - 支持 `--stdin` 从 stdin 读取持仓 JSON（AI 从 AgentMemory 取出后传入）
+  - 支持 `--stdin` 从 stdin 读取持仓 JSON（AI 从 Hindsight 取出后传入）
   - 回退：本地 `portfolio.json`（虽已弃用但代码兼容）
   - 一行命令运行：`echo '{"holdings":[{"code":"02460","market":"hk","shares":4600,"avg_cost":10.334}]}' | uv run scripts/portfolio_report.py --stdin`
   - 仍保留的 legacy 路径：`--sixdim-json` / `--sixdim-render`（JSON 管道，`_render_analysis` 输出六维评分表+漏斗+镜子测试），未随本次改动清理

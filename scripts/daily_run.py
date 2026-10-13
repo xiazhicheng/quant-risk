@@ -24,7 +24,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.quantrisk.daily import render_daily_summary, run_daily
+from scripts.quantrisk.daily import (render_daily_summary, run_daily,
+                                     trendgate_signal, render_strategy_signals)
 from scripts.quantrisk.data import close_async_session, close_tickflow
 
 
@@ -36,6 +37,8 @@ def parse_args() -> argparse.Namespace:
                     help="规则引擎（默认 shadow：Python 主裁决 + Semantica 影子对比）")
     ap.add_argument("--no-backtest", action="store_true", help="不记录 TOP10 到 swing_backtest.jsonl")
     ap.add_argument("--snapshot-dir", default="report/snapshots", help="冻结快照输出目录")
+    ap.add_argument("--gate-ma", type=int, default=30,
+                    help="TrendGate 闸门均线周期（默认 30：A股/港股均采用激进档 MA30）")
     return ap.parse_args()
 
 
@@ -45,6 +48,23 @@ async def main() -> None:
         markets=args.markets, min_stocks=args.min_stocks, rule_engine=args.rule_engine,
         snapshot_dir=Path(args.snapshot_dir), record_backtest=not args.no_backtest)
     print(render_daily_summary(result))
+
+    # ── 策略层信号（TrendGate：闸门开关 + 双动量 TOP10，best-effort 不阻断）──
+    markets = tuple(m.strip() for m in args.markets.split(",") if m.strip())
+    signals = []
+    for m in markets:
+        try:
+            sig = await trendgate_signal(m, gate_ma=args.gate_ma)
+            signals.append(sig)
+        except Exception as exc:
+            signals.append({"market": m, "label": m, "error": f"{type(exc).__name__}: {exc}"})
+    if markets:
+        sig_md = render_strategy_signals(signals)
+        sig_file = Path("report") / f"strategy-signals-{date.today():%Y%m%d}.md"
+        sig_file.parent.mkdir(parents=True, exist_ok=True)
+        sig_file.write_text(sig_md, encoding="utf-8")
+        print("\n" + sig_md)
+        print(f"\n📄 策略信号已保存: {sig_file}")
     await close_async_session()
     await close_tickflow()
     failed = [m for m, v in (result.get("markets") or {}).items() if v.get("error")]

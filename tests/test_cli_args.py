@@ -51,3 +51,26 @@ def test_json_safe_object_to_dict_summary():
 
     out = _json_safe(Obj())
     assert out == {"date": "2026-09-18"}
+
+
+def test_trendgate_pool_hsi_help():
+    """backtest_trendgate --pool hsi 参数已注册（2026-10-13 恒指成分池）。"""
+    import subprocess, sys
+    p = subprocess.run([sys.executable, "scripts/backtest_trendgate.py", "--help"],
+                       capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0
+    assert "--pool" in p.stdout
+    assert "hsi" in p.stdout
+
+
+def test_fetch_hsi_constituents_cache_valid():
+    """恒指成分池缓存 universe_hk_hsi.json 结构合法（93 只左右、5 位港股代码）。"""
+    import json
+    from pathlib import Path
+    f = Path("data/rotation_cache/universe_hk_hsi.json")
+    if not f.exists():
+        import pytest
+        pytest.skip("无恒指成分缓存（需联网拉维基后写入）")
+    uni = json.loads(f.read_text(encoding="utf-8"))
+    assert len(uni) > 80
+    assert all(u.get("market") == "hk" and len(str(u.get("code", ""))) == 5 for u in uni)

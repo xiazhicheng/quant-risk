@@ -165,3 +165,34 @@ def test_render_daily_summary_contains_key_fields():
     assert "港股" in text and "数据源限流" in text
     assert "abc123" in text and "swing_backtest.jsonl" in text
     assert "不构成投资建议" in text
+
+
+def test_trendgate_signal_error_without_cache():
+    """trendgate_signal 无缓存时返回 error 字典（不抛异常、不联网）。"""
+    import asyncio
+    from scripts.quantrisk.daily import trendgate_signal
+
+    async def run():
+        # 用一个不存在的 days 强制缓存 miss（cn_d99999）
+        sig = await trendgate_signal("cn", gate_ma=30, days=99999)
+        assert sig.get("error"), sig
+        assert "缓存" in sig["error"] or "cache" in sig["error"].lower(), sig
+
+    asyncio.run(run())
+
+
+def test_render_strategy_signals_ok():
+    """render_strategy_signals 对合法信号渲染出闸门/TOP10 章节。"""
+    from scripts.quantrisk.daily import render_strategy_signals
+    sig = {
+        "market": "hk", "label": "港股", "as_of": "2026-10-13", "gate_ma": 30,
+        "universe_count": 93,
+        "gate": {"symbol": "hkHSI", "close": 24074.72, "ma": 24723.54,
+                 "on": False, "confirm_days": 0},
+        "stance": "🔴 空仓等待（闸门关闭）",
+        "top10": [{"code": "00316", "name": "東方海外國際", "score": 0.946}],
+    }
+    md = render_strategy_signals([sig])
+    assert "hkHSI" in md and "TOP10" in md and "東方海外國際" in md
+    err = render_strategy_signals([{"market": "cn", "label": "A股", "error": "boom"}])
+    assert "boom" in err

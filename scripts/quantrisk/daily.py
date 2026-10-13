@@ -182,5 +182,115 @@ def render_daily_summary(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略层信号（TrendGate 当日闸门 + 双动量 TOP10，2026-10-13 新增）
+# ─────────────────────────────────────────────────────────────
+async def _trendgate_index_kline(days: int, symbol: str):
+    """闸门指数日K（沪深300 / 恒指），复用腾讯 K 线多域名降级。"""
+    import pandas as pd
+    from . import data
+    d = await data._tencent_kline_get(f"{symbol},day,,,{days},qfq")
+    kdata = (((d or {}).get("data") or {}).get(symbol) or {})
+    rows = kdata.get("day") or kdata.get("qfqday") or kdata.get("qfq") or []
+    if not rows:
+        return None
+    s = pd.Series({r[0]: float(r[2]) for r in rows if len(r) >= 3})
+    s.index = pd.to_datetime(s.index)
+    return s.sort_index()
+
+
+async def trendgate_signal(market: str, gate_ma: int = 30, days: int = 800) -> dict[str, Any]:
+    """TrendGate 策略当日信号（A股中证500+沪深300闸门 / 港股恒指成分池+恒指闸门）。
+
+    不跑回测，秒级出信号：池与行情矩阵直接复用 rotation 缓存（需先跑过对应
+    backtest_trendgate 生成 universe_{cn,hk_hsi}.json 与 {cn,hk_hsi}_d{days} 矩阵），
+    闸门指数实时拉取日K；输出截至矩阵最后交易日的闸门开关 + 连续确认天数 + 双动量 TOP10。
+    """
+    import pandas as pd
+    from . import rotation as rot
+    from .trendgate import HS300_SYMBOL, HSI_SYMBOL
+
+    hsi_pool = market == "hk"
+    uni_key = "hk_hsi" if hsi_pool else "cn"
+    universe = rot.load_universe_cache(uni_key)
+    if not universe:
+        return {"market": market, "error": f"无池缓存 universe_{uni_key}.json（先跑 backtest_trendgate --pool {('hsi ' if hsi_pool else '')}--market {market} 生成）"}
+    hit = rot.cache_matrix(f"{uni_key}_d{days}")
+    if hit is None:
+        return {"market": market, "error": f"无行情缓存 {uni_key}_d{days}（先跑 backtest_trendgate 生成）"}
+    close = hit[0].sort_index()
+    if close.empty:
+        return {"market": market, "error": "行情矩阵为空"}
+
+    gate_sym = HSI_SYMBOL if hsi_pool else HS300_SYMBOL
+    gi = await _trendgate_index_kline(days, gate_sym)
+    if gi is None:
+        return {"market": market, "error": f"闸门指数 {gate_sym} 获取失败（fail-closed）"}
+
+    last_day = close.index[-1]
+    gi = gi.loc[gi.index <= last_day]
+    if len(gi) < gate_ma + 1:
+        return {"market": market, "error": f"闸门指数数据不足（{len(gi)} 日 < MA{gate_ma}）"}
+
+    ma = gi.rolling(gate_ma).mean()
+    above = gi > ma
+    confirm_days = 0
+    for v in above.iloc[::-1]:
+        if bool(v):
+            confirm_days += 1
+        else:
+            break
+    gate_on = bool(above.iloc[-1])
+    if gate_on:
+        stance = "🟢 在场（闸门开，可持仓）"
+    elif confirm_days > 0:
+        stance = f"🟡 闸门确认中（已站上 {confirm_days} 日，需连续 {3 if gate_ma >= 20 else 1} 日再入场）"
+    else:
+        stance = "🔴 空仓等待（闸门关闭）"
+
+    score = rot.cross_section_scores(close)
+    try:
+        sel = rot.select_on_date(score, last_day, min_score=0.65, top_n=10)
+    except Exception:
+        sel = pd.Series(dtype=float)
+    name_map = {u["code"]: u.get("name", "") for u in universe}
+    top10 = [{"code": c, "name": name_map.get(c, ""), "score": round(float(s), 3)}
+             for c, s in sel.items()]
+
+    return {
+        "market": market, "label": _MARKET_LABEL.get(market, market),
+        "as_of": last_day.strftime("%Y-%m-%d"), "gate_ma": gate_ma,
+        "gate": {"symbol": gate_sym, "close": round(float(gi.iloc[-1]), 2),
+                 "ma": round(float(ma.iloc[-1]), 2), "on": gate_on,
+                 "confirm_days": confirm_days},
+        "top10": top10, "stance": stance,
+        "universe_count": len(universe) if close.shape[1] else 0,
+    }
+
+
+def render_strategy_signals(signals: list[dict]) -> str:
+    """渲染 TrendGate 策略信号报告（闸门状态 + 双动量 TOP10）。"""
+    lines = []
+    for sig in signals:
+        if sig.get("error"):
+            lines.append(f"## {sig.get('label', sig.get('market', ''))}（{sig.get('market', '')}）❌ {sig['error']}")
+            lines.append("")
+            continue
+        g = sig["gate"]
+        lines.append(f"## {sig['label']}（{sig.get('market', '')}）· 信号截至 {sig.get('as_of', '')} · 池 {sig.get('universe_count', '')} 只")
+        lines.append(f"- **闸门 {g['symbol']} MA{sig.get('gate_ma')}**：收盘 {g['close']} vs MA {g['ma']} → {sig.get('stance', '')}（连续确认 {g['confirm_days']} 日）")
+        top = sig.get("top10") or []
+        if top:
+            lines.append("- **双动量 TOP10（得分≥0.65，调仓日买入候选）**：")
+            for i, row in enumerate(top, 1):
+                lines.append(f"  {i}. {row['name']}（{row['code']}）得分 {row['score']}")
+        else:
+            lines.append("- **双动量 TOP10**：当前无合格标的（全部低于阈值或数据缺失）")
+        lines.append("")
+    lines.append("> ⚠️ 声明：基于公开市场数据自动生成，不构成投资建议（策略层信号，非个股买卖建议）。")
+    return "\n".join(lines)
+
+
 __all__ = ["run_daily", "render_daily_summary", "_run_one_market", "_record_top10",
+           "trendgate_signal", "render_strategy_signals",
            "REPORT_DIR", "DEFAULT_SNAPSHOT_DIR", "BACKTEST_FILE"]

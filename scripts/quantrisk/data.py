@@ -84,15 +84,22 @@ def retry_async(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0,
     return decorator
 
 def cn_market_prefix(code: str) -> str:
-    """A股代码 → 腾讯前缀: sh/sz/bj"""
+    """A股/ETF 代码 → 腾讯前缀: sh/sz/bj
+
+    ETF/LOF（2026-10-09 修复）：5 开头=上交所（510300/510500/588xxx），
+    1 开头=深交所（159915 创业板ETF / 16xxxx LOF）。此前 5 开头落到默认 "sz"，
+    腾讯只返回**未复权** day 拿不到 qfqday —— 网格策略用错价会全盘失真。
+    """
     if code.startswith(("6", "9")): return "sh"
+    if code.startswith("5"): return "sh"          # 上交所 ETF/LOF
+    if code.startswith("1"): return "sz"          # 深交所 ETF/LOF（15xxxx/16xxxx）
     if code.startswith(("0", "3")): return "sz"
     if code.startswith(("4", "8")): return "bj"
     return "sz"
 
 def cn_secid(code: str) -> str:
-    """A股代码 → 东财 secid"""
-    return f"{'1' if code.startswith(('6','9')) else '0'}.{code}"
+    """A股/ETF 代码 → 东财 secid（5 开头=上交所，1 开头=深交所）"""
+    return f"{'1' if code.startswith(('6','9','5')) else '0'}.{code}"
 
 async def get_async_session() -> aiohttp.ClientSession:
     global _async_session

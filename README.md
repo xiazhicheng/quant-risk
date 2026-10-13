@@ -158,6 +158,18 @@ uv run scripts/analyze_swing.py 600388                       # 单股波段分�
 uv run scripts/analyze_swing.py 03968                        # 港股示例
 uv run scripts/recommend.py --market cn --rule-engine shadow # 全市场波段推荐（TOP10）
 uv run scripts/backtest_swing.py --report --days 5,10,20     # 回测统计（胜率/分数段/状态分组）
+uv run scripts/backtest_rotation.py --market cn --days 800   # 市场轮动回测（A股中证500成分）
+uv run scripts/backtest_rotation.py --market hk --days 600   # 市场轮动回测（港股成交额Top100）
+uv run scripts/backtest_multifactor.py --market cn --days 800  # 多因子回测（趋势55/波动25/成交额20+择时+止损止盈）
+uv run scripts/backtest_multifactor.py --market hk --days 600  # 多因子回测（港股，亏损过滤 fail-open）
+uv run scripts/backtest_trendgate.py --market cn --days 800 --commission 0.001  # 闸门动量（rotation×MA20择时闸门+70%敞口）
+uv run scripts/pit_check.py --market hk --candidates 500 --pool 100 --days 600   # Point-in-Time 池检验（前视偏差量化）
+uv run scripts/backtest_grid.py --code 510500 --spacing 0.02 --days 800           # 网格交易（A股宽基ETF，靠震荡市）
+uv run scripts/backtest_grid.py --code 03033 --lower 0.20 --upper 0.20 --commission 0.001  # 网格交易（港股 5 位代码，如南方恒生科技ETF）
+uv run scripts/backtest_dualengine.py                                            # 双引擎组合（趋势×震荡，含权重扫描与ETF被动对照）
+uv run scripts/analyze_fit.py 002340                                             # 策略适配性诊断（这只票适合网格还是趋势）
+uv run scripts/analyze_fit.py --screen cn --top 20                               # 批量筛查中证500：哪些适合做网格
+uv run scripts/backtest_adaptive.py 002340                                       # 自适应切换回测（检验"先判定再切换"是否成立）
 uv run scripts/portfolio.py diagnose                         # 持仓诊断
 uv run scripts/mcp_server.py                                 # MCP server（stdio，供 AI 客户端）
 ```

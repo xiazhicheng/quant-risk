@@ -196,3 +196,56 @@ def test_render_strategy_signals_ok():
     assert "hkHSI" in md and "TOP10" in md and "東方海外國際" in md
     err = render_strategy_signals([{"market": "cn", "label": "A股", "error": "boom"}])
     assert "boom" in err
+
+
+def test_render_strategy_signals_stock_gate():
+    """个股闸门信号：渲染池内站上比例 + 每只 TOP10 的闸门标记。"""
+    from scripts.quantrisk.daily import render_strategy_signals
+    sig = {
+        "market": "hk", "label": "港股", "as_of": "2026-10-13", "gate_ma": 30,
+        "universe_count": 93, "gate_mode": "stock",
+        "gate": {"mode": "stock", "on": True, "on_count": 62, "total": 93, "on_ratio": 0.667},
+        "stance": "个股闸门：池内 62/93（67%）站上自身 MA30（连续3日）",
+        "top10": [{"code": "00316", "name": "東方海外國際", "score": 0.946, "gate_on": True},
+                  {"code": "03988", "name": "中國銀行", "score": 0.930, "gate_on": False}],
+    }
+    md = render_strategy_signals([sig])
+    assert "个股闸门" in md and "62/93" in md and "67%" in md
+    assert "✅站上MA" in md and "🔴跌破MA" in md
+    assert "hkHSI" not in md          # 个股闸门不渲染指数
+
+
+def test_trendgate_signal_invalid_gate_mode():
+    """非法 gate_mode 直接返回 error（不联网）。"""
+    import asyncio
+    from scripts.quantrisk.daily import trendgate_signal
+
+    async def run():
+        sig = await trendgate_signal("cn", gate_ma=30, days=800, gate_mode="bogus")
+        assert sig.get("error") and "gate_mode" in sig["error"]
+
+    asyncio.run(run())
+
+
+def test_trendgate_signal_stock_mode_from_cache():
+    """个股闸门不拉指数（可离线）：有缓存时返回池内统计与逐只标记位。"""
+    import asyncio
+    from pathlib import Path
+
+    import pytest
+
+    from scripts.quantrisk import rotation
+    from scripts.quantrisk.daily import trendgate_signal
+
+    if not (Path(rotation.CACHE_DIR) / "hk_hsi_d800" / "close.csv").exists():
+        pytest.skip("需要 hk_hsi_d800 缓存")
+
+    async def run():
+        sig = await trendgate_signal("hk", gate_ma=30, days=800, gate_mode="stock")
+        assert not sig.get("error"), sig
+        assert sig["gate"]["mode"] == "stock"
+        assert sig["gate"]["total"] > 0
+        assert 0.0 <= sig["gate"]["on_ratio"] <= 1.0
+        assert all("gate_on" in row for row in sig["top10"])
+
+    asyncio.run(run())

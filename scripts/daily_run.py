@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--snapshot-dir", default="report/snapshots", help="冻结快照输出目录")
     ap.add_argument("--gate-ma", type=int, default=30,
                     help="TrendGate 闸门均线周期（默认 30：A股/港股均采用激进档 MA30）")
+    ap.add_argument("--gate-modes", default="cn=index,hk=index",
+                    help="各市场闸门类型，逗号分隔（cn=index|stock,hk=index|stock；"
+                         "默认 cn=index,hk=index；港股个股闸门用 hk=stock）")
     return ap.parse_args()
 
 
@@ -49,12 +53,18 @@ async def main() -> None:
         snapshot_dir=Path(args.snapshot_dir), record_backtest=not args.no_backtest)
     print(render_daily_summary(result))
 
-    # ── 策略层信号（TrendGate：闸门开关 + 双动量 TOP10，best-effort 不阻断）──
+    # ── 策略层信号（TrendGate：闸门状态 + 双动量 TOP10，best-effort 不阻断）──
     markets = tuple(m.strip() for m in args.markets.split(",") if m.strip())
+    gate_modes = {}
+    for pair in str(args.gate_modes).split(","):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            gate_modes[k.strip()] = v.strip()
     signals = []
     for m in markets:
         try:
-            sig = await trendgate_signal(m, gate_ma=args.gate_ma)
+            sig = await trendgate_signal(m, gate_ma=args.gate_ma,
+                                         gate_mode=gate_modes.get(m, "index"))
             signals.append(sig)
         except Exception as exc:
             signals.append({"market": m, "label": m, "error": f"{type(exc).__name__}: {exc}"})

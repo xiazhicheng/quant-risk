@@ -199,17 +199,23 @@ async def _trendgate_index_kline(days: int, symbol: str):
     return s.sort_index()
 
 
-async def trendgate_signal(market: str, gate_ma: int = 30, days: int = 800) -> dict[str, Any]:
-    """TrendGate 策略当日信号（A股中证500+沪深300闸门 / 港股恒指成分池+恒指闸门）。
+async def trendgate_signal(market: str, gate_ma: int = 30, days: int = 800,
+                           gate_mode: str = "index") -> dict[str, Any]:
+    """TrendGate 策略当日信号（A股中证500 / 港股恒指成分池）。
+
+    gate_mode: index=市场指数闸门（A股沪深300 / 港股恒指，默认）
+               stock=个股自身 MA 闸门（逐只 close vs MA(gate_ma)，连续3日确认）
 
     不跑回测，秒级出信号：池与行情矩阵直接复用 rotation 缓存（需先跑过对应
     backtest_trendgate 生成 universe_{cn,hk_hsi}.json 与 {cn,hk_hsi}_d{days} 矩阵），
-    闸门指数实时拉取日K；输出截至矩阵最后交易日的闸门开关 + 连续确认天数 + 双动量 TOP10。
+    index 模式另拉闸门指数日K；输出截至矩阵最后交易日的闸门状态 + 双动量 TOP10。
     """
     import pandas as pd
     from . import rotation as rot
     from .trendgate import HS300_SYMBOL, HSI_SYMBOL
 
+    if gate_mode not in {"index", "stock"}:
+        return {"market": market, "error": f"未知 gate_mode={gate_mode}（应 index/stock）"}
     hsi_pool = market == "hk"
     uni_key = "hk_hsi" if hsi_pool else "cn"
     universe = rot.load_universe_cache(uni_key)
@@ -223,30 +229,46 @@ async def trendgate_signal(market: str, gate_ma: int = 30, days: int = 800) -> d
         return {"market": market, "error": "行情矩阵为空"}
 
     gate_sym = HSI_SYMBOL if hsi_pool else HS300_SYMBOL
-    gi = await _trendgate_index_kline(days, gate_sym)
-    if gi is None:
-        return {"market": market, "error": f"闸门指数 {gate_sym} 获取失败（fail-closed）"}
-
     last_day = close.index[-1]
-    gi = gi.loc[gi.index <= last_day]
-    if len(gi) < gate_ma + 1:
-        return {"market": market, "error": f"闸门指数数据不足（{len(gi)} 日 < MA{gate_ma}）"}
-
-    ma = gi.rolling(gate_ma).mean()
-    above = gi > ma
-    confirm_days = 0
-    for v in above.iloc[::-1]:
-        if bool(v):
-            confirm_days += 1
-        else:
-            break
-    gate_on = bool(above.iloc[-1])
-    if gate_on:
-        stance = "🟢 在场（闸门开，可持仓）"
-    elif confirm_days > 0:
-        stance = f"🟡 闸门确认中（已站上 {confirm_days} 日，需连续 {3 if gate_ma >= 20 else 1} 日再入场）"
+    stock_gate = None
+    gi = None
+    ma = None
+    if gate_mode == "stock":
+        # 个股闸门：逐只 close vs 自身 MA(gate_ma) + 连续 3 日确认（与回测 engine 同口径）
+        ma_all = close.rolling(gate_ma).mean()
+        above_all = close.ge(ma_all) & close.gt(0)
+        confirmed = above_all.rolling(min(3, gate_ma)).sum().eq(min(3, gate_ma))
+        cur = confirmed.iloc[-1]
+        on_count = int(cur.sum())
+        total = int(close.shape[1])
+        on_ratio = on_count / total if total else 0.0
+        stock_gate = {"on_count": on_count, "total": total, "on_ratio": on_ratio}
+        gate_on = on_ratio > 0.5
+        stance = (f"个股闸门：池内 {on_count}/{total}（{on_ratio:.0%}）站上自身 "
+                  f"MA{gate_ma}（连续3日）")
     else:
-        stance = "🔴 空仓等待（闸门关闭）"
+        gi = await _trendgate_index_kline(days, gate_sym)
+        if gi is None:
+            return {"market": market, "error": f"闸门指数 {gate_sym} 获取失败（fail-closed）"}
+        gi = gi.loc[gi.index <= last_day]
+        if len(gi) < gate_ma + 1:
+            return {"market": market, "error": f"闸门指数数据不足（{len(gi)} 日 < MA{gate_ma}）"}
+
+        ma = gi.rolling(gate_ma).mean()
+        above = gi > ma
+        confirm_days = 0
+        for v in above.iloc[::-1]:
+            if bool(v):
+                confirm_days += 1
+            else:
+                break
+        gate_on = bool(above.iloc[-1])
+        if gate_on:
+            stance = "🟢 在场（闸门开，可持仓）"
+        elif confirm_days > 0:
+            stance = f"🟡 闸门确认中（已站上 {confirm_days} 日，需连续 {3 if gate_ma >= 20 else 1} 日再入场）"
+        else:
+            stance = "🔴 空仓等待（闸门关闭）"
 
     score = rot.cross_section_scores(close)
     try:
@@ -254,18 +276,28 @@ async def trendgate_signal(market: str, gate_ma: int = 30, days: int = 800) -> d
     except Exception:
         sel = pd.Series(dtype=float)
     name_map = {u["code"]: u.get("name", "") for u in universe}
-    top10 = [{"code": c, "name": name_map.get(c, ""), "score": round(float(s), 3)}
-             for c, s in sel.items()]
+    top10 = []
+    for c, s in sel.items():
+        row = {"code": c, "name": name_map.get(c, ""), "score": round(float(s), 3)}
+        if gate_mode == "stock":
+            row["gate_on"] = bool(confirmed[c].iloc[-1]) if c in confirmed.columns else None
+        top10.append(row)
 
-    return {
+    result = {
         "market": market, "label": _MARKET_LABEL.get(market, market),
         "as_of": last_day.strftime("%Y-%m-%d"), "gate_ma": gate_ma,
-        "gate": {"symbol": gate_sym, "close": round(float(gi.iloc[-1]), 2),
-                 "ma": round(float(ma.iloc[-1]), 2), "on": gate_on,
-                 "confirm_days": confirm_days},
+        "gate_mode": gate_mode,
         "top10": top10, "stance": stance,
-        "universe_count": len(universe) if close.shape[1] else 0,
+        "universe_count": int(close.shape[1]),
     }
+    if gate_mode == "stock":
+        result["gate"] = {"mode": "stock", "on": gate_on, **stock_gate}
+    else:
+        result["gate"] = {"mode": "index", "symbol": gate_sym,
+                          "close": round(float(gi.iloc[-1]), 2),
+                          "ma": round(float(ma.iloc[-1]), 2), "on": gate_on,
+                          "confirm_days": confirm_days}
+    return result
 
 
 def render_strategy_signals(signals: list[dict]) -> str:
@@ -276,14 +308,21 @@ def render_strategy_signals(signals: list[dict]) -> str:
             lines.append(f"## {sig.get('label', sig.get('market', ''))}（{sig.get('market', '')}）❌ {sig['error']}")
             lines.append("")
             continue
-        g = sig["gate"]
+        g = sig.get("gate") or {}
         lines.append(f"## {sig['label']}（{sig.get('market', '')}）· 信号截至 {sig.get('as_of', '')} · 池 {sig.get('universe_count', '')} 只")
-        lines.append(f"- **闸门 {g['symbol']} MA{sig.get('gate_ma')}**：收盘 {g['close']} vs MA {g['ma']} → {sig.get('stance', '')}（连续确认 {g['confirm_days']} 日）")
+        if g.get("mode") == "stock":
+            lines.append(f"- **个股闸门（逐只 MA{sig.get('gate_ma')}，连续3日）**：{sig.get('stance', '')}"
+                         f" → {'🟢 多数在场' if g.get('on') else '🔴 多数离场'}")
+        else:
+            lines.append(f"- **闸门 {g['symbol']} MA{sig.get('gate_ma')}**：收盘 {g['close']} vs MA {g['ma']} → {sig.get('stance', '')}（连续确认 {g['confirm_days']} 日）")
         top = sig.get("top10") or []
         if top:
             lines.append("- **双动量 TOP10（得分≥0.65，调仓日买入候选）**：")
             for i, row in enumerate(top, 1):
-                lines.append(f"  {i}. {row['name']}（{row['code']}）得分 {row['score']}")
+                mark = ""
+                if g.get("mode") == "stock" and row.get("gate_on") is not None:
+                    mark = " ✅站上MA" if row["gate_on"] else " 🔴跌破MA"
+                lines.append(f"  {i}. {row['name']}（{row['code']}）得分 {row['score']}{mark}")
         else:
             lines.append("- **双动量 TOP10**：当前无合格标的（全部低于阈值或数据缺失）")
         lines.append("")

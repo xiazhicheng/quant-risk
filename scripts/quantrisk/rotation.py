@@ -40,6 +40,35 @@ from . import data
 # 配置
 # ─────────────────────────────────────────────────────────────
 ZZ500_EASTMONEY_BK = "BK0701"      # 东财板块代码：中证500
+ALL_A_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"   # 东财 clist fs：沪深A股（深主板+创业板+沪主板+科创板）
+ALL_A_FS_BJ = ALL_A_FS + ",m:0+t:81+s:2048"     # +北交所
+
+
+async def fetch_all_a_constituents(include_bj: bool = True) -> list[dict]:
+    """A股全市场列表（东财 clist fs=沪深A股[+北交所]，分页拉全，去重）。
+
+    不剔 ST/次新/微盘——"全市场"原样池；是否过滤交给回测时按需处理。
+    """
+    fs = ALL_A_FS_BJ if include_bj else ALL_A_FS
+    codes_seen: dict[str, dict] = {}
+    for pn in range(1, 120):
+        d = await data.retry_async(max_attempts=6, delay=1.5, backoff=1.5)(data._get_json)(
+            "https://push2.eastmoney.com/api/qt/clist/get", params={
+                "fs": fs, "fields": "f12,f14,f13", "pn": pn, "pz": 100, "fid": "f12",
+                "po": 0, "np": 1, "fltt": 2, "invt": 2})
+        diff = (d.get("data") or {}).get("diff")
+        rows = list(diff.values()) if isinstance(diff, dict) else (diff or [])
+        if not rows:
+            break
+        for r in rows:
+            code = str(r.get("f12", ""))
+            if code:
+                codes_seen[code] = {"code": code, "name": r.get("f14", ""),
+                                    "market": _mkt_code(r.get("f13"))}
+        total = (d.get("data") or {}).get("total")
+        if total and len(codes_seen) >= int(total):
+            break
+    return list(codes_seen.values())
 CN_INDEX_CODE = "000905.SH"         # 中证500指数
 REBALANCE_DAYS = 20                 # 调仓间隔（交易日）
 MIN_SCORE = 0.65                    # 综合得分门槛
